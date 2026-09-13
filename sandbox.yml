@@ -1,0 +1,46 @@
+# Sample sandbox execution environment config (see sandbox.sh).
+#
+# Drop this file at the root of a project directory (next to sandbox.sh, or
+# wherever --project-dir points) as "sandbox.yml" to select the apptainer
+# base image sandbox.sh builds/runs the agent CLI in. Every key below can
+# also be set on the command line instead (or as well) via repeatable
+# --environment KEY=VALUE flags, which take precedence per-key over this
+# file, e.g.:
+#   ./sandbox.sh --environment preset=python --environment python_version=3.12 claude
+#
+# Recognized keys under "environment:", first match wins in this order:
+#
+#   image: <ref>
+#     Use this image reference verbatim as the sandbox's base image.
+#
+#   dockerfile: <path>
+#     Path (relative to the project dir) to a custom Dockerfile; its last
+#     stage becomes the "base" stage sandbox.sh's shared toolchain layer
+#     builds on top of. Use this for a base that needs more than the
+#     uv/python presets below provide (e.g. sandbox/texlive-uv.Dockerfile,
+#     bundled alongside this sample, layers uv onto a full TeX Live image).
+#
+#   preset: uv | python | python3.13
+#     A named base image:
+#       uv          ghcr.io/astral-sh/uv:python<python_version>-bookworm-slim
+#                   (uv preinstalled; python_version default 3.13)
+#       python3.13  python:3.13-slim-bookworm
+#       python      python:<python_version>-slim-bookworm (default 3.13)
+#
+#   python_version: "3.13"
+#     Only consulted by the uv/python presets above.
+#
+# With no sandbox.yml, no --environment flags, or an environment: section
+# with none of the above set, sandbox.sh defaults to "preset: uv".
+#
+# Example: generic uv-managed Python project (equivalent to the default,
+# spelled out explicitly):
+environment:
+  preset: uv
+  python_version: "3.13"
+
+# Example: a project that also needs a full TeX Live toolchain — swap the
+# block above for this one (see sandbox/texlive-uv.Dockerfile):
+#
+# environment:
+#   dockerfile: sandbox/texlive-uv.Dockerfile

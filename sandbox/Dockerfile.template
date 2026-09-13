@@ -1,0 +1,53 @@
+ARG AGENT
+
+# Base image for the "base" stage below. sandbox.sh resolves this from
+# sandbox.yml (environment.image / environment.dockerfile / environment.preset)
+# and/or --environment KEY=VALUE command-line flags, and substitutes the
+# literal "$BASE_IMAGE" placeholder via sed, since apptainer's Dockerfile
+# bootstrap does not evaluate ARG inside FROM lines.
+# With no sandbox.yml/--environment (or no environment.* set), this defaults
+# to the "uv" preset: ghcr.io/astral-sh/uv:python3.13-bookworm-slim (uv
+# preinstalled). Environments that need uv but don't ship it (e.g. a plain
+# "python" preset or a custom image/dockerfile) must provide it themselves —
+# see sandbox/texlive-uv.Dockerfile for an example that layers uv onto a
+# non-uv base via environment.dockerfile.
+FROM $BASE_IMAGE AS base
+
+ARG USERNAME=agent
+ARG UID=1000
+ARG GID=1000
+# Which agent to install into this image: claude | opencode | omp
+
+ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+
+LABEL agent="${AGENT}"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg poppler-utils imagemagick \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base AS claude
+# claude: Node.js + npm package
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force \
+    && ln -sf "$(command -v claude)" /usr/local/bin/claude
+
+FROM base AS opencode
+# opencode: curl install script
+RUN export HOME="/usr/local" \
+    curl -fsSL https://opencode.ai/install.sh | sed 's|INSTALL_DIR=\$HOME/.opencode/bin|INSTALL_DIR=/usr/local/opencode/bin|' | bash
+
+ENV PATH="/usr/local/opencode/bin:${PATH}"
+
+FROM base AS omp
+# omp (oh my pi): curl install script
+RUN export PI_INSTALL_DIR="/usr/local/omp/bin" ; \
+    curl -fsSL https://omp.sh/install.sh | sh ;
+
+ENV PATH="/usr/local/omp/bin:${PATH}"
+
+ARG AGENT
+FROM $AGENT AS final
