@@ -5,6 +5,10 @@ ARG AGENT
 # and/or --environment KEY=VALUE command-line flags, and substitutes the
 # literal "$BASE_IMAGE" placeholder via sed, since apptainer's Dockerfile
 # bootstrap does not evaluate ARG inside FROM lines.
+# The generated file is only ever consumed by "apptainer build" (both the
+# apptainer and gVisor runtimes build the same SIF; the gVisor mode then
+# unpacks it and runs the rootfs under runsc). The textual placeholder
+# substitution exists because apptainer cannot evaluate ARG in FROM lines.
 # With no sandbox.yml/--environment (or no environment.* set), this defaults
 # to the "uv" preset: ghcr.io/astral-sh/uv:python3.13-bookworm-slim (uv
 # preinstalled). Environments that need uv but don't ship it (e.g. a plain

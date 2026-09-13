@@ -7,6 +7,19 @@
 # --environment KEY=VALUE flags, which take precedence per-key over this
 # file, e.g.:
 #   ./sandbox.sh --environment preset=python --environment python_version=3.12 claude
+# Isolation runtime (optional TOP-LEVEL key, NOT under "environment:"):
+#   runtime: apptainer | gvisor
+#     apptainer (default): build sandbox/<agent>.<env-tag>.sif and run the
+#     agent with apptainer exec.
+#     gvisor: run the same SIF image under the gVisor runsc user-space
+#     kernel via "runsc --rootless do" — no docker involved. sandbox.sh
+#     unpacks the SIF with "apptainer oci apply" and hands the rootfs to
+#     runsc, so this runtime needs the runsc binary on PATH (plus
+#     apptainer, used for build and unpack). Shares exactly the same paths
+#     as the apptainer runtime (project dir, $HOME, per-agent config) and
+#     never adds privileged or otherwise loosened options.
+#     Override per invocation with --runtime apptainer|gvisor.
+#
 #
 # Recognized keys under "environment:", first match wins in this order:
 #

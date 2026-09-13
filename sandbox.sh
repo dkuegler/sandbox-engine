@@ -3,10 +3,12 @@
 # Unified sandbox entrypoint. Usage:
 #   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] <claude|opencode|omp> [agent-args...]
 #
-# Builds sandbox/<agent>.<env-tag>.sif on first use (from sandbox/Dockerfile,
-# selecting the agent via --build-arg AGENT=<agent> and the base image per the
-# project's execution environment, see below) and then execs the agent inside
-# it, with the project directory bind-mounted and set as cwd.
+# Builds sandbox/<agent>.<env-tag>.sif on first use (apptainer runtime; the
+# optional gVisor runtime instead unpacks the SIF to a directory, see
+# "Isolation runtime" below) from sandbox/Dockerfile, selecting the agent via
+# --build-arg AGENT=<agent> and the base image per the project's execution
+# environment, see below. The agent is then exec'd inside it, with the
+# project directory bind-mounted and set as cwd.
 #
 # Project directory: defaults to the current working directory; override with
 # --project-dir DIR (accepted anywhere in argv, before or after the agent
@@ -48,13 +50,39 @@
 #   sandbox/texlive-uv.Dockerfile for a worked example). uv itself discovers
 #   pyproject.toml/.venv relative to cwd, so `uv run ...` transparently uses
 #   the project's own `.venv` once the project directory is bind-mounted.
+#
+# Isolation runtime:
+#   --runtime apptainer|gvisor     (default: apptainer; a top-level
+#                                  "runtime:" key in sandbox.yml sets the
+#                                  project default, --runtime overrides it)
+#     apptainer  Build sandbox/<agent>.<env-tag>.sif and run it with
+#                apptainer exec --containall (described above).
+#     gvisor     Run the same SIF image under the gVisor runsc user-space
+#                kernel via "runsc --rootless do". No docker involved: the
+#                SIF is unpacked with "apptainer oci mount" into a bundle,
+#                the bundle's rootfs and config.json are translated into
+#                "runsc do" flags (--root <rootfs> --cwd <project dir>,
+#                --volume for the project dir/$HOME/per-agent config paths
+#                read-write), and the command runs on gVisor for
+#                syscall-level isolation. Requires the runsc binary on PATH
+#                (only the apptainer runtime needs root; runsc do runs
+#                rootless). Requires apptainer in addition to runsc, since
+#                it is used for both the image build and the unpack. The
+#                security posture is identical to the apptainer path: the
+#                same project dir, $HOME, and per-agent config paths are
+#                shared read-write, the host environment is not propagated
+#                (matching --containall: the process gets a fixed minimal
+#                env), the sandbox rootfs starts read-only with an
+#                ephemeral memory overlay (matching --writable-tmpfs), and
+#                no privileged or otherwise loosened options are ever
+#                added. Network: host passthrough, same as apptainer.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SANDBOX_DIR="$SCRIPT_DIR/sandbox"
 
 usage() {
-    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] <claude|opencode|omp> [agent-args...]" >&2
+    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--runtime apptainer|gvisor] <claude|opencode|omp> [agent-args...]" >&2
     exit 1
 }
 
@@ -88,6 +116,7 @@ CLI_ENV_IMAGE=""
 CLI_ENV_DOCKERFILE=""
 CLI_ENV_PRESET=""
 CLI_ENV_PYTHON_VERSION=""
+CLI_RUNTIME=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -107,6 +136,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --environment=*)
             set_cli_env "${1#--environment=}"
+            shift
+            ;;
+        --runtime)
+            [[ $# -ge 2 ]] || usage
+            CLI_RUNTIME="$2"
+            shift 2
+            ;;
+        --runtime=*)
+            CLI_RUNTIME="${1#--runtime=}"
             shift
             ;;
         claude|opencode|omp)
@@ -137,10 +175,15 @@ ENV_IMAGE=""
 ENV_DOCKERFILE=""
 ENV_PRESET=""
 ENV_PYTHON_VERSION=""
+YML_RUNTIME=""
 
 if [[ -f "$SANDBOX_YML" ]]; then
     in_block=0
     while IFS= read -r line || [[ -n "$line" ]]; do
+        # Optional top-level key (outside any block): isolation runtime.
+        if [[ "$line" =~ ^runtime:[[:space:]]*([A-Za-z0-9_.-]+) ]]; then
+            YML_RUNTIME="${BASH_REMATCH[1]}"
+        fi
         if [[ "$line" =~ ^environment:[[:space:]]*(#.*)?$ ]]; then
             in_block=1
             continue
@@ -170,10 +213,29 @@ ENV_DOCKERFILE="${CLI_ENV_DOCKERFILE:-$ENV_DOCKERFILE}"
 ENV_PRESET="${CLI_ENV_PRESET:-$ENV_PRESET}"
 ENV_PYTHON_VERSION="${CLI_ENV_PYTHON_VERSION:-$ENV_PYTHON_VERSION}"
 
+RUNTIME="${CLI_RUNTIME:-${YML_RUNTIME:-apptainer}}"
+case "$RUNTIME" in
+    apptainer|gvisor) ;;
+    *)
+        echo "--runtime/sandbox.yml runtime '$RUNTIME': unknown, expected apptainer|gvisor" >&2
+        exit 1
+        ;;
+esac
+
 ENV_PYTHON_VERSION="${ENV_PYTHON_VERSION:-3.13}"
 
 sanitize_tag() {
     printf '%s' "$1" | tr -c 'A-Za-z0-9_.' '-' | sed -e 's/-\{2,\}/-/g' -e 's/^-//' -e 's/-$//'
+}
+
+# --- gVisor runtime prerequisites: runsc binary on PATH -------------------
+
+require_gvisor_runtime() {
+    command -v runsc >/dev/null 2>&1 || {
+        echo "runtime gvisor requires the gVisor 'runsc' binary on PATH (not found)." >&2
+        echo "Install it from https://gvisor.dev/docs/user_guide/install/ and re-run." >&2
+        exit 1
+    }
 }
 
 CUSTOM_DOCKERFILE=""
@@ -208,6 +270,11 @@ else
 fi
 
 SIF_IMAGE="$SANDBOX_DIR/$AGENT.$ENV_TAG.sif"
+
+
+if [[ "$RUNTIME" == "gvisor" ]]; then
+    require_gvisor_runtime
+fi
 
 # --- generate sandbox/Dockerfile from the template for this environment ---
 #
@@ -268,10 +335,6 @@ if [ ! -f "$SIF_IMAGE" ]; then
         --build-arg "AGENT=$AGENT" \
         "$SIF_IMAGE" "dockerfile:$SANDBOX_DIR"
 fi
-
-# Extra project-specific binds (e.g. a shared texmf tree, extra data
-# volumes) can be appended to BINDS here before the apptainer exec call
-# below.
 BINDS=(
     -B "$PROJECT_DIR"
 )
@@ -313,10 +376,84 @@ case "$AGENT" in
         ;;
 esac
 
-apptainer exec --containall --no-home \
-    --cwd "$PROJECT_DIR" \
-    "${BINDS[@]}" \
-    --home "$HOME" \
-    --nv --writable-tmpfs \
-    "$SIF_IMAGE" \
-    "${RUN_CMD[@]}"
+# --- gVisor runtime: unpack the SIF and exec under runsc ------------------
+#
+# Security posture is kept identical to the apptainer invocation below:
+# only the project directory, $HOME, and the per-agent config paths bound
+# by the case statement are shared read-write; the host environment is not
+# propagated (a fixed minimal env is set instead, matching --containall);
+# the rootfs is read-only with an ephemeral memory overlay (matching
+# --writable-tmpfs; runsc do's default overlay). No privileged mode, no
+# extra capabilities, no host namespaces.
+#
+# Mechanism, per gVisor docs (https://gvisor.dev/docs/user_guide/rootless/):
+# "runsc do" sets up a sandbox with the host filesystem mounted read-only
+# inside (with a writable overlay on top) and runs a command in it. Flags:
+#   --root    <dir>   container rootfs (here: the unpacked SIF contents)
+#   --cwd     <dir>   initial working directory (here: $PROJECT_DIR)
+#   --volume  SRC[:DST]  bind, repeatable; SRC==DST keeps identical paths
+#   --rootless       run without root (no sudo needed)
+# A rootless run needs no network namespace: runsc do defaults to host
+# networking, which matches apptainer's default (no network isolation).
+run_gvisor() {
+    local bundle
+    bundle="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-engine-runsc.XXXXXX")"
+
+    # Unpack the SIF into a runsc-usable rootfs directory. There is no
+    # docker here: runsc do takes a plain rootfs (--root) rather than an
+    # OCI image, so the unpack has to produce a bare directory tree.
+    # "apptainer oci mount" would require root; the unprivileged path is
+    # "apptainer oci apply <image> <bundle>", which accepts a SIF as the
+    # source image and writes rootfs/ + config.json into the bundle.
+    if ! apptainer oci apply "$SIF_IMAGE" "$bundle"; then
+        echo "apptainer oci apply failed; unable to unpack $SIF_IMAGE for runsc" >&2
+        rm -rf "$bundle"
+        return 1
+    fi
+
+    local -a runsc_args=(
+        --rootless
+        --root "$bundle/rootfs"
+        --cwd "$PROJECT_DIR"
+        --volume "$HOME"
+    )
+    local i spec
+
+    # BINDS holds apptainer "-B src[:dest[:opts]]" specs; this script only
+    # ever appends plain paths (src == dest), which "runsc do --volume"
+    # accepts 1:1.
+    for ((i = 0; i < ${#BINDS[@]}; i++)); do
+        [[ "${BINDS[$i]}" == "-B" ]] || continue
+        spec="${BINDS[$((i + 1))]}"
+        if [[ "$spec" == *:* ]]; then
+            echo "gVisor runtime: unsupported bind spec '$spec' (expected a plain path)" >&2
+            rm -rf "$bundle"
+            exit 1
+        fi
+        runsc_args+=(--volume "$spec")
+
+    done
+
+    # --containall gives the container a clean environment; replicate that
+    # with a fixed minimal env instead of inheriting the host's.
+    env -i \
+        HOME="$HOME" \
+        TERM="${TERM:-xterm}" \
+        PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+        runsc "${runsc_args[@]}" "${RUN_CMD[@]}"
+    local rc=$?
+    rm -rf "$bundle"
+    return "$rc"
+}
+
+if [[ "$RUNTIME" == "apptainer" ]]; then
+    apptainer exec --containall --no-home \
+        --cwd "$PROJECT_DIR" \
+        "${BINDS[@]}" \
+        --home "$HOME" \
+        --nv --writable-tmpfs \
+        "$SIF_IMAGE" \
+        "${RUN_CMD[@]}"
+else
+    run_gvisor
+fi
