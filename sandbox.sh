@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Unified sandbox entrypoint. Usage:
-#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] <claude|opencode|omp> [agent-args...]
+#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--runtime apptainer|gvisor] <claude|opencode|omp> [agent-args...]
 #
 # Builds sandbox/<agent>.<env-tag>.sif on first use (apptainer runtime; the
 # optional gVisor runtime instead unpacks the SIF to a directory, see
@@ -51,6 +51,20 @@
 #   pyproject.toml/.venv relative to cwd, so `uv run ...` transparently uses
 #   the project's own `.venv` once the project directory is bind-mounted.
 #
+# Additional binds (sandbox.yml / --bind):
+#   Extra host paths mounted into the sandbox, on top of the project dir,
+#   $HOME, and the per-agent config binds above. A top-level "binds:" list
+#   in sandbox.yml sets project defaults (NOT under "environment:"):
+#     binds:
+#       - /data                  # host path mounted at the same container path
+#       - /data:/mnt/data        # host path mounted at another container path
+#       - /data:/mnt/data:ro     # with apptainer bind options (here: read-only)
+#   Repeatable --bind SRC[:DST[:OPTS]] flags add further binds on top, e.g.:
+#     ./sandbox.sh --bind /var/run/docker.sock claude
+#   Bare relative sources resolve against the project directory; "~"-prefixed
+#   paths expand to $HOME. Option-bearing specs are rejected by the gVisor
+#   runtime ("runsc do --volume" only understands src[:dst]).
+#
 # Isolation runtime:
 #   --runtime apptainer|gvisor     (default: apptainer; a top-level
 #                                  "runtime:" key in sandbox.yml sets the
@@ -82,7 +96,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SANDBOX_DIR="$SCRIPT_DIR/sandbox"
 
 usage() {
-    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--runtime apptainer|gvisor] <claude|opencode|omp> [agent-args...]" >&2
+    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--runtime apptainer|gvisor] <claude|opencode|omp> [agent-args...]" >&2
     exit 1
 }
 
@@ -105,6 +119,9 @@ set_cli_env() {
             ;;
     esac
 }
+
+
+CLI_BINDS=()
 
 # --- argv: pull out --project-dir, --environment, and the agent name, -----
 # --- forward the rest ------------------------------------------------------
@@ -147,6 +164,15 @@ while [[ $# -gt 0 ]]; do
             CLI_RUNTIME="${1#--runtime=}"
             shift
             ;;
+        --bind)
+            [[ $# -ge 2 ]] || usage
+            CLI_BINDS+=("$2")
+            shift 2
+            ;;
+        --bind=*)
+            CLI_BINDS+=("${1#--bind=}")
+            shift
+            ;;
         claude|opencode|omp)
             if [[ -z "$AGENT" ]]; then
                 AGENT="$1"
@@ -176,6 +202,8 @@ ENV_DOCKERFILE=""
 ENV_PRESET=""
 ENV_PYTHON_VERSION=""
 YML_RUNTIME=""
+YML_BINDS=()
+in_binds=0
 
 if [[ -f "$SANDBOX_YML" ]]; then
     in_block=0
@@ -187,6 +215,19 @@ if [[ -f "$SANDBOX_YML" ]]; then
         if [[ "$line" =~ ^environment:[[:space:]]*(#.*)?$ ]]; then
             in_block=1
             continue
+        fi
+        # Optional top-level list (outside any block): additional binds.
+        if [[ "$line" =~ ^binds:[[:space:]]*(#.*)?$ ]]; then
+            in_binds=1
+            continue
+        fi
+        if [[ $in_binds -eq 1 ]]; then
+            if [[ "$line" =~ ^[[:space:]]+-[[:space:]]*(.*[^[:space:]])[[:space:]]*(#.*)?$ ]]; then
+                YML_BINDS+=("${BASH_REMATCH[1]}")
+                continue
+            elif [[ -n "$line" && ! "$line" =~ ^[[:space:]] ]]; then
+                in_binds=0
+            fi
         fi
         if [[ $in_block -eq 1 ]]; then
             if [[ "$line" =~ ^[[:space:]]+([A-Za-z_]+):[[:space:]]*(.*)$ ]]; then
@@ -338,6 +379,45 @@ fi
 BINDS=(
     -B "$PROJECT_DIR"
 )
+# Additional binds from sandbox.yml ("binds:" list) and repeatable --bind
+# flags, validated and expanded (relative paths against the project dir,
+# "~/" against $HOME). Feeds both runtimes: apptainer gets the specs
+# verbatim via -B; run_gvisor translates the plain-path ones to --volume and
+# rejects option-bearing specs.
+for spec in "${YML_BINDS[@]}" "${CLI_BINDS[@]}"; do
+    # Strip a trailing "# comment" and surrounding blanks, then split
+    # SRC[:DST[:OPTS]] on the first two colons (same comment convention as
+    # the environment: block above).
+    spec="$(sed -e 's/[[:space:]]*#.*//' -e 's/[[:space:]]*$//' <<<"$spec")"
+    [[ -n "$spec" ]] || continue
+    src="${spec%%:*}"
+    rest="${spec#*:}"
+    [[ "$src" = ~* ]] && src="${src/#\~/$HOME}"
+    [[ "$src" = /* ]] || src="$PROJECT_DIR/$src"
+    dst=""
+    opts=""
+    if [[ "$rest" != "$spec" ]]; then
+        if [[ "$rest" == *:* ]]; then
+            dst="${rest%%:*}"
+            opts="${rest#*:}"
+        else
+            dst="$rest"
+        fi
+    fi
+    if [[ ! -e "$src" ]]; then
+        echo "bind source '$src' (from sandbox.yml binds:/--bind) does not exist" >&2
+        exit 1
+    fi
+    src="$(readlink -f "$src")"
+    if [[ -n "$dst" ]]; then
+        dst="${dst/#\~/$HOME}"
+        BINDS+=(-B "$src:$dst${opts:+:$opts}")
+    elif [[ -n "$opts" ]]; then
+        BINDS+=(-B "$src:$opts")
+    else
+        BINDS+=(-B "$src")
+    fi
+done
 
 case "$AGENT" in
     claude)
@@ -379,12 +459,10 @@ esac
 # --- gVisor runtime: unpack the SIF and exec under runsc ------------------
 #
 # Security posture is kept identical to the apptainer invocation below:
-# only the project directory, $HOME, and the per-agent config paths bound
-# by the case statement are shared read-write; the host environment is not
+# only the project directory, $HOME, the per-agent config paths bound by
+# the case statement, and the additional binds from sandbox.yml
+# "binds:"/--bind are shared read-write; the host environment is not
 # propagated (a fixed minimal env is set instead, matching --containall);
-# the rootfs is read-only with an ephemeral memory overlay (matching
-# --writable-tmpfs; runsc do's default overlay). No privileged mode, no
-# extra capabilities, no host namespaces.
 #
 # Mechanism, per gVisor docs (https://gvisor.dev/docs/user_guide/rootless/):
 # "runsc do" sets up a sandbox with the host filesystem mounted read-only
@@ -419,19 +497,21 @@ run_gvisor() {
     )
     local i spec
 
-    # BINDS holds apptainer "-B src[:dest[:opts]]" specs; this script only
-    # ever appends plain paths (src == dest), which "runsc do --volume"
-    # accepts 1:1.
+    # BINDS holds apptainer "-B src[:dest[:opts]]" specs. "runsc do
+    # --volume" accepts SRC[:DST] 1:1; a third field (apptainer bind
+    # options, e.g. :ro) has no runsc do equivalent, so those specs are
+    # rejected rather than silently degraded.
     for ((i = 0; i < ${#BINDS[@]}; i++)); do
         [[ "${BINDS[$i]}" == "-B" ]] || continue
         spec="${BINDS[$((i + 1))]}"
-        if [[ "$spec" == *:* ]]; then
-            echo "gVisor runtime: unsupported bind spec '$spec' (expected a plain path)" >&2
-            rm -rf "$bundle"
-            exit 1
-        fi
+        case "$spec" in
+            *:*:*) # option field: unsupported by "runsc do --volume"
+                echo "gVisor runtime: unsupported bind spec '$spec' (expected SRC or SRC:DST)" >&2
+                rm -rf "$bundle"
+                exit 1
+                ;;
+        esac
         runsc_args+=(--volume "$spec")
-
     done
 
     # --containall gives the container a clean environment; replicate that
