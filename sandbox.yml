@@ -7,19 +7,10 @@
 # --environment KEY=VALUE flags, which take precedence per-key over this
 # file, e.g.:
 #   ./sandbox.sh --environment preset=python --environment python_version=3.12 claude
-# Isolation runtime (optional TOP-LEVEL key, NOT under "environment:"):
-#   runtime: apptainer | gvisor
-#     apptainer (default): build sandbox/<agent>.<env-tag>.sif and run the
-#     agent with apptainer exec.
-#     gvisor: run the same SIF image under the gVisor runsc user-space
-#     kernel via "runsc --rootless do" — no docker involved. sandbox.sh
-#     unpacks the SIF with "apptainer oci apply" and hands the rootfs to
-#     runsc, so this runtime needs the runsc binary on PATH (plus
-#     apptainer, used for build and unpack). Shares exactly the same paths
-#     as the apptainer runtime (project dir, $HOME, per-agent config) and
-#     never adds privileged or otherwise loosened options.
-#     Override per invocation with --runtime apptainer|gvisor.
-#
+# Git access (see sandbox.sh's "Git access" header comment): the agent
+# image ships no git binary; all git access goes through the read-only
+# MCP sidecar (sandbox/git-mcp-server.py), started automatically whenever
+# the project directory has a .git. Nothing to configure here.
 #
 # Recognized keys under "environment:", first match wins in this order:
 #
@@ -67,5 +58,4 @@ environment:
 #   to the project directory. Repeatable --bind SRC[:DST[:OPTS]] flags add
 #   further binds on top of this list, e.g.:
 #     ./sandbox.sh --bind /var/run/docker.sock claude
-#   Note: the gVisor runtime mounts via "runsc do --volume", which only
-#   understands src[:dst] — option-bearing binds are rejected there.
+#   Only SRC or SRC:DST are portable; the OPTS field is apptainer-specific.

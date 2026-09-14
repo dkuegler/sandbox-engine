@@ -1,14 +1,21 @@
 #!/bin/bash
 #
 # Unified sandbox entrypoint. Usage:
-#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--runtime apptainer|gvisor] <claude|opencode|omp> [agent-args...]
+#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] <claude|opencode|omp> [agent-args...]
 #
-# Builds sandbox/<agent>.<env-tag>.sif on first use (apptainer runtime; the
-# optional gVisor runtime instead unpacks the SIF to a directory, see
-# "Isolation runtime" below) from sandbox/Dockerfile, selecting the agent via
-# --build-arg AGENT=<agent> and the base image per the project's execution
-# environment, see below. The agent is then exec'd inside it, with the
-# project directory bind-mounted and set as cwd.
+# Builds sandbox/<agent>.<env-tag>.sif on first use (apptainer runtime) from
+# sandbox/Dockerfile, selecting the agent via --build-arg AGENT=<agent> and
+# the base image per the project's execution environment, see below. The
+# agent is then exec'd inside it, with the project directory bind-mounted
+# and set as cwd.
+#
+# Implementation is split across functions/*.sh (sourced below):
+#   argv.sh         --project-dir/--environment/--bind/agent argv parsing
+#   sandbox_yml.sh  <project-dir>/sandbox.yml parsing
+#   environment.sh  base-image resolution, Dockerfile generation, SIF build
+#   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
+#   git-mcp.sh       git MCP sidecar lifecycle (start/stop, .git ro mask)
+#   agents.sh       per-agent state binds, RUN_CMD, MCP config injection
 #
 # Project directory: defaults to the current working directory; override with
 # --project-dir DIR (accepted anywhere in argv, before or after the agent
@@ -62,478 +69,79 @@
 #   Repeatable --bind SRC[:DST[:OPTS]] flags add further binds on top, e.g.:
 #     ./sandbox.sh --bind /var/run/docker.sock claude
 #   Bare relative sources resolve against the project directory; "~"-prefixed
-#   paths expand to $HOME. Option-bearing specs are rejected by the gVisor
-#   runtime ("runsc do --volume" only understands src[:dst]).
+#   paths expand to $HOME.
 #
-# Isolation runtime:
-#   --runtime apptainer|gvisor     (default: apptainer; a top-level
-#                                  "runtime:" key in sandbox.yml sets the
-#                                  project default, --runtime overrides it)
-#     apptainer  Build sandbox/<agent>.<env-tag>.sif and run it with
-#                apptainer exec --containall (described above).
-#     gvisor     Run the same SIF image under the gVisor runsc user-space
-#                kernel via "runsc --rootless do". No docker involved: the
-#                SIF is unpacked with "apptainer oci mount" into a bundle,
-#                the bundle's rootfs and config.json are translated into
-#                "runsc do" flags (--root <rootfs> --cwd <project dir>,
-#                --volume for the project dir/$HOME/per-agent config paths
-#                read-write), and the command runs on gVisor for
-#                syscall-level isolation. Requires the runsc binary on PATH
-#                (only the apptainer runtime needs root; runsc do runs
-#                rootless). Requires apptainer in addition to runsc, since
-#                it is used for both the image build and the unpack. The
-#                security posture is identical to the apptainer path: the
-#                same project dir, $HOME, and per-agent config paths are
-#                shared read-write, the host environment is not propagated
-#                (matching --containall: the process gets a fixed minimal
-#                env), the sandbox rootfs starts read-only with an
-#                ephemeral memory overlay (matching --writable-tmpfs), and
-#                no privileged or otherwise loosened options are ever
-#                added. Network: host passthrough, same as apptainer.
-set -e
+# Git access:
+#   The agent image deliberately stays clean of a git binary. All git
+#   access goes through a separate sidecar container (sandbox/gitmcp.sif,
+#   built from sandbox/gitmcp.Dockerfile) that is exposed to the agent as
+#   an MCP server over loopback HTTP (bearer-token authenticated, token
+#   minted fresh per run and passed via APPTAINERENV_* so it never appears
+#   in the world-readable /proc/<pid>/cmdline). It exposes only read-only
+#   tools (git_status, git_log, git_diff, git_show, git_blame, git_branch,
+#   git_ls_remote); see sandbox/git-mcp-server.py. The project directory is
+#   bound READ-ONLY into the sidecar too, since no exposed tool writes.
+#   The sidecar is started before the agent and stopped on exit.
+#
+#   As defense in depth (an agent could still `apt install`/`curl` its own
+#   git binary given network + package-manager access), every .git in the
+#   project tree — the top-level one, submodules, and nested repositories,
+#   plus the real git dir a worktree/submodule .git file points at — is
+#   additionally bind-mounted READ-ONLY into the agent container. That is
+#   kernel-enforced, not a wrapper, so it also blocks writes from a
+#   self-installed git or any git library.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SANDBOX_DIR="$SCRIPT_DIR/sandbox"
+FUNCTIONS_DIR="$SCRIPT_DIR/functions"
 
-usage() {
-    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--runtime apptainer|gvisor] <claude|opencode|omp> [agent-args...]" >&2
-    exit 1
-}
+# shellcheck source=functions/argv.sh
+source "$FUNCTIONS_DIR/argv.sh"
+# shellcheck source=functions/sandbox_yml.sh
+source "$FUNCTIONS_DIR/sandbox_yml.sh"
+# shellcheck source=functions/environment.sh
+source "$FUNCTIONS_DIR/environment.sh"
+# shellcheck source=functions/binds.sh
+source "$FUNCTIONS_DIR/binds.sh"
+# shellcheck source=functions/git-mcp.sh
+source "$FUNCTIONS_DIR/git-mcp.sh"
+# shellcheck source=functions/agents.sh
+source "$FUNCTIONS_DIR/agents.sh"
 
-set_cli_env() {
-    local kv="$1" key val
-    if [[ "$kv" != *=* ]]; then
-        echo "--environment expects KEY=VALUE (got '$kv')" >&2
-        exit 1
-    fi
-    key="${kv%%=*}"
-    val="${kv#*=}"
-    case "$key" in
-        image) CLI_ENV_IMAGE="$val" ;;
-        dockerfile) CLI_ENV_DOCKERFILE="$val" ;;
-        preset) CLI_ENV_PRESET="$val" ;;
-        python_version) CLI_ENV_PYTHON_VERSION="$val" ;;
-        *)
-            echo "--environment: unknown key '$key' (expected image|dockerfile|preset|python_version)" >&2
-            exit 1
-            ;;
-    esac
-}
+# cleanup() (functions/git-mcp.sh) tears down the sidecar and any temporary
+# state. Registered before anything can create that state.
+trap cleanup EXIT
 
-
-CLI_BINDS=()
-
-# --- argv: pull out --project-dir, --environment, and the agent name, -----
-# --- forward the rest ------------------------------------------------------
-
-PROJECT_DIR="$(pwd)"
-AGENT=""
-ARGS=()
-CLI_ENV_IMAGE=""
-CLI_ENV_DOCKERFILE=""
-CLI_ENV_PRESET=""
-CLI_ENV_PYTHON_VERSION=""
-CLI_RUNTIME=""
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --project-dir)
-            [[ $# -ge 2 ]] || usage
-            PROJECT_DIR="$2"
-            shift 2
-            ;;
-        --project-dir=*)
-            PROJECT_DIR="${1#--project-dir=}"
-            shift
-            ;;
-        --environment)
-            [[ $# -ge 2 ]] || usage
-            set_cli_env "$2"
-            shift 2
-            ;;
-        --environment=*)
-            set_cli_env "${1#--environment=}"
-            shift
-            ;;
-        --runtime)
-            [[ $# -ge 2 ]] || usage
-            CLI_RUNTIME="$2"
-            shift 2
-            ;;
-        --runtime=*)
-            CLI_RUNTIME="${1#--runtime=}"
-            shift
-            ;;
-        --bind)
-            [[ $# -ge 2 ]] || usage
-            CLI_BINDS+=("$2")
-            shift 2
-            ;;
-        --bind=*)
-            CLI_BINDS+=("${1#--bind=}")
-            shift
-            ;;
-        claude|opencode|omp)
-            if [[ -z "$AGENT" ]]; then
-                AGENT="$1"
-            else
-                ARGS+=("$1")
-            fi
-            shift
-            ;;
-        *)
-            ARGS+=("$1")
-            shift
-            ;;
-    esac
-done
-
-[[ -n "$AGENT" ]] || usage
+parse_argv "$@"
 
 [[ -d "$PROJECT_DIR" ]] || { echo "Project dir not found: $PROJECT_DIR" >&2; exit 1; }
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 
-# --- resolve the execution environment from <project-dir>/sandbox.yml, ----
-# --- overridden per-key by --environment flags -----------------------------
-
 SANDBOX_YML="$PROJECT_DIR/sandbox.yml"
-ENV_IMAGE=""
-ENV_DOCKERFILE=""
-ENV_PRESET=""
-ENV_PYTHON_VERSION=""
-YML_RUNTIME=""
-YML_BINDS=()
-in_binds=0
-
-if [[ -f "$SANDBOX_YML" ]]; then
-    in_block=0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        # Optional top-level key (outside any block): isolation runtime.
-        if [[ "$line" =~ ^runtime:[[:space:]]*([A-Za-z0-9_.-]+) ]]; then
-            YML_RUNTIME="${BASH_REMATCH[1]}"
-        fi
-        if [[ "$line" =~ ^environment:[[:space:]]*(#.*)?$ ]]; then
-            in_block=1
-            continue
-        fi
-        # Optional top-level list (outside any block): additional binds.
-        if [[ "$line" =~ ^binds:[[:space:]]*(#.*)?$ ]]; then
-            in_binds=1
-            continue
-        fi
-        if [[ $in_binds -eq 1 ]]; then
-            if [[ "$line" =~ ^[[:space:]]+-[[:space:]]*(.*[^[:space:]])[[:space:]]*(#.*)?$ ]]; then
-                YML_BINDS+=("${BASH_REMATCH[1]}")
-                continue
-            elif [[ -n "$line" && ! "$line" =~ ^[[:space:]] ]]; then
-                in_binds=0
-            fi
-        fi
-        if [[ $in_block -eq 1 ]]; then
-            if [[ "$line" =~ ^[[:space:]]+([A-Za-z_]+):[[:space:]]*(.*)$ ]]; then
-                key="${BASH_REMATCH[1]}"
-                val="${BASH_REMATCH[2]}"
-                val="${val%%#*}"
-                val="$(sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//" <<<"$val")"
-                case "$key" in
-                    image) ENV_IMAGE="$val" ;;
-                    dockerfile) ENV_DOCKERFILE="$val" ;;
-                    preset) ENV_PRESET="$val" ;;
-                    python_version) ENV_PYTHON_VERSION="$val" ;;
-                esac
-                continue
-            elif [[ -n "$line" && ! "$line" =~ ^[[:space:]] ]]; then
-                in_block=0
-            fi
-        fi
-    done < "$SANDBOX_YML"
-fi
-
-ENV_IMAGE="${CLI_ENV_IMAGE:-$ENV_IMAGE}"
-ENV_DOCKERFILE="${CLI_ENV_DOCKERFILE:-$ENV_DOCKERFILE}"
-ENV_PRESET="${CLI_ENV_PRESET:-$ENV_PRESET}"
-ENV_PYTHON_VERSION="${CLI_ENV_PYTHON_VERSION:-$ENV_PYTHON_VERSION}"
-
-RUNTIME="${CLI_RUNTIME:-${YML_RUNTIME:-apptainer}}"
-case "$RUNTIME" in
-    apptainer|gvisor) ;;
-    *)
-        echo "--runtime/sandbox.yml runtime '$RUNTIME': unknown, expected apptainer|gvisor" >&2
-        exit 1
-        ;;
-esac
-
-ENV_PYTHON_VERSION="${ENV_PYTHON_VERSION:-3.13}"
-
-sanitize_tag() {
-    printf '%s' "$1" | tr -c 'A-Za-z0-9_.' '-' | sed -e 's/-\{2,\}/-/g' -e 's/^-//' -e 's/-$//'
-}
-
-# --- gVisor runtime prerequisites: runsc binary on PATH -------------------
-
-require_gvisor_runtime() {
-    command -v runsc >/dev/null 2>&1 || {
-        echo "runtime gvisor requires the gVisor 'runsc' binary on PATH (not found)." >&2
-        echo "Install it from https://gvisor.dev/docs/user_guide/install/ and re-run." >&2
-        exit 1
-    }
-}
-
-CUSTOM_DOCKERFILE=""
-BASE_IMAGE=""
-
-if [[ -n "$ENV_IMAGE" ]]; then
-    ENV_MODE="image"
-    BASE_IMAGE="$ENV_IMAGE"
-    ENV_TAG="image-$(sanitize_tag "$ENV_IMAGE")"
-elif [[ -n "$ENV_DOCKERFILE" ]]; then
-    ENV_MODE="dockerfile"
-    CUSTOM_DOCKERFILE="$ENV_DOCKERFILE"
-    [[ "$CUSTOM_DOCKERFILE" = /* ]] || CUSTOM_DOCKERFILE="$PROJECT_DIR/$CUSTOM_DOCKERFILE"
-    if [[ ! -f "$CUSTOM_DOCKERFILE" ]]; then
-        echo "environment.dockerfile '$ENV_DOCKERFILE' (from sandbox.yml/--environment) not found under $PROJECT_DIR" >&2
-        exit 1
-    fi
-    ENV_TAG="dockerfile-$(sha256sum "$CUSTOM_DOCKERFILE" | cut -c1-12)"
-else
-    ENV_MODE="preset"
-    ENV_PRESET="${ENV_PRESET:-uv}"
-    case "$ENV_PRESET" in
-        uv) BASE_IMAGE="ghcr.io/astral-sh/uv:python${ENV_PYTHON_VERSION}-bookworm-slim" ;;
-        python3.13) BASE_IMAGE="python:3.13-slim-bookworm" ;;
-        python) BASE_IMAGE="python:${ENV_PYTHON_VERSION}-slim-bookworm" ;;
-        *)
-            echo "environment.preset '$ENV_PRESET' (from sandbox.yml/--environment): unknown, expected uv|python|python3.13" >&2
-            exit 1
-            ;;
-    esac
-    ENV_TAG="preset-${ENV_PRESET}"
-fi
+parse_sandbox_yml
+resolve_environment
 
 SIF_IMAGE="$SANDBOX_DIR/$AGENT.$ENV_TAG.sif"
+GITMCP_SIF="$SANDBOX_DIR/gitmcp.sif"
+build_images
 
-
-if [[ "$RUNTIME" == "gvisor" ]]; then
-    require_gvisor_runtime
-fi
-
-# --- generate sandbox/Dockerfile from the template for this environment ---
-#
-# apptainer does not support ARG in FROM strings in Dockerfiles, so the
-# template's "$BASE_IMAGE"/"$AGENT" placeholders are substituted textually
-# rather than passed as --build-arg.
-
-generate_dockerfile() {
-    local template="$SANDBOX_DIR/Dockerfile.template"
-    local out="$SANDBOX_DIR/Dockerfile"
-    local placeholder_line head_part tail_part body
-
-    placeholder_line="$(grep -n '^FROM \$BASE_IMAGE AS base$' "$template" | head -n1 | cut -d: -f1)"
-    if [[ -z "$placeholder_line" ]]; then
-        echo "sandbox/Dockerfile.template: missing 'FROM \$BASE_IMAGE AS base' placeholder" >&2
-        exit 1
-    fi
-    head_part="$(sed -n "1,$((placeholder_line - 1))p" "$template")"
-    tail_part="$(sed -n "$((placeholder_line + 1)),\$p" "$template")"
-
-    if [[ "$ENV_MODE" == "dockerfile" ]]; then
-        # Splice the custom Dockerfile in as the "base" stage: its own last
-        # FROM becomes the thing the shared toolchain/uv layer builds on top
-        # of, so "dockerfile:" behaves like an implicit custom base image.
-        local last_from lineno content alias custom
-        last_from="$(grep -n '^FROM ' "$CUSTOM_DOCKERFILE" | tail -n1)"
-        if [[ -z "$last_from" ]]; then
-            echo "environment.dockerfile '$ENV_DOCKERFILE' has no FROM line" >&2
-            exit 1
-        fi
-        lineno="${last_from%%:*}"
-        content="${last_from#*:}"
-        custom="$(cat "$CUSTOM_DOCKERFILE")"
-        if [[ "$content" =~ AS[[:space:]]+([A-Za-z0-9_.-]+)[[:space:]]*$ ]]; then
-            alias="${BASH_REMATCH[1]}"
-            body="$custom"$'\n'"FROM $alias AS base"
-        else
-            body="$(printf '%s\n' "$custom" | sed "${lineno}s/\$/ AS base/")"
-        fi
-    else
-        body="FROM $BASE_IMAGE AS base"
-    fi
-
-    rm -f "$out"
-    {
-        printf '%s\n' "$head_part"
-        printf '%s\n' "$body"
-        printf '%s\n' "$tail_part"
-    } | sed "s/FROM \$AGENT AS/FROM $AGENT AS/g" > "$out"
-}
-
-if [ ! -f "$SIF_IMAGE" ]; then
-    generate_dockerfile
-    apptainer build --fakeroot \
-        --build-arg "USERNAME=${USER}" \
-        --build-arg "UID=$(id -u)" \
-        --build-arg "GID=$(id -g)" \
-        --build-arg "AGENT=$AGENT" \
-        "$SIF_IMAGE" "dockerfile:$SANDBOX_DIR"
-fi
 BINDS=(
     -B "$PROJECT_DIR"
 )
-# Additional binds from sandbox.yml ("binds:" list) and repeatable --bind
-# flags, validated and expanded (relative paths against the project dir,
-# "~/" against $HOME). Feeds both runtimes: apptainer gets the specs
-# verbatim via -B; run_gvisor translates the plain-path ones to --volume and
-# rejects option-bearing specs.
-for spec in "${YML_BINDS[@]}" "${CLI_BINDS[@]}"; do
-    # Strip a trailing "# comment" and surrounding blanks, then split
-    # SRC[:DST[:OPTS]] on the first two colons (same comment convention as
-    # the environment: block above).
-    spec="$(sed -e 's/[[:space:]]*#.*//' -e 's/[[:space:]]*$//' <<<"$spec")"
-    [[ -n "$spec" ]] || continue
-    src="${spec%%:*}"
-    rest="${spec#*:}"
-    [[ "$src" = ~* ]] && src="${src/#\~/$HOME}"
-    [[ "$src" = /* ]] || src="$PROJECT_DIR/$src"
-    dst=""
-    opts=""
-    if [[ "$rest" != "$spec" ]]; then
-        if [[ "$rest" == *:* ]]; then
-            dst="${rest%%:*}"
-            opts="${rest#*:}"
-        else
-            dst="$rest"
-        fi
-    fi
-    if [[ ! -e "$src" ]]; then
-        echo "bind source '$src' (from sandbox.yml binds:/--bind) does not exist" >&2
-        exit 1
-    fi
-    src="$(readlink -f "$src")"
-    if [[ -n "$dst" ]]; then
-        dst="${dst/#\~/$HOME}"
-        BINDS+=(-B "$src:$dst${opts:+:$opts}")
-    elif [[ -n "$opts" ]]; then
-        BINDS+=(-B "$src:$opts")
-    else
-        BINDS+=(-B "$src")
-    fi
-done
+resolve_extra_binds
 
-case "$AGENT" in
-    claude)
-        mkdir -p "$HOME/.claude" "$HOME/.config/claude"
-        touch "$HOME/.claude.json"
-        BINDS+=(
-            -B "$HOME/.claude"
-            -B "$HOME/.config/claude"
-            -B "$HOME/.claude.json"
-        )
-        RUN_CMD=(claude "${ARGS[@]}")
-        ;;
-    opencode)
-        mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode" \
-            "$HOME/.local/state/opencode" "$HOME/.opencode"
-        BINDS+=(
-            -B "$HOME/.config/opencode"
-            -B "$HOME/.local/share/opencode"
-            -B "$HOME/.local/state/opencode"
-            -B "$HOME/.opencode"
-        )
-        RUN_CMD=(opencode "${ARGS[@]}")
-        ;;
-    omp)
-        # oh-my-pi (can1357/oh-my-pi) keeps all config/auth/state under
-        # ~/.omp (e.g. ~/.omp/agent/config.yml, models.yml). Project-level
-        # session files live under .omp/ in the repo, already covered by
-        # the project-dir bind above.
-        # Source: https://github.com/can1357/oh-my-pi/blob/main/README.md
-        # and https://deepwiki.com/can1357/oh-my-pi/13-configuration-reference
-        mkdir -p "$HOME/.omp"
-        BINDS+=(
-            -B "$HOME/.omp"
-        )
-        RUN_CMD=(omp "${ARGS[@]}")
-        ;;
-esac
+# Masks every .git in the project tree read-only in BINDS and, when the
+# project root is a repository, starts the git MCP sidecar.
+start_git_sidecar
 
-# --- gVisor runtime: unpack the SIF and exec under runsc ------------------
-#
-# Security posture is kept identical to the apptainer invocation below:
-# only the project directory, $HOME, the per-agent config paths bound by
-# the case statement, and the additional binds from sandbox.yml
-# "binds:"/--bind are shared read-write; the host environment is not
-# propagated (a fixed minimal env is set instead, matching --containall);
-#
-# Mechanism, per gVisor docs (https://gvisor.dev/docs/user_guide/rootless/):
-# "runsc do" sets up a sandbox with the host filesystem mounted read-only
-# inside (with a writable overlay on top) and runs a command in it. Flags:
-#   --root    <dir>   container rootfs (here: the unpacked SIF contents)
-#   --cwd     <dir>   initial working directory (here: $PROJECT_DIR)
-#   --volume  SRC[:DST]  bind, repeatable; SRC==DST keeps identical paths
-#   --rootless       run without root (no sudo needed)
-# A rootless run needs no network namespace: runsc do defaults to host
-# networking, which matches apptainer's default (no network isolation).
-run_gvisor() {
-    local bundle
-    bundle="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-engine-runsc.XXXXXX")"
+configure_agent
 
-    # Unpack the SIF into a runsc-usable rootfs directory. There is no
-    # docker here: runsc do takes a plain rootfs (--root) rather than an
-    # OCI image, so the unpack has to produce a bare directory tree.
-    # "apptainer oci mount" would require root; the unprivileged path is
-    # "apptainer oci apply <image> <bundle>", which accepts a SIF as the
-    # source image and writes rootfs/ + config.json into the bundle.
-    if ! apptainer oci apply "$SIF_IMAGE" "$bundle"; then
-        echo "apptainer oci apply failed; unable to unpack $SIF_IMAGE for runsc" >&2
-        rm -rf "$bundle"
-        return 1
-    fi
-
-    local -a runsc_args=(
-        --rootless
-        --root "$bundle/rootfs"
-        --cwd "$PROJECT_DIR"
-        --volume "$HOME"
-    )
-    local i spec
-
-    # BINDS holds apptainer "-B src[:dest[:opts]]" specs. "runsc do
-    # --volume" accepts SRC[:DST] 1:1; a third field (apptainer bind
-    # options, e.g. :ro) has no runsc do equivalent, so those specs are
-    # rejected rather than silently degraded.
-    for ((i = 0; i < ${#BINDS[@]}; i++)); do
-        [[ "${BINDS[$i]}" == "-B" ]] || continue
-        spec="${BINDS[$((i + 1))]}"
-        case "$spec" in
-            *:*:*) # option field: unsupported by "runsc do --volume"
-                echo "gVisor runtime: unsupported bind spec '$spec' (expected SRC or SRC:DST)" >&2
-                rm -rf "$bundle"
-                exit 1
-                ;;
-        esac
-        runsc_args+=(--volume "$spec")
-    done
-
-    # --containall gives the container a clean environment; replicate that
-    # with a fixed minimal env instead of inheriting the host's.
-    env -i \
-        HOME="$HOME" \
-        TERM="${TERM:-xterm}" \
-        PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
-        runsc "${runsc_args[@]}" "${RUN_CMD[@]}"
-    local rc=$?
-    rm -rf "$bundle"
-    return "$rc"
-}
-
-if [[ "$RUNTIME" == "apptainer" ]]; then
-    apptainer exec --containall --no-home \
-        --cwd "$PROJECT_DIR" \
-        "${BINDS[@]}" \
-        --home "$HOME" \
-        --nv --writable-tmpfs \
-        "$SIF_IMAGE" \
-        "${RUN_CMD[@]}"
-else
-    run_gvisor
-fi
+apptainer exec --containall --no-home \
+    --cwd "$PROJECT_DIR" \
+    "${BINDS[@]}" \
+    "${AGENT_ENV[@]}" \
+    --home "$HOME" \
+    --nv --writable-tmpfs \
+    "$SIF_IMAGE" \
+    "${RUN_CMD[@]}"
