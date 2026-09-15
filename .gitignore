@@ -1,3 +1,4 @@
 /.agentbridge/
+/.idea/
 /sandbox/Dockerfile
 /sandbox/*.sif
