@@ -155,18 +155,23 @@ configure_agent() {
             )
             # agent/config.yml is only rewritten by an explicit `omp config
             # set`, never on startup, so read-only does not break launch.
-            # extensions/ and natives/ (native addons omp loads at
-            # startup) are likewise safe to mask. agent/AGENTS.md is the
-            # confirmed user-level instruction file (see omp's
+            # extensions/ is likewise safe to mask. natives/ (the
+            # ~180 MB pi_natives addon omp self-extracts on first run of a
+            # given version, into ~/.omp/natives/<version>/) is left
+            # read-write on purpose: masking it read-only breaks startup
+            # with an EROFS mkdir the moment the image's omp is upgraded to
+            # a version whose native addon the host has never extracted
+            # before (see notes/handoffs for the incident). agent/AGENTS.md
+            # is the confirmed user-level instruction file (see omp's
             # context-files doc: "~/.omp/agent/AGENTS.md" -- not
             # "~/.omp/AGENTS.md", which does not exist). Left read-write:
             # agent/*.db/-wal/-shm (continuously written),
             # agent/sessions/, agent/cache/, agent/terminal-sessions/,
             # agent/last-changelog-version, cache/, logs/, run/,
-            # gpu_cache.json, install-id.
+            # gpu_cache.json, install-id, natives/.
             for p in agent/config.yml agent/models.yml agent/mcp.json agent/.mcp.json \
                      agent/.env .env agent/agents agent/skills agent/tools agent/hooks \
-                     agent/commands extensions natives agent/AGENTS.md; do
+                     agent/commands extensions agent/AGENTS.md; do
                 bind_ro "$HOME/.omp/$p"
             done
             for p in "$HOME"/.omp/profiles/*/agent/config.yml \
