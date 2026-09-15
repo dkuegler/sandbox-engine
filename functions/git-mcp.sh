@@ -154,6 +154,8 @@ start_git_sidecar() {
     chmod 700 "$RUN_DIR"
     GIT_SIDECAR_NAME="git-sidecar-$$"
     GIT_MCP_SOCKET="$RUN_DIR/gitmcp.sock"
+    log_info "git sidecar: name=$GIT_SIDECAR_NAME socket=$GIT_MCP_SOCKET"
+
 
     # `instance start` runs the SIF's %startscript, which a plain
     # Dockerfile build (apptainer's dockerfile:/buildkit: bootstrap) has

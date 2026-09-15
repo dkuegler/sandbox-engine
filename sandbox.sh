@@ -10,13 +10,13 @@
 # and set as cwd.
 #
 # Implementation is split across functions/*.sh (sourced below):
+#   log.sh          -v/-vv verbosity helpers (log_info/log_debug/log_argv)
 #   argv.sh         --project-dir/--environment/--bind/agent argv parsing
 #   sandbox_yml.sh  <project-dir>/sandbox.yml parsing
 #   environment.sh  base-image resolution, Dockerfile generation, SIF build
 #   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
 #   git-mcp.sh       git MCP sidecar lifecycle (start/stop, .git ro mask)
 #   agents.sh       per-agent state binds, RUN_CMD, MCP config injection
-#
 # Project directory: defaults to the current working directory; override with
 # --project-dir DIR (accepted anywhere in argv, before or after the agent
 # name). sandbox.yml is looked up at the root of that directory.
@@ -104,7 +104,6 @@
 #   plus the real git dir a worktree/submodule .git file points at — is
 #   additionally bind-mounted READ-ONLY into the agent container. That is
 #   kernel-enforced, not a wrapper, so it also blocks writes from a
-#   self-installed git or any git library.
 #   self-installed git or any git library. The same walk covers every
 #   read-write extra bind (sandbox.yml binds: / --bind), not just the
 #   project dir, since a .git anywhere writable in the container is
@@ -118,6 +117,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SANDBOX_DIR="$SCRIPT_DIR/sandbox"
 FUNCTIONS_DIR="$SCRIPT_DIR/functions"
 
+# shellcheck source=functions/log.sh
+source "$FUNCTIONS_DIR/log.sh"
 # shellcheck source=functions/argv.sh
 source "$FUNCTIONS_DIR/argv.sh"
 # shellcheck source=functions/sandbox_yml.sh
@@ -139,10 +140,17 @@ parse_argv "$@"
 
 [[ -d "$PROJECT_DIR" ]] || { echo "Project dir not found: $PROJECT_DIR" >&2; exit 1; }
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+log_info "project dir: $PROJECT_DIR"
 
 SANDBOX_YML="$PROJECT_DIR/sandbox.yml"
+if [[ -f "$SANDBOX_YML" ]]; then
+    log_info "sandbox.yml: found at $SANDBOX_YML"
+else
+    log_info "sandbox.yml: not found (using defaults)"
+fi
 parse_sandbox_yml
 resolve_environment
+log_info "environment: mode=$ENV_MODE base_image=$BASE_IMAGE env_tag=$ENV_TAG"
 
 SIF_IMAGE="$SANDBOX_DIR/$AGENT.$ENV_TAG.sif"
 GITMCP_SIF="$SANDBOX_DIR/gitmcp.sif"
@@ -166,17 +174,33 @@ bind_ro "$SANDBOX_YML"
 start_git_sidecar
 
 configure_agent
+log_info "masks: ${GIT_MASK_COUNT:-0} .git path(s) read-only, ${#RO_MASKED[@]} read-only config bind(s)"
 
 # Only pass --nv/--rocm when the matching GPU stack looks present, so a
 # plain CPU host doesn't get apptainer probing for a driver that isn't
 # there. See resolve_gpu_flags() in functions/environment.sh.
 resolve_gpu_flags
 
-apptainer exec --containall --no-home \
-    --cwd "$PROJECT_DIR" \
-    "${BINDS[@]}" \
-    "${AGENT_ENV[@]}" \
-    --home "$HOME" \
-    ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} --writable-tmpfs \
-    "$SIF_IMAGE" \
+if [[ "$VERBOSE" -ge 2 ]]; then
+    for __bind_spec in "${BINDS[@]}"; do
+        [[ "$__bind_spec" == "-B" ]] && continue
+        log_debug "bind: $__bind_spec"
+    done
+    log_argv "AGENT_ENV" "${AGENT_ENV[@]}"
+    log_argv "GPU_ARGS" ${GPU_ARGS[@]+"${GPU_ARGS[@]}"}
+    log_argv "RUN_CMD" "${RUN_CMD[@]}"
+fi
+
+EXEC_ARGV=(
+    apptainer exec --containall --no-home
+    --cwd "$PROJECT_DIR"
+    "${BINDS[@]}"
+    "${AGENT_ENV[@]}"
+    --home "$HOME"
+    ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} --writable-tmpfs
+    "$SIF_IMAGE"
     "${RUN_CMD[@]}"
+)
+log_argv "apptainer exec argv" "${EXEC_ARGV[@]}"
+
+"${EXEC_ARGV[@]}"

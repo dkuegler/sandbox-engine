@@ -12,6 +12,7 @@ sanitize_tag() {
 # derives ENV_MODE (image|dockerfile|preset), BASE_IMAGE, CUSTOM_DOCKERFILE,
 # and ENV_TAG (used in the built SIF's filename).
 resolve_environment() {
+    log_debug "resolve_environment inputs: ENV_IMAGE=$ENV_IMAGE CLI_ENV_IMAGE=$CLI_ENV_IMAGE ENV_DOCKERFILE=$ENV_DOCKERFILE CLI_ENV_DOCKERFILE=$CLI_ENV_DOCKERFILE ENV_PRESET=$ENV_PRESET CLI_ENV_PRESET=$CLI_ENV_PRESET ENV_PYTHON_VERSION=$ENV_PYTHON_VERSION CLI_ENV_PYTHON_VERSION=$CLI_ENV_PYTHON_VERSION"
     ENV_IMAGE="${CLI_ENV_IMAGE:-$ENV_IMAGE}"
     ENV_DOCKERFILE="${CLI_ENV_DOCKERFILE:-$ENV_DOCKERFILE}"
     ENV_PRESET="${CLI_ENV_PRESET:-$ENV_PRESET}"
@@ -129,6 +130,9 @@ build_images() {
             --build-arg "GID=$(id -g)" \
             --build-arg "AGENT=$AGENT" \
             "$SIF_IMAGE" "dockerfile:$SANDBOX_DIR/agent"
+        log_info "agent image: $SIF_IMAGE (built)"
+    else
+        log_info "agent image: $SIF_IMAGE (reused)"
     fi
 
     if [ ! -f "$GITMCP_SIF" ]; then
@@ -137,6 +141,9 @@ build_images() {
             --build-arg "UID=$(id -u)" \
             --build-arg "GID=$(id -g)" \
             "$GITMCP_SIF" "dockerfile:$SANDBOX_DIR/gitmcp"
+        log_info "gitmcp image: $GITMCP_SIF (built)"
+    else
+        log_info "gitmcp image: $GITMCP_SIF (reused)"
     fi
 }
 

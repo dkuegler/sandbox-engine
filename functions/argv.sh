@@ -40,6 +40,7 @@ parse_argv() {
     CLI_BINDS=()
     ALLOW_EXTERNAL_BINDS=0
     ALLOW_EXTERNAL_GITDIR=0
+    VERBOSE=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -76,6 +77,24 @@ parse_argv() {
                 ;;
             --allow-external-gitdir)
                 ALLOW_EXTERNAL_GITDIR=1
+                shift
+            -v|--verbose)
+                # Position-scoped: only sandbox verbosity before the agent
+                # name is seen. `./sandbox.sh omp -v` is omp's own flag,
+                # not ours -- see the "-v"/"-vv" note in sandbox.sh's header.
+                if [[ -z "$AGENT" ]]; then
+                    VERBOSE=$((VERBOSE + 1))
+                else
+                    ARGS+=("$1")
+                fi
+                shift
+                ;;
+            -vv)
+                if [[ -z "$AGENT" ]]; then
+                    VERBOSE=$((VERBOSE + 2))
+                else
+                    ARGS+=("$1")
+                fi
                 shift
                 ;;
             claude|opencode|omp)
