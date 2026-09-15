@@ -104,12 +104,17 @@ generate_dockerfile() {
         body="FROM $BASE_IMAGE AS base"
     fi
 
+    # Same textual substitution as the $BASE_IMAGE splice above:
+    # apptainer's Dockerfile bootstrap does not evaluate ARG in FROM
+    # lines, so the agent stage selector is substituted here.
+    tail_part="${tail_part//FROM \$AGENT AS/FROM $AGENT AS}"
+
     rm -f "$out"
     {
         printf '%s\n' "$head_part"
         printf '%s\n' "$body"
         printf '%s\n' "$tail_part"
-    } | sed "s/FROM \$AGENT AS/FROM $AGENT AS/g" > "$out"
+    } > "$out"
 }
 
 # build_images: builds sandbox/<agent>.<env-tag>.sif and sandbox/gitmcp.sif
@@ -121,8 +126,13 @@ generate_dockerfile() {
 # file overrides it (conveyorPacker_buildkit.go: bk.context =
 # Header["from"], bk.filename defaults to "Dockerfile"). So the spec must
 # name a directory holding a file literally called Dockerfile.
+#
+# apptainer refuses to overwrite an existing SIF without --force, so a
+# rebuild removes the old file first; that also leaves no half-written
+# image behind if the build itself fails.
 build_images() {
-    if [ ! -f "$SIF_IMAGE" ]; then
+    if [[ "$REBUILD" -eq 1 || ! -f "$SIF_IMAGE" ]]; then
+        rm -f "$SIF_IMAGE"
         generate_dockerfile
         apptainer build --fakeroot \
             --build-arg "USERNAME=${USER:-$(id -un)}" \
@@ -135,7 +145,8 @@ build_images() {
         log_info "agent image: $SIF_IMAGE (reused)"
     fi
 
-    if [ ! -f "$GITMCP_SIF" ]; then
+    if [[ "$REBUILD" -eq 1 || ! -f "$GITMCP_SIF" ]]; then
+        rm -f "$GITMCP_SIF"
         apptainer build --fakeroot \
             --build-arg "USERNAME=${USER:-$(id -un)}" \
             --build-arg "UID=$(id -u)" \

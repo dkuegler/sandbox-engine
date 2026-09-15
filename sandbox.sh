@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Unified sandbox entrypoint. Usage:
-#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] <claude|opencode|omp> [agent-args...]
+#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] <claude|opencode|omp> [agent-args...]
 #
 # Builds sandbox/<agent>.<env-tag>.sif on first use (apptainer runtime) from
 # sandbox/Dockerfile, selecting the agent via --build-arg AGENT=<agent> and

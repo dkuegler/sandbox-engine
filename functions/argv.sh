@@ -3,7 +3,7 @@
 # option loop. Populates PROJECT_DIR, AGENT, ARGS, CLI_ENV_*, CLI_BINDS.
 
 usage() {
-    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] <claude|opencode|omp> [agent-args...]" >&2
+    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] <claude|opencode|omp> [agent-args...]" >&2
     exit 1
 }
 
@@ -41,6 +41,7 @@ parse_argv() {
     ALLOW_EXTERNAL_BINDS=0
     ALLOW_EXTERNAL_GITDIR=0
     VERBOSE=0
+    REBUILD=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -78,6 +79,7 @@ parse_argv() {
             --allow-external-gitdir)
                 ALLOW_EXTERNAL_GITDIR=1
                 shift
+                ;;
             -v|--verbose)
                 # Position-scoped: only sandbox verbosity before the agent
                 # name is seen. `./sandbox.sh omp -v` is omp's own flag,
@@ -95,6 +97,10 @@ parse_argv() {
                 else
                     ARGS+=("$1")
                 fi
+                shift
+                ;;
+            --rebuild)
+                REBUILD=1
                 shift
                 ;;
             claude|opencode|omp)
