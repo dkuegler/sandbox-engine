@@ -34,13 +34,29 @@ cleanup() {
     fi
 }
 
-# port_is_open PORT: true if something accepts a connection on loopback.
-# Opens the socket with exec and closes it again rather than `echo >`,
-# which would push a stray newline into the listening server.
-port_is_open() {
-    local port="$1"
-    (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && exec 3>&- 2>/dev/null
-    return $?
+# dump_sidecar_logs NAME: best-effort dump of the instance's stdout/stderr
+# on a readiness failure. There is no `apptainer instance logs` command
+# (the "instance" group is only list/run/start/stats/stop -- an earlier
+# version of this script called it anyway and always failed with a usage
+# error). Since Apptainer 1.1 `instance list --logs` prints the on-disk
+# log paths instead; parse and cat those.
+dump_sidecar_logs() {
+    local name="$1" listing errlog outlog
+    listing="$(apptainer instance list --logs "$name" 2>/dev/null || true)"
+    errlog="$(printf '%s\n' "$listing" | command grep -oE '/\S+\.err' | head -n1)"
+    outlog="$(printf '%s\n' "$listing" | command grep -oE '/\S+\.out' | head -n1)"
+    if [[ -n "$errlog" && -f "$errlog" ]]; then
+        echo "--- sidecar stderr ($errlog) ---" >&2
+        cat "$errlog" >&2
+    fi
+    if [[ -n "$outlog" && -f "$outlog" ]]; then
+        echo "--- sidecar stdout ($outlog) ---" >&2
+        cat "$outlog" >&2
+    fi
+    if [[ -z "$errlog$outlog" ]]; then
+        echo "note: could not locate sidecar log files via 'apptainer instance list --logs $name'" >&2
+        [[ -n "$listing" ]] && printf '%s\n' "$listing" >&2
+    fi
 }
 
 # resolve_git_dir PATH: echoes the real git directory for a .git entry.
@@ -153,9 +169,8 @@ start_git_sidecar() {
         sleep 0.2
     done
     if [[ "$ready" -ne 1 ]]; then
-        echo "git MCP sidecar did not become ready within 10s on 127.0.0.1:$GIT_MCP_PORT" >&2
-        apptainer instance logs "$GIT_SIDECAR_NAME" >&2 2>/dev/null || true
         echo "git MCP sidecar did not create $GIT_MCP_SOCKET within 10s" >&2
+        dump_sidecar_logs "$GIT_SIDECAR_NAME"
         exit 1
     fi
 }
