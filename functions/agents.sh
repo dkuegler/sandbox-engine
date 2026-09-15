@@ -1,14 +1,20 @@
 #!/bin/bash
 # Per-agent config: bind mounts for each agent's persistent state, the
-# RUN_CMD to exec, and (when GIT_MCP_URL is set) the agent-specific MCP
-# config wiring so it can reach the git sidecar. See the per-agent table
-# in the project plan for the source of each shape:
-#   claude:   --mcp-config <file> --strict-mcp-config
-#   opencode: OPENCODE_CONFIG=<path> env var (mcp key, not mcpServers)
-#   omp:      <project-dir>/.omp/mcp.json (auto-discovered)
+# RUN_CMD to exec, and (when GIT_MCP_SOCKET is set) the agent-specific MCP
+# config wiring so it can reach the git sidecar. Every agent spawns the
+# sidecar as a *local* MCP server via `nc -U <socket>`: nc just relays its
+# stdin/stdout to the Unix socket the sidecar listens on, which is bound
+# into this container from the same RUN_DIR the sidecar wrote it into.
+# There is no network hop and nothing to authenticate -- the socket
+# file's own permissions (0600, in a 0700 RUN_DIR) are the access
+# control. Per-agent config shapes for a local/stdio server:
+#   claude:   --mcp-config <file> --strict-mcp-config; {"type":"stdio","command","args"}
+#   opencode: OPENCODE_CONFIG=<path> env var; mcp.<name> = {"type":"local","command":[...]}
+#   omp:      <project-dir>/.omp/mcp.json (auto-discovered); {"command","args"}
 
-# write_mcp_config PATH JSON: create the file with 0600 *before* writing,
-# so the bearer token it carries is never briefly world-readable.
+# write_mcp_config PATH JSON: create the file with 0600 *before* writing.
+# No secret travels through these files any more (the git server has no
+# token), but the RUN_DIR paths it names are still nobody else's business.
 write_mcp_config() {
     local path="$1" body="$2"
     : > "$path"
@@ -29,11 +35,11 @@ configure_agent() {
                 -B "$HOME/.claude.json"
             )
             RUN_CMD=(claude "${ARGS[@]}")
-            if [[ -n "$GIT_MCP_URL" ]]; then
+            if [[ -n "$GIT_MCP_SOCKET" ]]; then
                 local mcp_config_file="$RUN_DIR/claude-mcp.json"
                 write_mcp_config "$mcp_config_file" \
-                    "{\"mcpServers\":{\"git\":{\"type\":\"http\",\"url\":\"$GIT_MCP_URL\",\"headers\":{\"Authorization\":\"Bearer $SESSION_TOKEN\"}}}}"
-                BINDS+=(-B "$mcp_config_file")
+                    "{\"mcpServers\":{\"git\":{\"type\":\"stdio\",\"command\":\"nc\",\"args\":[\"-U\",\"$GIT_MCP_SOCKET\"]}}}"
+                BINDS+=(-B "$RUN_DIR")
                 RUN_CMD=(claude --mcp-config "$mcp_config_file" --strict-mcp-config "${ARGS[@]}")
             fi
             ;;
@@ -47,11 +53,11 @@ configure_agent() {
                 -B "$HOME/.opencode"
             )
             RUN_CMD=(opencode "${ARGS[@]}")
-            if [[ -n "$GIT_MCP_URL" ]]; then
+            if [[ -n "$GIT_MCP_SOCKET" ]]; then
                 local mcp_config_file="$RUN_DIR/opencode-mcp.json"
                 write_mcp_config "$mcp_config_file" \
-                    "{\"\$schema\":\"https://opencode.ai/config.json\",\"mcp\":{\"git\":{\"type\":\"remote\",\"url\":\"$GIT_MCP_URL\",\"headers\":{\"Authorization\":\"Bearer $SESSION_TOKEN\"},\"enabled\":true}}}"
-                BINDS+=(-B "$mcp_config_file")
+                    "{\"\$schema\":\"https://opencode.ai/config.json\",\"mcp\":{\"git\":{\"type\":\"local\",\"command\":[\"nc\",\"-U\",\"$GIT_MCP_SOCKET\"],\"enabled\":true}}}"
+                BINDS+=(-B "$RUN_DIR")
                 AGENT_ENV+=(--env "OPENCODE_CONFIG=$mcp_config_file")
             fi
             ;;
@@ -67,20 +73,19 @@ configure_agent() {
                 -B "$HOME/.omp"
             )
             RUN_CMD=(omp "${ARGS[@]}")
-            if [[ -n "$GIT_MCP_URL" ]]; then
+            if [[ -n "$GIT_MCP_SOCKET" ]]; then
                 # omp auto-discovers <project>/.omp/mcp.json, which lives
-                # inside the user's repository. Writing the bearer token
+                # inside the user's repository. Writing our own config
                 # there directly would clobber a config the user may
-                # already have and would leave a live token behind in the
-                # working tree (and in `git status`) after the run. So the
-                # real file is written to RUN_DIR and bind-mounted over
-                # that path for the lifetime of the container; any
-                # bind point we had to create is removed by cleanup().
+                # already have. So the real file is written to RUN_DIR
+                # and bind-mounted over that path for the lifetime of the
+                # container; any bind point we had to create is removed
+                # by cleanup().
                 local mcp_config_file="$RUN_DIR/omp-mcp.json"
                 local omp_dir="$PROJECT_DIR/.omp"
                 local omp_target="$omp_dir/mcp.json"
                 write_mcp_config "$mcp_config_file" \
-                    "{\"mcpServers\":{\"git\":{\"type\":\"http\",\"url\":\"$GIT_MCP_URL\",\"headers\":{\"Authorization\":\"Bearer $SESSION_TOKEN\"}}}}"
+                    "{\"mcpServers\":{\"git\":{\"command\":\"nc\",\"args\":[\"-U\",\"$GIT_MCP_SOCKET\"]}}}"
                 if [[ ! -d "$omp_dir" ]]; then
                     mkdir -p "$omp_dir"
                     OMP_MCP_DIR_CREATED="$omp_dir"
@@ -89,7 +94,7 @@ configure_agent() {
                     : > "$omp_target"
                     OMP_MCP_PLACEHOLDER="$omp_target"
                 fi
-                BINDS+=(-B "$mcp_config_file:$omp_target:ro")
+                BINDS+=(-B "$mcp_config_file:$omp_target:ro" -B "$RUN_DIR")
             fi
             ;;
     esac

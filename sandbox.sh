@@ -73,13 +73,19 @@
 #   The agent image deliberately stays clean of a git binary. All git
 #   access goes through a separate sidecar container (sandbox/gitmcp.sif,
 #   built from sandbox/gitmcp/Dockerfile) that is exposed to the agent as
-#   an MCP server over loopback HTTP (bearer-token authenticated, token
-#   minted fresh per run and passed via APPTAINERENV_* so it never appears
-#   in the world-readable /proc/<pid>/cmdline). It exposes only read-only
-#   tools (git_status, git_log, git_diff, git_show, git_blame, git_branch,
-#   git_ls_remote); see sandbox/git-mcp-server.py. The project directory is
-#   bound READ-ONLY into the sidecar too, since no exposed tool writes.
-#   The sidecar is started before the agent and stopped on exit.
+#   a local MCP server: the agent spawns `nc -U <socket>` (see
+#   functions/agents.sh), which relays its stdio to a Unix domain socket
+#   the sidecar created in a per-run RUN_DIR (mode 0700, socket mode
+#   0600) that is bind-mounted into both containers. There is no network
+#   listener and no token — an `apptainer instance` shares the host's
+#   network namespace (--net needs root), so a TCP listener would be
+#   reachable by every local process regardless of any bearer token; the
+#   socket file's own permissions are the access control instead. It
+#   exposes only read-only tools (git_status, git_log, git_diff,
+#   git_show, git_blame, git_branch, git_ls_remote); see
+#   sandbox/gitmcp/git-mcp-server.py. The project directory is bound
+#   READ-ONLY into the sidecar too, since no exposed tool writes. The
+#   sidecar is started before the agent and stopped on exit.
 #
 #   As defense in depth (an agent could still `apt install`/`curl` its own
 #   git binary given network + package-manager access), every .git in the

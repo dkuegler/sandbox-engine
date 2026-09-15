@@ -25,8 +25,12 @@ ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
 LABEL agent="${AGENT}"
 
+# netcat-openbsd provides `nc -U`, the forwarder every agent's git MCP
+# config spawns to bridge its stdio to the sidecar's Unix socket (see
+# functions/agents.sh); it must be present regardless of which
+# environment preset/image/dockerfile the project selects.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates gnupg poppler-utils imagemagick \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg poppler-utils imagemagick netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 FROM base AS claude
