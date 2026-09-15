@@ -3,11 +3,13 @@
 # Unified sandbox entrypoint. Usage:
 #   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] <claude|opencode|omp> [agent-args...]
 #
-# Builds sandbox/<agent>.<env-tag>.sif on first use (apptainer runtime) from
-# sandbox/Dockerfile, selecting the agent via --build-arg AGENT=<agent> and
-# the base image per the project's execution environment, see below. The
-# agent is then exec'd inside it, with the project directory bind-mounted
-# and set as cwd.
+# Builds "<agent>.<env-tag>.sif" and "gitmcp.sif" on first use (apptainer
+# runtime) under $SANDBOX_ENGINE_IMAGE_DIR (default: $HOME/.apptainer/images;
+# override with the SANDBOX_ENGINE_IMAGE_DIR env var) from sandbox/Dockerfile,
+# selecting the agent via --build-arg AGENT=<agent> and the base image per
+# the project's execution environment, see below. The agent is then exec'd
+# inside it, with the project directory bind-mounted and set as cwd. Pass
+# --rebuild to force rebuilding both SIFs even if they already exist.
 #
 # Implementation is split across functions/*.sh (sourced below):
 #   log.sh          -v/-vv verbosity helpers (log_info/log_debug/log_argv)
@@ -152,8 +154,11 @@ parse_sandbox_yml
 resolve_environment
 log_info "environment: mode=$ENV_MODE base_image=$BASE_IMAGE env_tag=$ENV_TAG"
 
-SIF_IMAGE="$SANDBOX_DIR/$AGENT.$ENV_TAG.sif"
-GITMCP_SIF="$SANDBOX_DIR/gitmcp.sif"
+# SIFs are build artefacts, not source: keep them out of the checkout.
+IMAGE_DIR="${SANDBOX_ENGINE_IMAGE_DIR:-$HOME/.apptainer/images}"
+mkdir -p "$IMAGE_DIR"
+SIF_IMAGE="$IMAGE_DIR/$AGENT.$ENV_TAG.sif"
+GITMCP_SIF="$IMAGE_DIR/gitmcp.sif"
 build_images
 
 BINDS=(

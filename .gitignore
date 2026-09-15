@@ -1,5 +1,4 @@
 /.agentbridge/
 /.idea/
 /sandbox/agent/Dockerfile
-/sandbox/*.sif
 /.audit/

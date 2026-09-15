@@ -117,8 +117,9 @@ generate_dockerfile() {
     } > "$out"
 }
 
-# build_images: builds sandbox/<agent>.<env-tag>.sif and sandbox/gitmcp.sif
-# on first use. Requires SIF_IMAGE/GITMCP_SIF to be set.
+# build_images: builds $SIF_IMAGE and $GITMCP_SIF on first use, or
+# unconditionally when REBUILD=1 (set by --rebuild; see functions/argv.sh).
+# Requires SIF_IMAGE/GITMCP_SIF to be set.
 #
 # apptainer's "dockerfile:" bootstrap (an alias for "buildkit:", see
 # internal/pkg/build/conveyorPacker.go) takes a build CONTEXT DIRECTORY,
