@@ -217,6 +217,31 @@ TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
 
 # Belt-and-braces: nothing validated above can produce a leading "-" past
 # the constants chosen in this file, so any such element is a bug here.
+#
+# Command-scope config (GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/
+# GIT_CONFIG_VALUE_<n>) is git's highest-precedence *protected* scope, so
+# these neutralise the equivalent keys in the mounted global config
+# (--gitconfig below) rather than being overridden by it.
+#
+# credential.helper and core.sshCommand are deliberately NOT neutralised
+# here: they are the reason to mount the host config at all -- they are
+# what lets git_ls_remote reach a private remote -- and git's own trust
+# model treats the user's global config as trusted (git-config(5),
+# "Protected configuration").
+_GIT_CONFIG_OVERRIDES = {
+    # git_status would otherwise run this command against an
+    # agent-controlled worktree.
+    "core.fsmonitor": "false",
+    # Nothing here should open an editor.
+    "core.editor": "false",
+    # Empty, not "false": prevents a credential prompt from hanging the
+    # 30s subprocess timeout.
+    "core.askpass": "",
+    # No signing path is exposed.
+    "gpg.program": "false",
+    # Not serving fetches; a hook here would be pure attack surface.
+    "uploadpack.packObjectsHook": "",
+}
 _GIT_ENV = {
     "PATH": "/usr/bin:/bin",
     "HOME": "/nonexistent",
@@ -225,11 +250,18 @@ _GIT_ENV = {
     "GIT_OPTIONAL_LOCKS": "0",
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_CONFIG_NOSYSTEM": "1",
+    # Overridden by main() to the --gitconfig path when the host has a
+    # global config bind-mounted in; /dev/null otherwise (no identity).
     "GIT_CONFIG_GLOBAL": "/dev/null",
     # ext:: is already "never" by default; be explicit rather than rely on
     # the default staying that way.
     "GIT_ALLOW_PROTOCOL": "http:https:ssh:git",
+    "GIT_CONFIG_COUNT": str(len(_GIT_CONFIG_OVERRIDES)),
 }
+for _i, (_k, _v) in enumerate(_GIT_CONFIG_OVERRIDES.items()):
+    _GIT_ENV[f"GIT_CONFIG_KEY_{_i}"] = _k
+    _GIT_ENV[f"GIT_CONFIG_VALUE_{_i}"] = _v
+del _i, _k, _v
 
 
 def _git(repo, argv):
@@ -377,11 +409,28 @@ class Handler(socketserver.StreamRequestHandler):
         )
 
 
+def _apply_gitconfig(gitconfig_path):
+    """When the host's global git config was bind-mounted in (--gitconfig),
+    point git at it; otherwise _GIT_ENV's default (/dev/null) stands,
+    keeping the sidecar with no identity -- unchanged from before this
+    option existed.
+    """
+    if gitconfig_path:
+        _GIT_ENV["GIT_CONFIG_GLOBAL"] = gitconfig_path
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
     parser.add_argument("--socket", required=True, help="Unix domain socket path to listen on")
+    parser.add_argument(
+        "--gitconfig",
+        default=None,
+        help="path to a read-only bind-mounted host git global config (omitted when the host has none)",
+    )
     args = parser.parse_args()
+
+    _apply_gitconfig(args.gitconfig)
 
     # A worktree/submodule checkout has .git as a FILE, not a directory.
     if not os.path.exists(os.path.join(args.repository, ".git")):

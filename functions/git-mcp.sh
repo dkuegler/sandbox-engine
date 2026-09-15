@@ -80,21 +80,37 @@ resolve_git_dir() {
     [[ -n "$target" && -e "$target" ]] && printf '%s\n' "$target"
 }
 
-# mask_git_readonly: appends a read-only bind for every .git in the
-# project tree (top level, submodules, nested repositories) plus the real
-# git directory each one points at.
+# git_dir_visible PATH ROOTS...: true if PATH is at or under any of the
+# given roots -- i.e. already visible in the container without needing
+# its own extra bind. Shared by mask_git_readonly's containment check
+# and its caller so both agree on what "inside the sandbox" means.
+git_dir_visible() {
+    local p="$1" root
+    shift
+    for root in "$@"; do
+        [[ "$p" == "$root" || "$p" == "$root"/* ]] && return 0
+    done
+    return 1
+}
+
+# mask_git_readonly: appends a read-only bind for every .git under the
+# project tree and every read-write extra bind (top level, submodules,
+# nested repositories) plus the real git directory each one points at.
 #
 # apptainer sorts mount points by destination depth, shallowest first
 # (PointList.Less/Sort in internal/pkg/util/fs/mount/mount_linux.go), so
-# the shallow read-write project-dir bind lands before these deeper
-# read-only binds and the kernel then enforces the boundary regardless of
-# what tries to write .git inside the container.
+# the shallow read-write project-dir/extra-bind mounts land before these
+# deeper read-only binds and the kernel then enforces the boundary
+# regardless of what tries to write .git inside the container. A
+# read-only extra bind needs no mask of its own (the kernel already
+# refuses the write), and a source inside the project dir is already
+# covered by the project-dir walk.
 #
-# This walks the whole project tree once per run (`find` cannot know
-# where a .git might be without looking), which is the dominant cost of
-# every invocation on a large tree and only gets worse as sandbox.yml/
-# --bind add more trees to cover (see the TODO below). The elapsed time
-# is always reported so that cost is visible instead of silent.
+# This walks each root once per run (`find` cannot know where a .git
+# might be without looking), which is the dominant cost of every
+# invocation on a large tree and grows with the number of read-write
+# extra binds (sandbox.yml binds:/--bind) sandbox.sh covers. The elapsed
+# time is reported per root so that cost is visible instead of silent.
 #
 # Caching the result across runs was considered and rejected: this is
 # the sole enforcement point for a security boundary (F8), and a cache
@@ -108,29 +124,47 @@ resolve_git_dir() {
 # be safe, only appear to be. There is no way to know "nothing changed"
 # without a walk at least as expensive as the one being avoided.
 mask_git_readonly() {
-    local entry real start_ts end_ts elapsed
+    local entry real root start_ts end_ts elapsed j
     local -a masked=()
+    local -a roots=("$PROJECT_DIR")
+    local -a extra_srcs=(${EXTRA_BIND_SRCS[@]+"${EXTRA_BIND_SRCS[@]}"})
+    local -a extra_ro=(${EXTRA_BIND_RO[@]+"${EXTRA_BIND_RO[@]}"})
+    for ((j = 0; j < ${#extra_srcs[@]}; j++)); do
+        [[ "${extra_ro[$j]}" -eq 1 ]] && continue
+        [[ "${extra_srcs[$j]}" == "$PROJECT_DIR" || "${extra_srcs[$j]}" == "$PROJECT_DIR"/* ]] && continue
+        roots+=("${extra_srcs[$j]}")
+    done
 
-    start_ts="$(date +%s.%N)"
-    while IFS= read -r entry; do
-        [[ -n "$entry" ]] || continue
-        BINDS+=(-B "$entry:$entry:ro")
-        masked+=("$entry")
-        real="$(resolve_git_dir "$entry")"
-        # A gitdir outside the project dir is not covered by the
-        # project-dir bind, so only mask it when it is actually visible
-        # in the container.
-        if [[ -n "$real" && "$real" != "$entry" && "$real" == "$PROJECT_DIR"/* ]]; then
-            BINDS+=(-B "$real:$real:ro")
-            masked+=("$real")
-        elif [[ -n "$real" && "$real" != "$entry" ]]; then
-            echo "note: git dir $real lies outside $PROJECT_DIR and is not mounted into the sandbox" >&2
-        fi
-    done < <(find "$PROJECT_DIR" -mindepth 1 -name .git -prune -print 2>/dev/null)
-    end_ts="$(date +%s.%N)"
-    elapsed="$(awk -v a="$start_ts" -v b="$end_ts" 'BEGIN { printf "%.3f", b - a }')"
+    for root in "${roots[@]}"; do
+        start_ts="$(date +%s.%N)"
+        while IFS= read -r entry; do
+            [[ -n "$entry" ]] || continue
+            BINDS+=(-B "$entry:$entry:ro")
+            masked+=("$entry")
+            real="$(resolve_git_dir "$entry")"
+            # A gitdir outside every bound tree is not covered by any
+            # read-write bind, so only mask it when it is actually
+            # visible in the container -- or explicitly opted into.
+            if [[ -n "$real" && "$real" != "$entry" ]] && git_dir_visible "$real" "${roots[@]}"; then
+                BINDS+=(-B "$real:$real:ro")
+                masked+=("$real")
+            elif [[ -n "$real" && "$real" != "$entry" ]]; then
+                if [[ "${ALLOW_EXTERNAL_GITDIR:-0}" -eq 1 ]]; then
+                    BINDS+=(-B "$real:$real:ro")
+                    masked+=("$real")
+                    echo "note: mounting external git dir $real read-only (--allow-external-gitdir)" >&2
+                else
+                    echo "note: git dir $real lies outside the bound trees and is not mounted into the sandbox; pass --allow-external-gitdir to mount it read-only" >&2
+                fi
+            fi
+        done < <(find "$root" -mindepth 1 -name .git -prune -print 2>/dev/null)
+        end_ts="$(date +%s.%N)"
+        elapsed="$(awk -v a="$start_ts" -v b="$end_ts" 'BEGIN { printf "%.3f", b - a }')"
+        echo "git: scanned $root for .git entries in ${elapsed}s" >&2
+        log_debug "find root: $root (${elapsed}s)"
+    done
 
-    echo "git: scanned $PROJECT_DIR for .git entries in ${elapsed}s" >&2
+    GIT_MASK_COUNT=${#masked[@]}
     if [[ ${#masked[@]} -gt 0 ]]; then
         echo "git: masking ${#masked[@]} path(s) read-only in the sandbox: ${masked[*]}" >&2
     fi
@@ -152,10 +186,23 @@ start_git_sidecar() {
 
     RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-engine.XXXXXX")"
     chmod 700 "$RUN_DIR"
-    GIT_SIDECAR_NAME="git-sidecar-$$"
+    # mktemp's XXXXXX suffix is what makes RUN_DIR unique per run; $$ is
+    # not (PIDs are reused, and two concurrent invocations of this script
+    # can share one). apptainer instance names are global per user, so a
+    # collision both fails `instance run` for the second run and makes
+    # this script's cleanup() stop the *other* run's sidecar.
+    GIT_SIDECAR_NAME="git-sidecar-${RUN_DIR##*.}"
     GIT_MCP_SOCKET="$RUN_DIR/gitmcp.sock"
     log_info "git sidecar: name=$GIT_SIDECAR_NAME socket=$GIT_MCP_SOCKET"
 
+    # git's own global-config search order, minus the system file: an
+    # explicit GIT_CONFIG_GLOBAL wins, then XDG, then the classic
+    # dotfile. Only the host's *global* config is ever considered here --
+    # nothing project- or system-scoped.
+    local GIT_HOST_CONFIG="" c
+    for c in "${GIT_CONFIG_GLOBAL:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/git/config" "$HOME/.gitconfig"; do
+        if [[ -n "$c" && -f "$c" ]]; then GIT_HOST_CONFIG="$c"; break; fi
+    done
 
     # `instance start` runs the SIF's %startscript, which a plain
     # Dockerfile build (apptainer's dockerfile:/buildkit: bootstrap) has
@@ -172,16 +219,34 @@ start_git_sidecar() {
     # tool this server exposes is read-only, so nothing in the sidecar
     # needs write access either. Exposing a mutating tool later means
     # flipping this bind back to rw for that tool's sake, deliberately.
+    #
+    # The host's global git config, if any, is bound read-only at a
+    # fixed in-container path (never the host path itself, which stays
+    # out of both the sidecar's argv and the config's own view) and the
+    # server is told where to find it with --gitconfig. include.path/
+    # includeIf targets inside that file point at host paths that are
+    # not mounted; git silently ignores a missing include (git-config(5)),
+    # so this only degrades to "the included settings are absent", never
+    # an error. Omitted entirely when the host has no global config, so
+    # the sidecar keeps today's no-identity behaviour.
+    local -a git_instance_binds=(-B "$PROJECT_DIR:$PROJECT_DIR:ro" -B "$RUN_DIR")
+    local -a git_server_args=(--repository "$PROJECT_DIR" --socket "$GIT_MCP_SOCKET")
+    if [[ -n "$GIT_HOST_CONFIG" ]]; then
+        git_instance_binds+=(-B "$GIT_HOST_CONFIG:/run/gitconfig:ro")
+        git_server_args+=(--gitconfig /run/gitconfig)
+    fi
+
+    log_argv "apptainer instance run argv" \
+        apptainer instance run --containall --writable-tmpfs \
+        "${git_instance_binds[@]}" "$GITMCP_SIF" "$GIT_SIDECAR_NAME" "${git_server_args[@]}"
+
     apptainer instance run \
         --containall --writable-tmpfs \
-        -B "$PROJECT_DIR:$PROJECT_DIR:ro" \
-        -B "$RUN_DIR" \
+        "${git_instance_binds[@]}" \
         "$GITMCP_SIF" \
         "$GIT_SIDECAR_NAME" \
-        --repository "$PROJECT_DIR" --socket "$GIT_MCP_SOCKET"
+        "${git_server_args[@]}"
 
-    # Wait for the sidecar to accept connections before handing the agent
-    # an MCP config that points at it.
     # Wait for the sidecar to create and bind its socket before handing
     # the agent an MCP config that points at it.
     local ready=0 _i
