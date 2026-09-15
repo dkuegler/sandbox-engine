@@ -43,13 +43,18 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && ln -sf "$(command -v claude)" /usr/local/bin/claude
 
 FROM base AS opencode
-# opencode: curl install script.
+# opencode: curl install script. opencode.ai/install.sh (used until this
+# comment was updated) now 404s -- the project moved its installer to
+# /v2/install (opencode.ai/install redirects to a moving `dev`-branch raw
+# file on GitHub, not something to pin a build to). Verified 2026-09-15:
+# https://opencode.ai/v2/install returns 200 and still sets
+# INSTALL_DIR=$HOME/.opencode/bin, so the same sed override applies.
 # NOTE: the `&&` matters. Without it the line-continuation folds the curl
 # invocation into `export`'s argument list, the pipeline reads empty
 # input, the RUN layer still exits 0, and the image ships without an
 # opencode binary.
 RUN export HOME="/usr/local" \
-    && curl -fsSL https://opencode.ai/install.sh \
+    && curl -fsSL https://opencode.ai/v2/install \
         | sed 's|INSTALL_DIR=\$HOME/.opencode/bin|INSTALL_DIR=/usr/local/opencode/bin|' \
         | bash \
     && test -x /usr/local/opencode/bin/opencode
