@@ -33,6 +33,10 @@ resolve_environment() {
             echo "environment.dockerfile '$ENV_DOCKERFILE' (from sandbox.yml/--environment) not found under $PROJECT_DIR" >&2
             exit 1
         fi
+        if [[ "$CUSTOM_DOCKERFILE" != *"Dockerfile" ]]; then
+            echo "environment.dockerfile '$ENV_DOCKERFILE' (from sandbox.yml/--environment) is not named 'Dockerfile'" >&2
+            exit 1
+        fi
         # sandbox.yml ships with the project, so it is as trustworthy as
         # the code being worked on: keep it from pulling an arbitrary host
         # file (via "../.." or an absolute path) into the image build.
@@ -58,23 +62,23 @@ resolve_environment() {
     fi
 }
 
-# generate_dockerfile: substitutes sandbox/Dockerfile.template's
-# "$BASE_IMAGE"/"$AGENT" placeholders textually into sandbox/Dockerfile,
+# generate_dockerfile: substitutes sandbox/agent/Dockerfile.template's
+# "$BASE_IMAGE"/"$AGENT" arguments textually into sandbox/agent/Dockerfile,
 # since apptainer's Dockerfile bootstrap does not evaluate ARG in FROM
 # lines. In dockerfile mode, splices the custom Dockerfile in as the
 # "base" stage.
 generate_dockerfile() {
-    local template="$SANDBOX_DIR/Dockerfile.template"
-    local out="$SANDBOX_DIR/Dockerfile"
-    local placeholder_line head_part tail_part body
+    local template="$SANDBOX_DIR/agent/Dockerfile.template"
+    local out="$SANDBOX_DIR/agent/Dockerfile"
+    local baseimage_line head_part tail_part body
 
-    placeholder_line="$(grep -n '^FROM \$BASE_IMAGE AS base$' "$template" | head -n1 | cut -d: -f1)"
-    if [[ -z "$placeholder_line" ]]; then
-        echo "sandbox/Dockerfile.template: missing 'FROM \$BASE_IMAGE AS base' placeholder" >&2
+    baseimage_line="$(grep -n '^FROM \$BASE_IMAGE AS base$' "$template" | head -n1 | cut -d: -f1)"
+    if [[ -z "$baseimage_line" ]]; then
+        echo "sandbox/agent/Dockerfile.template: missing 'FROM \$BASE_IMAGE AS base' baseimage line" >&2
         exit 1
     fi
-    head_part="$(sed -n "1,$((placeholder_line - 1))p" "$template")"
-    tail_part="$(sed -n "$((placeholder_line + 1)),\$p" "$template")"
+    head_part="$(sed -n "1,$((baseimage_line - 1))p" "$template")"
+    tail_part="$(sed -n "$((baseimage_line + 1)),\$p" "$template")"
 
     if [[ "$ENV_MODE" == "dockerfile" ]]; then
         # Splice the custom Dockerfile in as the "base" stage: its own last
@@ -115,11 +119,7 @@ generate_dockerfile() {
 # and the recipe filename inside it is fixed to "Dockerfile" unless a def
 # file overrides it (conveyorPacker_buildkit.go: bk.context =
 # Header["from"], bk.filename defaults to "Dockerfile"). So the spec must
-# name a directory holding a file literally called Dockerfile -- pointing
-# it at sandbox/gitmcp.Dockerfile makes buildkit look for
-# sandbox/gitmcp.Dockerfile/Dockerfile and fail. The sidecar therefore
-# gets a throwaway context directory assembled here, which also gives
-# COPY git-mcp-server.py something to copy from.
+# name a directory holding a file literally called Dockerfile.
 build_images() {
     if [ ! -f "$SIF_IMAGE" ]; then
         generate_dockerfile
@@ -128,15 +128,14 @@ build_images() {
             --build-arg "UID=$(id -u)" \
             --build-arg "GID=$(id -g)" \
             --build-arg "AGENT=$AGENT" \
-            "$SIF_IMAGE" "dockerfile:$SANDBOX_DIR"
+            "$SIF_IMAGE" "dockerfile:$SANDBOX_DIR/agent"
     fi
 
     if [ ! -f "$GITMCP_SIF" ]; then
-        local ctx
-        ctx="$(mktemp -d "${TMPDIR:-/tmp}/gitmcp-ctx.XXXXXX")"
-        cp "$SANDBOX_DIR/gitmcp.Dockerfile" "$ctx/Dockerfile"
-        cp "$SANDBOX_DIR/git-mcp-server.py" "$ctx/git-mcp-server.py"
-        apptainer build --fakeroot "$GITMCP_SIF" "dockerfile:$ctx"
-        rm -rf "$ctx"
+        apptainer build --fakeroot \
+            --build-arg "USERNAME=${USER:-$(id -un)}" \
+            --build-arg "UID=$(id -u)" \
+            --build-arg "GID=$(id -g)" \
+            "$GITMCP_SIF" "dockerfile:$SANDBOX_DIR/gitmcp"
     fi
 }

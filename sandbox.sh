@@ -28,7 +28,7 @@
 #   keys (first match wins, checked in this order):
 #
 #     environment:
-#       image: <ref>            # use this image reference verbatim
+#       image: <ref>             # use this image reference verbatim
 #       dockerfile: <path>       # path (relative to project dir) to a custom
 #                                # Dockerfile; its last stage becomes "base"
 #       preset: uv|python|python3.13   # named base image (see below)
@@ -48,15 +48,13 @@
 #     python      python:<python_version>-slim-bookworm (default 3.13)
 #
 #   The "uv" preset ships uv already; other presets/images/dockerfiles don't
-#   get it for free — sandbox/Dockerfile.template no longer installs uv on
-#   top of an arbitrary base (apptainer's Dockerfile bootstrap has no clean
-#   way to skip a layer conditionally). A project that needs both uv and a
-#   non-uv base (e.g. TeX Live) should use "dockerfile:" pointing at a small
-#   Dockerfile that layers uv onto that base via
-#   `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/` (see
-#   sandbox/texlive-uv.Dockerfile for a worked example). uv itself discovers
-#   pyproject.toml/.venv relative to cwd, so `uv run ...` transparently uses
-#   the project's own `.venv` once the project directory is bind-mounted.
+#   get it for free. A project that needs both uv and a non-uv base (e.g. TeX
+#   Live) should use "dockerfile:" pointing at a small Dockerfile that layers
+#   uv onto that base via `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx
+#   /bin/` (see sandbox/texlive-uv.Dockerfile for a worked example). uv itself
+#   discovers pyproject.toml/.venv relative to cwd, so `uv run ...`
+#   transparently uses the project's own `.venv` once the project directory is
+#   bind-mounted.
 #
 # Additional binds (sandbox.yml / --bind):
 #   Extra host paths mounted into the sandbox, on top of the project dir,
@@ -74,7 +72,7 @@
 # Git access:
 #   The agent image deliberately stays clean of a git binary. All git
 #   access goes through a separate sidecar container (sandbox/gitmcp.sif,
-#   built from sandbox/gitmcp.Dockerfile) that is exposed to the agent as
+#   built from sandbox/gitmcp/Dockerfile) that is exposed to the agent as
 #   an MCP server over loopback HTTP (bearer-token authenticated, token
 #   minted fresh per run and passed via APPTAINERENV_* so it never appears
 #   in the world-readable /proc/<pid>/cmdline). It exposes only read-only
