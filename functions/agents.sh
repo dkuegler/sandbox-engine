@@ -127,11 +127,19 @@ configure_agent() {
             bind_ro "$HOME/.local/share/opencode/bin"
             RUN_CMD=(opencode "${ARGS[@]}")
             if [[ -n "$GIT_MCP_SOCKET" ]]; then
-                local mcp_config_file="$RUN_DIR/opencode-mcp.json"
-                write_mcp_config "$mcp_config_file" \
-                    "{\"\$schema\":\"https://opencode.ai/config.json\",\"mcp\":{\"git\":{\"type\":\"local\",\"command\":[\"nc\",\"-U\",\"$GIT_MCP_SOCKET\"],\"enabled\":true}}}"
+                # OPENCODE_CONFIG_CONTENT is merged last over every config
+                # file (https://opencode.ai/docs/config/ "Precedence
+                # order"), so this adds the git server without reading,
+                # rewriting, or shadowing the user's own global/project
+                # config or their own OPENCODE_CONFIG.
+                #
+                # APPTAINERENV_-prefixed, not --env: apptainer strips the
+                # prefix and sets the variable inside the container, so the
+                # value never appears in the world-readable
+                # /proc/<pid>/cmdline of the apptainer process.
+                # /proc/<pid>/environ is owner-only.
+                export APPTAINERENV_OPENCODE_CONFIG_CONTENT="{\"mcp\":{\"git\":{\"type\":\"local\",\"command\":[\"nc\",\"-U\",\"$GIT_MCP_SOCKET\"],\"enabled\":true}}}"
                 BINDS+=(-B "$RUN_DIR")
-                AGENT_ENV+=(--env "OPENCODE_CONFIG=$mcp_config_file")
             fi
             ;;
         omp)
@@ -178,8 +186,66 @@ configure_agent() {
                 local mcp_config_file="$RUN_DIR/omp-mcp.json"
                 local omp_dir="$PROJECT_DIR/.omp"
                 local omp_target="$omp_dir/mcp.json"
-                write_mcp_config "$mcp_config_file" \
-                    "{\"mcpServers\":{\"git\":{\"command\":\"nc\",\"args\":[\"-U\",\"$GIT_MCP_SOCKET\"]}}}"
+
+                # omp's own discovery is first-found-wins over
+                # .omp/mcp.json then .omp/.mcp.json, so merging whichever
+                # exists into the file bound over mcp.json preserves it
+                # instead of shadowing it.
+                local src=""
+                if [[ -e "$omp_dir/mcp.json" ]]; then
+                    src="$omp_dir/mcp.json"
+                elif [[ -e "$omp_dir/.mcp.json" ]]; then
+                    src="$omp_dir/.mcp.json"
+                fi
+
+                if [[ -n "$src" ]] && ! command -v python3 >/dev/null 2>&1; then
+                    echo "error: merging $src needs python3 on the host; install python3 or move the file aside" >&2
+                    exit 1
+                fi
+
+                # Pick our server name: "git", unless the source config
+                # already defines one by that name, in which case fall
+                # back to "sandbox-git" rather than prompt or fail.
+                local name="git"
+                if [[ -n "$src" ]] && command -v python3 >/dev/null 2>&1 && python3 -c '
+import json, sys
+with open(sys.argv[1]) as fh:
+    cfg = json.load(fh)
+sys.exit(0 if "git" in cfg.get("mcpServers", {}) else 1)
+' "$src" 2>/dev/null; then
+                    name="sandbox-git"
+                    echo "note: project .omp config already defines an MCP server named \"git\"; exposing the sandbox git sidecar as \"sandbox-git\" instead" >&2
+                fi
+
+                # 0600 is applied before any content exists (write_mcp_config
+                # truncates and chmods before writing); python3 below then
+                # overwrites the contents.
+                write_mcp_config "$mcp_config_file" '{}'
+                if command -v python3 >/dev/null 2>&1; then
+                    if ! python3 - "$src" "$mcp_config_file" "$name" "$GIT_MCP_SOCKET" <<'PY'
+import json, sys
+src, out, name, sock = sys.argv[1:5]
+cfg = {}
+if src:
+    with open(src) as fh:
+        cfg = json.load(fh)
+cfg.setdefault("mcpServers", {})[name] = {
+    "type": "stdio", "command": "nc", "args": ["-U", sock],
+}
+with open(out, "w") as fh:
+    json.dump(cfg, fh)
+PY
+                    then
+                        echo "error: $src is not valid JSON; fix it or move it aside" >&2
+                        exit 1
+                    fi
+                else
+                    # No source config and no python3: nothing to merge,
+                    # so keep the direct write (today's path).
+                    write_mcp_config "$mcp_config_file" \
+                        "{\"mcpServers\":{\"$name\":{\"type\":\"stdio\",\"command\":\"nc\",\"args\":[\"-U\",\"$GIT_MCP_SOCKET\"]}}}"
+                fi
+
                 if [[ ! -d "$omp_dir" ]]; then
                     mkdir -p "$omp_dir"
                     OMP_MCP_DIR_CREATED="$omp_dir"
