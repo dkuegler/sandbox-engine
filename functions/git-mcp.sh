@@ -89,10 +89,29 @@ resolve_git_dir() {
 # the shallow read-write project-dir bind lands before these deeper
 # read-only binds and the kernel then enforces the boundary regardless of
 # what tries to write .git inside the container.
+#
+# This walks the whole project tree once per run (`find` cannot know
+# where a .git might be without looking), which is the dominant cost of
+# every invocation on a large tree and only gets worse as sandbox.yml/
+# --bind add more trees to cover (see the TODO below). The elapsed time
+# is always reported so that cost is visible instead of silent.
+#
+# Caching the result across runs was considered and rejected: this is
+# the sole enforcement point for a security boundary (F8), and a cache
+# with any TTL creates a window where a `.git` created *by the agent
+# itself* between runs -- e.g. after `apt install git && git init`,
+# exactly the capability this mask exists to contain now that the agent
+# image ships no git binary -- would not be masked on the next run until
+# the cache expired. Any invalidation cheap enough to be worth doing
+# (mtime of the project root, of RUN_DIR, ...) does not detect a new
+# nested repository several directories down, so it would not actually
+# be safe, only appear to be. There is no way to know "nothing changed"
+# without a walk at least as expensive as the one being avoided.
 mask_git_readonly() {
-    local entry real
+    local entry real start_ts end_ts elapsed
     local -a masked=()
 
+    start_ts="$(date +%s.%N)"
     while IFS= read -r entry; do
         [[ -n "$entry" ]] || continue
         BINDS+=(-B "$entry:$entry:ro")
@@ -108,7 +127,10 @@ mask_git_readonly() {
             echo "note: git dir $real lies outside $PROJECT_DIR and is not mounted into the sandbox" >&2
         fi
     done < <(find "$PROJECT_DIR" -mindepth 1 -name .git -prune -print 2>/dev/null)
+    end_ts="$(date +%s.%N)"
+    elapsed="$(awk -v a="$start_ts" -v b="$end_ts" 'BEGIN { printf "%.3f", b - a }')"
 
+    echo "git: scanned $PROJECT_DIR for .git entries in ${elapsed}s" >&2
     if [[ ${#masked[@]} -gt 0 ]]; then
         echo "git: masking ${#masked[@]} path(s) read-only in the sandbox: ${masked[*]}" >&2
     fi
