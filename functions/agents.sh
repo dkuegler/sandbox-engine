@@ -31,16 +31,72 @@ configure_agent() {
             touch "$HOME/.claude.json"
             BINDS+=(
                 -B "$HOME/.claude"
-                -B "$HOME/.config/claude"
                 -B "$HOME/.claude.json"
             )
+            # ~/.config/claude is the alternate settings location; nothing
+            # writes it, so mask it read-only instead of leaving it
+            # read-write like ~/.claude above.
+            bind_ro "$HOME/.config/claude"
+            # settings.json/settings.local.json carry hooks (shell commands
+            # run on tool events), apiKeyHelper (a shell command run on
+            # credential expiry), statusLine (a shell command run per
+            # render), and mcpServers (spawned command lines); hooks/ and
+            # plugins/ hold executed code; agents/, commands/, skills/,
+            # rules/, output-styles/, and CLAUDE.md are prompt/instruction
+            # content that persists into the human's next bare-host run.
+            # Left read-write: ~/.claude/.credentials.json (OAuth refresh,
+            # note the leading dot), ~/.claude.json (rewritten constantly:
+            # session state, per-project trust, MCP OAuth tokens), and
+            # projects/, shell-snapshots/, todos/, statsig/, file-history/,
+            # history.jsonl, ide/.
+            for p in settings.json settings.local.json CLAUDE.md \
+                     hooks plugins agents commands skills rules output-styles; do
+                bind_ro "$HOME/.claude/$p"
+            done
             RUN_CMD=(claude "${ARGS[@]}")
             if [[ -n "$GIT_MCP_SOCKET" ]]; then
                 local mcp_config_file="$RUN_DIR/claude-mcp.json"
                 write_mcp_config "$mcp_config_file" \
                     "{\"mcpServers\":{\"git\":{\"type\":\"stdio\",\"command\":\"nc\",\"args\":[\"-U\",\"$GIT_MCP_SOCKET\"]}}}"
                 BINDS+=(-B "$RUN_DIR")
-                RUN_CMD=(claude --mcp-config "$mcp_config_file" --strict-mcp-config "${ARGS[@]}")
+                # Fold every user --mcp-config value into one occurrence together with
+                # ours. `--mcp-config` takes space-separated values, so one flag with
+                # several values loads all of them; emitting a second occurrence would
+                # depend on whether repeats accumulate.
+                local -a user_mcp=() rest=()
+                local i=0
+                while [[ $i -lt ${#ARGS[@]} ]]; do
+                    case "${ARGS[$i]}" in
+                        --mcp-config)
+                            i=$((i + 1))
+                            while [[ $i -lt ${#ARGS[@]} && "${ARGS[$i]}" != -* ]]; do
+                                user_mcp+=("${ARGS[$i]}")
+                                i=$((i + 1))
+                            done
+                            ;;
+                        --mcp-config=*)
+                            user_mcp+=("${ARGS[$i]#--mcp-config=}")
+                            i=$((i + 1))
+                            ;;
+                        --strict-mcp-config)
+                            i=$((i + 1))
+                            ;;
+                        *)
+                            rest+=("${ARGS[$i]}")
+                            i=$((i + 1))
+                            ;;
+                    esac
+                done
+                # --strict-mcp-config stays unconditional by decision: user-
+                # and project-scope MCP servers from the host (~/.claude.json,
+                # .mcp.json, settings.json) name host command lines that
+                # either do not exist in the container or are exactly the
+                # injection vector the .git masking exists to contain. A user
+                # who wants their own servers passes --mcp-config, preserved
+                # above.
+                RUN_CMD=(claude --mcp-config "$mcp_config_file"
+                         ${user_mcp[@]+"${user_mcp[@]}"}
+                         --strict-mcp-config ${rest[@]+"${rest[@]}"})
             fi
             ;;
         opencode)
@@ -50,8 +106,25 @@ configure_agent() {
                 -B "$HOME/.config/opencode"
                 -B "$HOME/.local/share/opencode"
                 -B "$HOME/.local/state/opencode"
-                -B "$HOME/.opencode"
             )
+            # ~/.opencode is the host install directory holding the
+            # opencode binary (the image installs its own at
+            # /usr/local/opencode/bin, see sandbox/agent/Dockerfile.template);
+            # a writable bind would let the sandbox replace a binary the
+            # human then executes on the bare host.
+            bind_ro "$HOME/.opencode"
+            # opencode.json/opencode.jsonc define mcp.<name>.command arrays,
+            # plugin paths, lsp.*.command, formatter.*.command and
+            # experimental.hook.* -- all executed; plugin/ is JS/TS loaded
+            # at startup. Left read-write: ~/.config/opencode/tui.json
+            # (written every session), all of ~/.local/share/opencode
+            # except bin/ (auth.json, mcp-auth.json, db.sqlite, storage/,
+            # log/, project/), and ~/.local/state/opencode.
+            for p in opencode.json opencode.jsonc AGENTS.md \
+                     plugin agent command mode tool skill themes; do
+                bind_ro "$HOME/.config/opencode/$p"
+            done
+            bind_ro "$HOME/.local/share/opencode/bin"
             RUN_CMD=(opencode "${ARGS[@]}")
             if [[ -n "$GIT_MCP_SOCKET" ]]; then
                 local mcp_config_file="$RUN_DIR/opencode-mcp.json"
@@ -72,6 +145,27 @@ configure_agent() {
             BINDS+=(
                 -B "$HOME/.omp"
             )
+            # agent/config.yml is only rewritten by an explicit `omp config
+            # set`, never on startup, so read-only does not break launch.
+            # extensions/ and natives/ (native addons omp loads at
+            # startup) are likewise safe to mask. agent/AGENTS.md is the
+            # confirmed user-level instruction file (see omp's
+            # context-files doc: "~/.omp/agent/AGENTS.md" -- not
+            # "~/.omp/AGENTS.md", which does not exist). Left read-write:
+            # agent/*.db/-wal/-shm (continuously written),
+            # agent/sessions/, agent/cache/, agent/terminal-sessions/,
+            # agent/last-changelog-version, cache/, logs/, run/,
+            # gpu_cache.json, install-id.
+            for p in agent/config.yml agent/models.yml agent/mcp.json agent/.mcp.json \
+                     agent/.env .env agent/agents agent/skills agent/tools agent/hooks \
+                     agent/commands extensions natives agent/AGENTS.md; do
+                bind_ro "$HOME/.omp/$p"
+            done
+            for p in "$HOME"/.omp/profiles/*/agent/config.yml \
+                     "$HOME"/.omp/profiles/*/agent/mcp.json \
+                     "$HOME"/.omp/profiles/*/agent/.mcp.json; do
+                bind_ro "$p"
+            done
             RUN_CMD=(omp "${ARGS[@]}")
             if [[ -n "$GIT_MCP_SOCKET" ]]; then
                 # omp auto-discovers <project>/.omp/mcp.json, which lives

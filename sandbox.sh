@@ -69,6 +69,17 @@
 #   Bare relative sources resolve against the project directory; "~"-prefixed
 #   paths expand to $HOME.
 #
+#   A bind source outside the project directory can expose anything on the
+#   host (~/.ssh, /etc, ...), and sandbox.yml travels with the checkout, so
+#   a "binds:" entry there is attacker-controlled for an untrusted project.
+#   Such a bind is refused unless confirmed interactively (a y/N prompt on
+#   /dev/tty, not stdin, since stdin is the agent's own input stream) or
+#   allowed non-interactively with --allow-external-binds. With no TTY
+#   available (CI, </dev/null) the run refuses and names the flag. The
+#   check runs both on the spec as written and again after resolving
+#   symlinks, so a symlink inside the project pointing outside is also
+#   caught.
+#
 # Git access:
 #   The agent image deliberately stays clean of a git binary. All git
 #   access goes through a separate sidecar container (sandbox/gitmcp.sif,
@@ -94,6 +105,13 @@
 #   additionally bind-mounted READ-ONLY into the agent container. That is
 #   kernel-enforced, not a wrapper, so it also blocks writes from a
 #   self-installed git or any git library.
+#   self-installed git or any git library. The same walk covers every
+#   read-write extra bind (sandbox.yml binds: / --bind), not just the
+#   project dir, since a .git anywhere writable in the container is
+#   otherwise unguarded. A gitdir a bound worktree/submodule .git file
+#   points at that lands outside every bound tree is left unmounted (and
+#   named on stderr) unless --allow-external-gitdir mounts it read-only.
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -133,7 +151,15 @@ build_images
 BINDS=(
     -B "$PROJECT_DIR"
 )
+EXTRA_BIND_SRCS=()
+EXTRA_BIND_RO=()
+RO_MASKED=()
 resolve_extra_binds
+
+# sandbox.yml decides this sandbox's own binds and base image. An agent
+# that can rewrite it chooses what the NEXT run mounts, so it is bound
+# read-only over the read-write project-dir bind.
+bind_ro "$SANDBOX_YML"
 
 # Masks every .git in the project tree read-only in BINDS and, when the
 # project root is a repository, starts the git MCP sidecar.

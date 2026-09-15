@@ -38,6 +38,8 @@ parse_argv() {
     CLI_ENV_PRESET=""
     CLI_ENV_PYTHON_VERSION=""
     CLI_BINDS=()
+    ALLOW_EXTERNAL_BINDS=0
+    ALLOW_EXTERNAL_GITDIR=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -66,6 +68,14 @@ parse_argv() {
                 ;;
             --bind=*)
                 CLI_BINDS+=("${1#--bind=}")
+                shift
+                ;;
+            --allow-external-binds)
+                ALLOW_EXTERNAL_BINDS=1
+                shift
+                ;;
+            --allow-external-gitdir)
+                ALLOW_EXTERNAL_GITDIR=1
                 shift
                 ;;
             claude|opencode|omp)

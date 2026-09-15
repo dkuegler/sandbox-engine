@@ -59,3 +59,11 @@ environment:
 #   further binds on top of this list, e.g.:
 #     ./sandbox.sh --bind /var/run/docker.sock claude
 #   Only SRC or SRC:DST are portable; the OPTS field is apptainer-specific.
+#
+#   A source outside the project directory (like /data above) is
+#   attacker-controlled when this file travels with an untrusted
+#   checkout, so sandbox.sh refuses it unless you confirm interactively
+#   (a y/N prompt) or pass --allow-external-binds on the command line;
+#   with no TTY available (CI, </dev/null) it refuses outright and names
+#   the flag. A path that resolves (after symlinks) inside the project
+#   directory needs neither.
