@@ -141,11 +141,16 @@ start_git_sidecar
 
 configure_agent
 
+# Only pass --nv/--rocm when the matching GPU stack looks present, so a
+# plain CPU host doesn't get apptainer probing for a driver that isn't
+# there. See resolve_gpu_flags() in functions/environment.sh.
+resolve_gpu_flags
+
 apptainer exec --containall --no-home \
     --cwd "$PROJECT_DIR" \
     "${BINDS[@]}" \
     "${AGENT_ENV[@]}" \
     --home "$HOME" \
-    --nv --writable-tmpfs \
+    ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} --writable-tmpfs \
     "$SIF_IMAGE" \
     "${RUN_CMD[@]}"

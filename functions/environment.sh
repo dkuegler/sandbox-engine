@@ -139,3 +139,29 @@ build_images() {
             "$GITMCP_SIF" "dockerfile:$SANDBOX_DIR/gitmcp"
     fi
 }
+
+# resolve_gpu_flags: sets GPU_ARGS to the apptainer flags matching
+# whatever GPU stack the host actually has, instead of always passing
+# --nv. --nv is NVIDIA-specific (it binds in the proprietary driver's
+# userspace libraries); passing it unconditionally on a host with no
+# NVIDIA device at all just makes apptainer emit "no NVIDIA driver"
+# noise. /dev/nvidia0 is the character device the proprietary driver
+# creates once loaded, and /dev/kfd is ROCm's compute device for AMD
+# GPUs (--rocm is its apptainer counterpart). /dev/dri is deliberately
+# NOT used to gate --nv: it is the generic DRM render-node path shared
+# by Intel/AMD/Nvidia alike, so an Intel-only laptop has it too, and
+# would trip --nv into probing for a CUDA stack that was never there.
+resolve_gpu_flags() {
+    GPU_ARGS=()
+    # Plain "test && append" would abort the whole script under
+    # set -e the moment a device is absent -- a bare "cmd1 && cmd2"
+    # statement's exit status is cmd1's when cmd1 is false, and set -e
+    # treats that as a script-ending failure outside an if/while/&&-or
+    # context. `if` conditions are exempt, so use those instead.
+    if [[ -e /dev/nvidia0 ]]; then
+        GPU_ARGS+=(--nv)
+    fi
+    if [[ -e /dev/kfd ]]; then
+        GPU_ARGS+=(--rocm)
+    fi
+}
