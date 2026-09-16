@@ -195,11 +195,15 @@ configure_agent() {
                 # omp's own discovery is first-found-wins over
                 # .omp/mcp.json then .omp/.mcp.json, so merging whichever
                 # exists into the file bound over mcp.json preserves it
-                # instead of shadowing it.
+                # instead of shadowing it. A zero-byte file is not valid
+                # JSON (and is how earlier runs of this script leave a
+                # placeholder behind, see OMP_MCP_PLACEHOLDER below), so
+                # it is treated the same as "absent" rather than fed to
+                # the python3 merge below.
                 local src=""
-                if [[ -e "$omp_dir/mcp.json" ]]; then
+                if [[ -s "$omp_dir/mcp.json" ]]; then
                     src="$omp_dir/mcp.json"
-                elif [[ -e "$omp_dir/.mcp.json" ]]; then
+                elif [[ -s "$omp_dir/.mcp.json" ]]; then
                     src="$omp_dir/.mcp.json"
                 fi
 
