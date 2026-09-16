@@ -107,7 +107,9 @@ generate_dockerfile() {
     # Same textual substitution as the $BASE_IMAGE splice above:
     # apptainer's Dockerfile bootstrap does not evaluate ARG in FROM
     # lines, so the agent stage selector is substituted here.
-    tail_part="${tail_part//FROM \$AGENT AS/FROM $AGENT AS}"
+    # IMAGE_AGENT, not AGENT: `script` is a run mode with no Dockerfile
+    # stage of its own (sandbox.sh sets it to a real agent's name).
+    tail_part="${tail_part//FROM \$AGENT AS/FROM ${IMAGE_AGENT:-$AGENT} AS}"
 
     rm -f "$out"
     {
@@ -139,7 +141,7 @@ build_images() {
             --build-arg "USERNAME=${USER:-$(id -un)}" \
             --build-arg "UID=$(id -u)" \
             --build-arg "GID=$(id -g)" \
-            --build-arg "AGENT=$AGENT" \
+            --build-arg "AGENT=${IMAGE_AGENT:-$AGENT}" \
             "$SIF_IMAGE" "dockerfile:$SANDBOX_DIR/agent"
         log_info "agent image: $SIF_IMAGE (built)"
     else

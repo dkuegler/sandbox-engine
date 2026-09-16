@@ -3,7 +3,7 @@
 # option loop. Populates PROJECT_DIR, AGENT, ARGS, CLI_ENV_*, CLI_BINDS.
 
 usage() {
-    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] <claude|opencode|omp> [agent-args...]" >&2
+    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] <claude|opencode|omp|script> [agent-args...]" >&2
     exit 1
 }
 
@@ -103,7 +103,7 @@ parse_argv() {
                 REBUILD=1
                 shift
                 ;;
-            claude|opencode|omp)
+            claude|opencode|omp|script)
                 if [[ -z "$AGENT" ]]; then
                     AGENT="$1"
                 else

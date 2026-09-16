@@ -144,6 +144,19 @@ parse_argv "$@"
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 log_info "project dir: $PROJECT_DIR"
 
+# `script` is a run mode, not an agent: it execs an arbitrary command
+# inside the sandbox (RUN_CMD = its own trailing argv) instead of an
+# agent CLI, and the Dockerfile has no `script` stage. Build and reuse an
+# ordinary agent image for it -- the read-only .git mask it gets is built
+# by start_git_sidecar, identically for every agent. Used by the
+# git-escape probe (tests/git-escape/run.sh) to run
+# tests/git-escape/probe.sh inside a real agent container.
+IMAGE_AGENT="$AGENT"
+if [[ "$AGENT" == "script" ]]; then
+    IMAGE_AGENT="${SCRIPT_IMAGE_AGENT:-omp}"
+    log_info "script mode: reusing the $IMAGE_AGENT image"
+fi
+
 SANDBOX_YML="$PROJECT_DIR/sandbox.yml"
 if [[ -f "$SANDBOX_YML" ]]; then
     log_info "sandbox.yml: found at $SANDBOX_YML"
@@ -157,7 +170,7 @@ log_info "environment: mode=$ENV_MODE base_image=$BASE_IMAGE env_tag=$ENV_TAG"
 # SIFs are build artefacts, not source: keep them out of the checkout.
 IMAGE_DIR="${SANDBOX_ENGINE_IMAGE_DIR:-$HOME/.apptainer/images}"
 mkdir -p "$IMAGE_DIR"
-SIF_IMAGE="$IMAGE_DIR/$AGENT.$ENV_TAG.sif"
+SIF_IMAGE="$IMAGE_DIR/$IMAGE_AGENT.$ENV_TAG.sif"
 GITMCP_SIF="$IMAGE_DIR/gitmcp.sif"
 build_images
 

@@ -266,5 +266,19 @@ PY
                 BINDS+=(-B "$mcp_config_file:$omp_target:ro" -B "$RUN_DIR")
             fi
             ;;
+        script)
+            # Generic run mode, not an agent: RUN_CMD is exec'd verbatim
+            # from the caller's own trailing argv, e.g.
+            #   ./sandbox.sh script tests/git-escape/probe.sh <project-dir>
+            # instead of an agent CLI. bind tests/ read-only so a bespoke
+            # test script living there (like probe.sh, run by
+            # tests/git-escape/run.sh) is visible at the same path inside
+            # the container. Deliberately not a bespoke apptainer
+            # invocation: the mask a script asserts is built by
+            # start_git_sidecar and resolve_extra_binds, so a harness with
+            # its own exec line would verify a launch path nobody uses.
+            bind_ro "$SCRIPT_DIR/tests"
+            RUN_CMD=("${ARGS[@]}")
+            ;;
     esac
 }
