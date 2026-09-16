@@ -54,8 +54,17 @@ resolve_environment() {
             uv) BASE_IMAGE="ghcr.io/astral-sh/uv:python${ENV_PYTHON_VERSION}-bookworm-slim" ;;
             python3.13) BASE_IMAGE="python:3.13-slim-bookworm" ;;
             python) BASE_IMAGE="python:${ENV_PYTHON_VERSION}-slim-bookworm" ;;
+            shell)
+                # Bundled, trusted dockerfile (ships with sandbox-engine,
+                # not the project being sandboxed) -- reuses generate_dockerfile's
+                # dockerfile-mode splice without the external-path containment
+                # check below, which only guards project-supplied
+                # environment.dockerfile paths.
+                ENV_MODE="dockerfile"
+                CUSTOM_DOCKERFILE="$SANDBOX_DIR/shell/Dockerfile"
+                ;;
             *)
-                echo "environment.preset '$ENV_PRESET' (from sandbox.yml/--environment): unknown, expected uv|python|python3.13" >&2
+                echo "environment.preset '$ENV_PRESET' (from sandbox.yml/--environment): unknown, expected uv|python|python3.13|shell" >&2
                 exit 1
                 ;;
         esac

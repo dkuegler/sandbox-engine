@@ -24,12 +24,21 @@
 #     uv/python presets below provide (e.g. sandbox/texlive-uv/Dockerfile,
 #     bundled alongside this sample, layers uv onto a full TeX Live image).
 #
-#   preset: uv | python | python3.13
+#   preset: uv | python | python3.13 | shell
 #     A named base image:
 #       uv          ghcr.io/astral-sh/uv:python<python_version>-bookworm-slim
 #                   (uv preinstalled; python_version default 3.13)
 #       python3.13  python:3.13-slim-bookworm
 #       python      python:<python_version>-slim-bookworm (default 3.13)
+#       shell       the uv preset's base image (pinned to Python 3.13,
+#                   python_version not consulted) plus shellcheck and the
+#                   sh/dash, bash, ksh interpreters shellcheck itself
+#                   models (bash already present). Other common shells
+#                   (zsh, fish, tcsh, csh) get a stub binary instead of a
+#                   real interpreter: running one prints why it's outside
+#                   shellcheck's dialect coverage and exits nonzero,
+#                   rather than silently running untested or failing with
+#                   an opaque "command not found" (see sandbox/shell/Dockerfile)
 #
 #   python_version: "3.13"
 #     Only consulted by the uv/python presets above.
@@ -40,14 +49,20 @@
 # Example: generic uv-managed Python project (equivalent to the default,
 # spelled out explicitly):
 environment:
-  preset: uv
+  preset: shell
   python_version: "3.13"
 
 # Example: a project that also needs a full TeX Live toolchain — swap the
 # block above for this one (see sandbox/texlive-uv/Dockerfile):
 #
 # environment:
-#   dockerfile: sandbox/texlive-uv.Dockerfile
+#   dockerfile: sandbox/texlive-uv/Dockerfile
+
+# Example: a project that lints/tests shell scripts under multiple shells
+# (see sandbox/shell/Dockerfile) — swap the block above for this one:
+#
+# environment:
+#   preset: shell
 
 # Additional binds (optional TOP-LEVEL key, NOT under "environment:"):
 #   binds:
