@@ -51,6 +51,7 @@ resolve_environment() {
         ENV_MODE="preset"
         ENV_PRESET="${ENV_PRESET:-uv}"
         ENV_TAG="preset-${ENV_PRESET}"
+        # shellcheck disable=SC2034  # ENV_TAG (set in the uv/python arms below) is read by sandbox.sh after resolve_environment returns
         case "$ENV_PRESET" in
             uv) BASE_IMAGE="ghcr.io/astral-sh/uv:python${ENV_PYTHON_VERSION}-bookworm-slim"; ENV_TAG="preset-uv-py$(sanitize_tag "$ENV_PYTHON_VERSION")" ;;
             python) BASE_IMAGE="python:${ENV_PYTHON_VERSION}-slim-bookworm"; ENV_TAG="preset-python-py$(sanitize_tag "$ENV_PYTHON_VERSION")" ;;
@@ -91,6 +92,7 @@ generate_dockerfile() {
     local out="$SANDBOX_DIR/agent/Dockerfile"
     local baseimage_line head_part tail_part body
 
+    # shellcheck disable=SC2016  # single quotes intentional: matching the literal text "$BASE_IMAGE" in the template, not expanding it
     baseimage_line="$(grep -n '^FROM \$BASE_IMAGE AS base$' "$template" | head -n1 | cut -d: -f1)"
     if [[ -z "$baseimage_line" ]]; then
         echo "sandbox/agent/Dockerfile.template: missing 'FROM \$BASE_IMAGE AS base' baseimage line" >&2

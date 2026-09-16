@@ -23,6 +23,7 @@ write_mcp_config() {
 }
 
 configure_agent() {
+    # shellcheck disable=SC2034  # AGENT_ENV is read by sandbox.sh's EXEC_ARGV after configure_agent returns
     AGENT_ENV=()
 
     case "$AGENT" in
@@ -257,10 +258,12 @@ PY
 
                 if [[ ! -d "$omp_dir" ]]; then
                     mkdir -p "$omp_dir"
+                    # shellcheck disable=SC2034  # OMP_MCP_DIR_CREATED is read by cleanup() (functions/git-mcp.sh) to remove it on exit
                     OMP_MCP_DIR_CREATED="$omp_dir"
                 fi
                 if [[ ! -e "$omp_target" ]]; then
                     : > "$omp_target"
+                    # shellcheck disable=SC2034  # OMP_MCP_PLACEHOLDER is read by cleanup() (functions/git-mcp.sh) to remove it on exit
                     OMP_MCP_PLACEHOLDER="$omp_target"
                 fi
                 BINDS+=(-B "$mcp_config_file:$omp_target:ro" -B "$RUN_DIR")
@@ -278,6 +281,7 @@ PY
             # start_git_sidecar and resolve_extra_binds, so a harness with
             # its own exec line would verify a launch path nobody uses.
             bind_ro "$SCRIPT_DIR/tests"
+            # shellcheck disable=SC2034  # RUN_CMD is read by sandbox.sh's EXEC_ARGV after configure_agent returns
             RUN_CMD=("${ARGS[@]}")
             ;;
     esac

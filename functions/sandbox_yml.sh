@@ -37,6 +37,7 @@ parse_sandbox_yml() {
                 val="${BASH_REMATCH[2]}"
                 val="${val%%#*}"
                 val="$(sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//" <<<"$val")"
+                # shellcheck disable=SC2034  # ENV_IMAGE/ENV_DOCKERFILE/ENV_PRESET/ENV_PYTHON_VERSION are read by resolve_environment (functions/environment.sh) after parse_sandbox_yml returns
                 case "$key" in
                     image) ENV_IMAGE="$val" ;;
                     dockerfile) ENV_DOCKERFILE="$val" ;;

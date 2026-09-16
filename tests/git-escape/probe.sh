@@ -19,6 +19,12 @@
 #      than reporting a pass.
 #
 # Exit: 0 all passed, 1 an assertion failed, 99 the suite could not run.
+#
+# `cmd && ok ... || bad ...` is used throughout for lightweight pass/fail
+# reporting; ok()/bad() (below) are plain printf+counter calls that cannot
+# themselves fail, so the "C also runs if A succeeds but B fails" hazard
+# SC2015 warns about does not apply here.
+# shellcheck disable=SC2015
 set -uo pipefail
 
 REPO="${1:-$PWD}"

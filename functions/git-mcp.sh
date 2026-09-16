@@ -164,6 +164,7 @@ mask_git_readonly() {
         log_debug "find root: $root (${elapsed}s)"
     done
 
+    # shellcheck disable=SC2034  # GIT_MASK_COUNT is read by sandbox.sh's post-configure_agent summary log
     GIT_MASK_COUNT=${#masked[@]}
     if [[ ${#masked[@]} -gt 0 ]]; then
         echo "git: masking ${#masked[@]} path(s) read-only in the sandbox: ${masked[*]}" >&2

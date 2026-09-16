@@ -48,7 +48,8 @@
 #                 (uv preinstalled; python_version default 3.13)
 #     python      python:<python_version>-slim-bookworm (default 3.13)
 #     shell       the uv preset's base image (Python 3.13 pinned) plus
-#                 shellcheck and the shells it models (sh/dash, bash, ksh);
+#                 the shellcheck tool and the shells it models (sh/dash,
+#                 bash, ksh);
 #                 other common shells get a stub that reports the
 #                 capability boundary instead of running untested
 #                 (see sandbox/shell/Dockerfile)
@@ -122,6 +123,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034  # SANDBOX_DIR is read by functions/environment.sh (generate_dockerfile, build_images, the shell/latex preset paths)
 SANDBOX_DIR="$SCRIPT_DIR/sandbox"
 FUNCTIONS_DIR="$SCRIPT_DIR/functions"
 
@@ -177,13 +179,16 @@ log_info "environment: mode=$ENV_MODE base_image=$BASE_IMAGE env_tag=$ENV_TAG"
 IMAGE_DIR="${SANDBOX_ENGINE_IMAGE_DIR:-$HOME/.apptainer/images}"
 mkdir -p "$IMAGE_DIR"
 SIF_IMAGE="$IMAGE_DIR/$IMAGE_AGENT.$ENV_TAG.sif"
+# shellcheck disable=SC2034  # GITMCP_SIF is read by build_images (functions/environment.sh) and start_git_sidecar (functions/git-mcp.sh)
 GITMCP_SIF="$IMAGE_DIR/gitmcp.sif"
 build_images
 
 BINDS=(
     -B "$PROJECT_DIR"
 )
+# shellcheck disable=SC2034  # EXTRA_BIND_SRCS/EXTRA_BIND_RO are appended to by resolve_extra_binds (functions/binds.sh) and read by mask_git_readonly (functions/git-mcp.sh)
 EXTRA_BIND_SRCS=()
+# shellcheck disable=SC2034  # see EXTRA_BIND_SRCS above
 EXTRA_BIND_RO=()
 RO_MASKED=()
 resolve_extra_binds

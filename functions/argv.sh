@@ -33,9 +33,13 @@ parse_argv() {
     PROJECT_DIR="$(pwd)"
     AGENT=""
     ARGS=()
+    # shellcheck disable=SC2034  # CLI_ENV_IMAGE is read by resolve_environment (functions/environment.sh) via ${CLI_ENV_IMAGE:-$ENV_IMAGE}
     CLI_ENV_IMAGE=""
+    # shellcheck disable=SC2034  # CLI_ENV_DOCKERFILE: same as above
     CLI_ENV_DOCKERFILE=""
+    # shellcheck disable=SC2034  # CLI_ENV_PRESET: same as above
     CLI_ENV_PRESET=""
+    # shellcheck disable=SC2034  # CLI_ENV_PYTHON_VERSION: same as above
     CLI_ENV_PYTHON_VERSION=""
     CLI_BINDS=()
     ALLOW_EXTERNAL_BINDS=0
@@ -51,6 +55,7 @@ parse_argv() {
                 shift 2
                 ;;
             --project-dir=*)
+                # shellcheck disable=SC2034  # PROJECT_DIR is read throughout sandbox.sh and functions/*.sh after parse_argv returns
                 PROJECT_DIR="${1#--project-dir=}"
                 shift
                 ;;
@@ -73,10 +78,12 @@ parse_argv() {
                 shift
                 ;;
             --allow-external-binds)
+                # shellcheck disable=SC2034  # ALLOW_EXTERNAL_BINDS is read by functions/binds.sh's confirm-or-refuse check
                 ALLOW_EXTERNAL_BINDS=1
                 shift
                 ;;
             --allow-external-gitdir)
+                # shellcheck disable=SC2034  # ALLOW_EXTERNAL_GITDIR is read by functions/git-mcp.sh's external-gitdir check
                 ALLOW_EXTERNAL_GITDIR=1
                 shift
                 ;;
@@ -100,6 +107,7 @@ parse_argv() {
                 shift
                 ;;
             --rebuild)
+                # shellcheck disable=SC2034  # REBUILD is read by build_images (functions/environment.sh)
                 REBUILD=1
                 shift
                 ;;
