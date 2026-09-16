@@ -1,0 +1,87 @@
+# Sample sandbox execution environment config (see sandbox.sh).
+#
+# Drop this file at the root of a project directory (next to sandbox.sh, or
+# wherever --project-dir points) as "sandbox.yml" to select the apptainer
+# base image sandbox.sh builds/runs the agent CLI in. Every key below can
+# also be set on the command line instead (or as well) via repeatable
+# --environment KEY=VALUE flags, which take precedence per-key over this
+# file, e.g.:
+#   ./sandbox.sh --environment preset=python --environment python_version=3.12 claude
+# Git access (see sandbox.sh's "Git access" header comment): the agent
+# image ships no git binary; all git access goes through the read-only
+# MCP sidecar (sandbox/git-mcp-server.py), started automatically whenever
+# the project directory has a .git. Nothing to configure here.
+#
+# Recognized keys under "environment:", first match wins in this order:
+#
+#   image: <ref>
+#     Use this image reference verbatim as the sandbox's base image.
+#
+#   dockerfile: <path>
+#     Path (relative to the project dir) to a custom Dockerfile; its last
+#     stage becomes the "base" stage sandbox.sh's shared toolchain layer
+#     builds on top of. Use this for a base that needs more than the
+#     uv/python presets below provide, or to fork one of the bundled
+#     preset Dockerfiles (e.g. sandbox/latex/Dockerfile, which layers uv
+#     onto a full TeX Live image).
+#
+#   preset: uv | python | shell | latex
+#     A named base image:
+#       uv          ghcr.io/astral-sh/uv:python<python_version>-bookworm-slim
+#                   (uv preinstalled; python_version default 3.13)
+#       python      python:<python_version>-slim-bookworm (default 3.13)
+#       shell       the uv preset's base image (pinned to Python 3.13,
+#                   python_version not consulted) plus shellcheck and the
+#                   sh/dash, bash, ksh interpreters shellcheck itself
+#                   models (bash already present). Other common shells
+#                   (zsh, fish, tcsh, csh) get a stub binary instead of a
+#                   real interpreter: running one prints why it's outside
+#                   shellcheck's dialect coverage and exits nonzero,
+#                   rather than silently running untested or failing with
+#                   an opaque "command not found" (see sandbox/shell/Dockerfile)
+#       latex       a full TeX Live install plus uv, for projects needing
+#                   both a LaTeX toolchain and `uv run`/`uv sync` (Python
+#                   version not consulted; see sandbox/latex/Dockerfile)
+#
+#   python_version: "3.13"
+#     Only consulted by the uv/python presets above.
+#
+# With no sandbox.yml, no --environment flags, or an environment: section
+# with none of the above set, sandbox.sh defaults to "preset: uv".
+#
+# Example: generic uv-managed Python project (equivalent to the default,
+# spelled out explicitly):
+environment:
+  preset: uv
+  python_version: "3.13"
+
+# Example: a project that also needs a full TeX Live toolchain — swap the
+# block above for this one (see sandbox/latex/Dockerfile):
+#
+# environment:
+#   preset: latex
+
+# Example: a project that lints/tests shell scripts under multiple shells
+# (see sandbox/shell/Dockerfile) — swap the block above for this one:
+#
+# environment:
+#   preset: shell
+
+# Additional binds (optional TOP-LEVEL key, NOT under "environment:"):
+#   binds:
+#     - /data                  # host path, mounted at the same container path
+#     - /data:/mnt/data        # host path mounted at another container path
+#     - /data:/mnt/data:ro     # with apptainer bind options (here: read-only)
+#   Host paths may be absolute, "~"-prefixed (expands to $HOME), or relative
+#   to the project directory. Repeatable --bind SRC[:DST[:OPTS]] flags add
+#   further binds on top of this list, e.g.:
+#     ./sandbox.sh --bind /var/run/docker.sock claude
+#   Only SRC or SRC:DST are portable; the OPTS field is apptainer-specific.
+#
+#   A source outside the project directory (like /data above) is
+#   attacker-controlled when this file travels with an untrusted
+#   checkout, so sandbox.sh refuses it unless you confirm interactively
+#   (a y/N prompt) or pass --allow-external-binds on the command line;
+#   with no TTY available (CI, </dev/null) it refuses outright and names
+#   the flag. A path that resolves (after symlinks) inside the project
+#   directory needs neither.

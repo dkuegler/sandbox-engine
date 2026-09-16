@@ -33,7 +33,7 @@
 #       image: <ref>             # use this image reference verbatim
 #       dockerfile: <path>       # path (relative to project dir) to a custom
 #                                # Dockerfile; its last stage becomes "base"
-#       preset: uv|python|python3.13   # named base image (see below)
+#       preset: uv|python|shell|latex   # named base image (see below)
 #       python_version: "3.13"  # only consulted by the uv/python presets
 #
 #   --environment KEY=VALUE sets the same keys (image/dockerfile/preset/
@@ -46,17 +46,23 @@
 #   Presets:
 #     uv          ghcr.io/astral-sh/uv:python<python_version>-bookworm-slim
 #                 (uv preinstalled; python_version default 3.13)
-#     python3.13  python:3.13-slim-bookworm
 #     python      python:<python_version>-slim-bookworm (default 3.13)
+#     shell       the uv preset's base image (Python 3.13 pinned) plus
+#                 shellcheck and the shells it models (sh/dash, bash, ksh);
+#                 other common shells get a stub that reports the
+#                 capability boundary instead of running untested
+#                 (see sandbox/shell/Dockerfile)
+#     latex       a full TeX Live install plus uv, for projects needing
+#                 both a LaTeX toolchain and `uv run`/`uv sync`
+#                 (see sandbox/latex/Dockerfile)
 #
 #   The "uv" preset ships uv already; other presets/images/dockerfiles don't
-#   get it for free. A project that needs both uv and a non-uv base (e.g. TeX
-#   Live) should use "dockerfile:" pointing at a small Dockerfile that layers
-#   uv onto that base via `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx
-#   /bin/` (see sandbox/texlive-uv.Dockerfile for a worked example). uv itself
-#   discovers pyproject.toml/.venv relative to cwd, so `uv run ...`
-#   transparently uses the project's own `.venv` once the project directory is
-#   bind-mounted.
+#   get it for free unless they layer it in themselves the way "shell" and
+#   "latex" do (see sandbox/shell/Dockerfile, sandbox/latex/Dockerfile) via
+#   `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/` or an apt
+#   install. uv itself discovers pyproject.toml/.venv relative to cwd, so
+#   `uv run ...` transparently uses the project's own `.venv` once the
+#   project directory is bind-mounted.
 #
 # Additional binds (sandbox.yml / --bind):
 #   Extra host paths mounted into the sandbox, on top of the project dir,

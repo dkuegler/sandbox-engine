@@ -50,10 +50,10 @@ resolve_environment() {
     else
         ENV_MODE="preset"
         ENV_PRESET="${ENV_PRESET:-uv}"
+        ENV_TAG="preset-${ENV_PRESET}"
         case "$ENV_PRESET" in
-            uv) BASE_IMAGE="ghcr.io/astral-sh/uv:python${ENV_PYTHON_VERSION}-bookworm-slim" ;;
-            python3.13) BASE_IMAGE="python:3.13-slim-bookworm" ;;
-            python) BASE_IMAGE="python:${ENV_PYTHON_VERSION}-slim-bookworm" ;;
+            uv) BASE_IMAGE="ghcr.io/astral-sh/uv:python${ENV_PYTHON_VERSION}-bookworm-slim"; ENV_TAG="preset-uv-py$(sanitize_tag "$ENV_PYTHON_VERSION")" ;;
+            python) BASE_IMAGE="python:${ENV_PYTHON_VERSION}-slim-bookworm"; ENV_TAG="preset-python-py$(sanitize_tag "$ENV_PYTHON_VERSION")" ;;
             shell)
                 # Bundled, trusted dockerfile (ships with sandbox-engine,
                 # not the project being sandboxed) -- reuses generate_dockerfile's
@@ -63,12 +63,21 @@ resolve_environment() {
                 ENV_MODE="dockerfile"
                 CUSTOM_DOCKERFILE="$SANDBOX_DIR/shell/Dockerfile"
                 ;;
+            latex)
+                # Same bundled/trusted dockerfile-splice pattern as
+                # "shell" above: a full TeX Live install plus uv (see
+                # sandbox/latex/Dockerfile). Also reachable directly via
+                # environment.dockerfile: sandbox/latex/Dockerfile for
+                # projects that want it without going through the preset
+                # name (e.g. to combine with a fork of that file).
+                ENV_MODE="dockerfile"
+                CUSTOM_DOCKERFILE="$SANDBOX_DIR/latex/Dockerfile"
+                ;;
             *)
-                echo "environment.preset '$ENV_PRESET' (from sandbox.yml/--environment): unknown, expected uv|python|python3.13|shell" >&2
+                echo "environment.preset '$ENV_PRESET' (from sandbox.yml/--environment): unknown, expected uv|python|shell|latex" >&2
                 exit 1
                 ;;
         esac
-        ENV_TAG="preset-${ENV_PRESET}"
     fi
 }
 

@@ -12,8 +12,9 @@ ARG AGENT
 # to the "uv" preset: ghcr.io/astral-sh/uv:python3.13-bookworm-slim (uv
 # preinstalled). Environments that need uv but don't ship it (e.g. a plain
 # "python" preset or a custom image/dockerfile) must provide it themselves —
-# see sandbox/texlive-uv.Dockerfile for an example that layers uv onto a
-# non-uv base via environment.dockerfile.
+# see the "latex" preset / sandbox/latex/Dockerfile for an example that
+# layers uv onto a non-uv base via environment.preset (or
+# environment.dockerfile, pointed at a fork of that file).
 FROM $BASE_IMAGE AS base
 
 ARG USERNAME=agent
