@@ -67,27 +67,37 @@
 #
 # Additional binds (sandbox.yml / --bind):
 #   Extra host paths mounted into the sandbox, on top of the project dir,
-#   $HOME, and the per-agent config binds above. A top-level "binds:" list
-#   in sandbox.yml sets project defaults (NOT under "environment:"):
+#   $HOME, and the per-agent config binds above. **Read-only by default**
+#   (changed 2026-09-17 -- a breaking change from the prior read-write
+#   default: almost no agent task needs to write to a data mount, and
+#   read-write turned disclosure of a mounted dataset into destruction of
+#   it too). Add ":rw" explicitly to opt into read-write. A top-level
+#   "binds:" list in sandbox.yml sets project defaults (NOT under
+#   "environment:"):
 #     binds:
-#       - /data                  # host path mounted at the same container path
-#       - /data:/mnt/data        # host path mounted at another container path
-#       - /data:/mnt/data:ro     # with apptainer bind options (here: read-only)
+#       - /data                  # host path mounted at the same container path, read-only
+#       - /data:/mnt/data        # host path mounted at another container path, read-only
+#       - /data:/mnt/data:rw     # with apptainer bind options (here: read-write)
 #   Repeatable --bind SRC[:DST[:OPTS]] flags add further binds on top, e.g.:
-#     ./sandbox.sh --bind /var/run/docker.sock claude
+#     ./sandbox.sh --bind /var/run/docker.sock:/var/run/docker.sock:rw claude
 #   Bare relative sources resolve against the project directory; "~"-prefixed
 #   paths expand to $HOME.
 #
 #   A bind source outside the project directory can expose anything on the
 #   host (~/.ssh, /etc, ...), and sandbox.yml travels with the checkout, so
 #   a "binds:" entry there is attacker-controlled for an untrusted project.
-#   Such a bind is refused unless confirmed interactively (a y/N prompt on
-#   /dev/tty, not stdin, since stdin is the agent's own input stream) or
-#   allowed non-interactively with --allow-external-binds. With no TTY
-#   available (CI, </dev/null) the run refuses and names the flag. The
-#   check runs both on the spec as written and again after resolving
-#   symlinks, so a symlink inside the project pointing outside is also
-#   caught.
+#   Such a bind is refused unless confirmed interactively -- a prompt on
+#   /dev/tty (not stdin, since stdin is the agent's own input stream)
+#   stating the path's size and file count and the mode being requested,
+#   answerable "y" (mount as requested), "o" (mount read-only instead,
+#   overriding a requested :rw), or anything else (refuse) -- or allowed
+#   non-interactively with --allow-external-binds. With no TTY available
+#   (CI, </dev/null) the run refuses and names the flag. The check runs
+#   both on the spec as written and again after resolving symlinks, so a
+#   symlink inside the project pointing outside is also caught. Every
+#   resolved bind (source, destination, ro/rw) is logged once per run
+#   (`log_resolved_binds`, functions/binds.sh) so an after-the-fact
+#   question about what a run could see has an answer.
 #
 # Git access (decided 2026-09-17: option A):
 #   The agent image ships a real `git` binary (sandbox/agent/Dockerfile.template)
@@ -207,6 +217,7 @@ mask_git_readonly
 
 configure_agent
 log_info "masks: ${GIT_MASK_COUNT:-0} .git path(s) read-only, ${#RO_MASKED[@]} read-only config bind(s)"
+log_resolved_binds
 
 # Only pass --nv/--rocm when the matching GPU stack looks present, so a
 # plain CPU host doesn't get apptainer probing for a driver that isn't
