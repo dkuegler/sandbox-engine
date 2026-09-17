@@ -7,11 +7,15 @@
 
 # ensure_run_dir: create the per-run scratch directory on first use. Used
 # today only by the omp branch's secrets redaction; cleanup()
-# (functions/git-mask.sh) removes it unconditionally on exit.
+# (functions/git-mask.sh) removes it unconditionally on exit. Writes this
+# shell's PID into the directory so reap_orphaned_run_dirs()
+# (functions/git-mask.sh) can tell a leaked directory (owner process gone)
+# from one still in active use.
 ensure_run_dir() {
     if [[ -z "${RUN_DIR:-}" ]]; then
         RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-engine.XXXXXX")"
         chmod 700 "$RUN_DIR"
+        echo "$$" > "$RUN_DIR/.owner_pid"
     fi
 }
 

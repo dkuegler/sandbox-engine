@@ -17,6 +17,32 @@ cleanup() {
     fi
 }
 
+# reap_orphaned_run_dirs: on startup, before this run creates its own
+# RUN_DIR, remove any leftover "$TMPDIR/sandbox-engine.*" directory whose
+# owner process is gone. A directory leaks when a run is killed with
+# SIGKILL before cleanup()'s EXIT trap can fire -- ensure_run_dir()
+# (functions/agents.sh) writes the creating shell's PID into
+# "<dir>/.owner_pid" for exactly this check. `kill -0 $pid` can in theory
+# false-negative on PID reuse (a coincidentally-alive unrelated process
+# now holds that PID) -- acceptable here: the cost of a false "still
+# alive" is only that one small leaked directory survives one more scan,
+# never data loss. A directory with no `.owner_pid` file at all (created
+# by an older version of this script, or by something else entirely) is
+# left alone rather than guessed at.
+reap_orphaned_run_dirs() {
+    local dir pid
+    for dir in "${TMPDIR:-/tmp}"/sandbox-engine.*; do
+        [[ -d "$dir" ]] || continue
+        [[ -f "$dir/.owner_pid" ]] || continue
+        pid="$(cat "$dir/.owner_pid" 2>/dev/null)"
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "reaping orphaned run directory: $dir (owner pid $pid is gone)" >&2
+            rm -rf "$dir"
+        fi
+    done
+}
+
 # resolve_git_dir PATH: echoes the real git directory for a .git entry.
 # In a worktree or submodule checkout .git is a FILE containing
 # "gitdir: <path>" (possibly relative), and that target holds the actual

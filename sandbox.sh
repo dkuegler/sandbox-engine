@@ -148,6 +148,10 @@ source "$FUNCTIONS_DIR/agents.sh"
 # Registered before anything can create that state.
 trap cleanup EXIT
 
+# Reap any leaked scratch directory from a run that was SIGKILLed before its
+# own cleanup() could fire, before this run creates its own.
+reap_orphaned_run_dirs
+
 parse_argv "$@"
 
 [[ -d "$PROJECT_DIR" ]] || { echo "Project dir not found: $PROJECT_DIR" >&2; exit 1; }
