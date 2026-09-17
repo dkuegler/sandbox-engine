@@ -4,11 +4,17 @@
 # A). Every .git under the project tree -- and under every read-write extra
 # bind -- is bind-mounted read-only into the agent container, kernel-
 # enforced, so it holds regardless of whether the git binary the agent uses
-# came from the image or was fetched/installed by the agent itself.
+# came from the image or was fetched/installed by the agent itself. On top
+# of the read-only mask, every masked gitdir's remote-identifying files
+# (config, config.worktree, FETCH_HEAD, logs/HEAD) get a sanitized,
+# read-only overlay copy with URLs and credential references redacted --
+# the agent keeps the refs (`git log origin/master`, ahead/behind) but not
+# where `origin` points.
 #
 # Also owns cleanup() for the per-run scratch directory (RUN_DIR), which is
 # no longer git-specific: functions/agents.sh's ensure_run_dir() creates it
 # on demand for the omp branch's secrets redaction, independent of git.
+
 # cleanup is registered as the EXIT trap by sandbox.sh *before* anything
 # else runs, so every variable it touches is referenced defensively.
 cleanup() {
@@ -40,6 +46,99 @@ reap_orphaned_run_dirs() {
             echo "reaping orphaned run directory: $dir (owner pid $pid is gone)" >&2
             rm -rf "$dir"
         fi
+    done
+}
+
+# sanitize_git_config SRC DST: copy an INI-style git config file (top-level
+# config, a submodule's config, or a worktree's config.worktree) from SRC to
+# DST with every remote-identifying value redacted. Keeps `[remote
+# "origin"]`'s name and structure -- ahead/behind counts and `git log
+# origin/master` still work -- but rewrites `url`/`pushurl` to an opaque
+# placeholder. Drops `[credential]`, `[http "<url>"]`/`[http.*]`, and
+# `[url "<url>"]` sections entirely (their whole body, including the
+# section header, which for `http`/`url` sections is itself a URL) --
+# preferring redaction over deletion everywhere it is possible to keep a
+# section meaningfully present (remote), and dropping only where the
+# section's entire reason to exist is the thing being hidden. `[include]`/
+# `[includeIf ...]` are dropped too: their `path` can point at host config
+# outside the repo, and the path itself can leak host directory structure.
+# Not handled (not this repo's job): `.gitmodules`, tracked working-tree
+# content the agent must be able to read like any other file -- if it
+# names its own upstream (it usually does), that is a known, stated
+# limitation, not a gap in this sanitiser.
+sanitize_git_config() {
+    local src="$1" dst="$2" line lower in_drop_section=0 in_remote_section=0
+    : > "$dst"
+    [[ -f "$src" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        lower="$(tr '[:upper:]' '[:lower:]' <<<"$line" | sed -e 's/^[[:space:]]*//')"
+        if [[ "$lower" == \[* ]]; then
+            in_drop_section=0
+            in_remote_section=0
+            case "$lower" in
+                '[credential'* | '[http '* | '[http.'* | '[url '* | '[url.'* | '[include]'* | '[includeif '*)
+                    in_drop_section=1
+                    ;;
+                '[remote '*)
+                    in_remote_section=1
+                    ;;
+            esac
+            [[ "$in_drop_section" -eq 1 ]] && continue
+            printf '%s\n' "$line" >>"$dst"
+            continue
+        fi
+        [[ "$in_drop_section" -eq 1 ]] && continue
+        if [[ "$in_remote_section" -eq 1 && "$lower" =~ ^(url|pushurl)[[:space:]]*= ]]; then
+            printf '\turl = REDACTED-BY-SANDBOX\n' >>"$dst"
+            continue
+        fi
+        printf '%s\n' "$line" >>"$dst"
+    done <"$src"
+}
+
+# redact_urls SRC DST: copy a plain-text git-internal file (FETCH_HEAD,
+# logs/HEAD) from SRC to DST with every URL-shaped token replaced.
+# FETCH_HEAD names the source URL on every line; the reflog's first entry
+# is `clone: from <url>` and fetch/pull entries carry it too. Neither file
+# needs to survive intact for `git log`/`git status` to work, so this is
+# a blunt whole-line-token replacement rather than a structured parse.
+redact_urls() {
+    local src="$1" dst="$2"
+    if [[ -f "$src" ]]; then
+        sed -E \
+            -e 's#[a-zA-Z][a-zA-Z0-9+.-]*://[^[:space:]]+#REDACTED-BY-SANDBOX#g' \
+            -e 's#[[:alnum:]_.-]+@[[:alnum:]_.-]+:[^[:space:]]+#REDACTED-BY-SANDBOX#g' \
+            "$src" >"$dst"
+    else
+        : >"$dst"
+    fi
+}
+
+# sanitize_gitdir_metadata REALDIR: for one gitdir actually being mounted
+# read-only (the top-level .git, a submodule's, or a worktree's), write
+# sanitized copies of every file known to carry a remote URL or credential
+# reference into RUN_DIR, and append a read-only bind overriding the real
+# path with the sanitized copy -- same trick force_omp_secrets_redaction
+# and bind_augmented_instructions (functions/agents.sh) already use. No
+# ordering requirement on the BINDS array itself: apptainer sorts mounts by
+# destination depth (mask_git_readonly's own comment below), and
+# "$REALDIR/config" is always deeper than the "$REALDIR" mask this
+# overrides, so it always applies after regardless of insertion order.
+sanitize_gitdir_metadata() {
+    local realdir="$1"
+    local -a rels=(config config.worktree FETCH_HEAD logs/HEAD)
+    local rel src out
+    ensure_run_dir
+    GIT_SANITIZE_IDX=$((${GIT_SANITIZE_IDX:-0} + 1))
+    for rel in "${rels[@]}"; do
+        src="$realdir/$rel"
+        [[ -f "$src" ]] || continue
+        out="$RUN_DIR/gitsan-$GIT_SANITIZE_IDX-$(tr '/' '-' <<<"$rel")"
+        case "$rel" in
+            config | config.worktree) sanitize_git_config "$src" "$out" ;;
+            FETCH_HEAD | logs/HEAD) redact_urls "$src" "$out" ;;
+        esac
+        BINDS+=(-B "$out:$src:ro")
     done
 }
 
@@ -129,6 +228,7 @@ mask_git_readonly() {
             # sanitize it directly. A worktree/submodule .git is a file,
             # not a gitdir, so there is nothing under it to sanitize; its
             # target (real, below) is the actual gitdir in that case.
+            [[ -d "$entry" ]] && sanitize_gitdir_metadata "$entry"
             real="$(resolve_git_dir "$entry")"
             # A gitdir outside every bound tree is not covered by any
             # read-write bind, so only mask it when it is actually
@@ -136,10 +236,12 @@ mask_git_readonly() {
             if [[ -n "$real" && "$real" != "$entry" ]] && git_dir_visible "$real" "${roots[@]}"; then
                 BINDS+=(-B "$real:$real:ro")
                 masked+=("$real")
+                sanitize_gitdir_metadata "$real"
             elif [[ -n "$real" && "$real" != "$entry" ]]; then
                 if [[ "${ALLOW_EXTERNAL_GITDIR:-0}" -eq 1 ]]; then
                     BINDS+=(-B "$real:$real:ro")
                     masked+=("$real")
+                    sanitize_gitdir_metadata "$real"
                     echo "note: mounting external git dir $real read-only (--allow-external-gitdir)" >&2
                 else
                     echo "note: git dir $real lies outside the bound trees and is not mounted into the sandbox; pass --allow-external-gitdir to mount it read-only" >&2
