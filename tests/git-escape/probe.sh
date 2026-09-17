@@ -4,9 +4,11 @@
 # the host driver).
 #
 # Asserts the one control that holds under every git architecture: every
-# .git reachable from the agent is bind-mounted read-only, so a git binary
-# the agent supplies itself still cannot rewrite history. A5 fetches that
-# binary, which is why it runs first.
+# .git reachable from the agent is bind-mounted read-only, so no git binary
+# -- the one the image ships, or one the agent fetches itself -- can rewrite
+# history. A5 vendors its own pinned git, independent of the image's own,
+# so this suite proves the mask rather than just exercising whatever git the
+# image happens to ship. Runs first because everything below needs a binary.
 #
 # Two rules keep this suite honest, both learned by getting them wrong:
 #

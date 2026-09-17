@@ -83,7 +83,7 @@ parse_argv() {
                 shift
                 ;;
             --allow-external-gitdir)
-                # shellcheck disable=SC2034  # ALLOW_EXTERNAL_GITDIR is read by functions/git-mcp.sh's external-gitdir check
+                # shellcheck disable=SC2034  # ALLOW_EXTERNAL_GITDIR is read by functions/git-mask.sh's external-gitdir check
                 ALLOW_EXTERNAL_GITDIR=1
                 shift
                 ;;

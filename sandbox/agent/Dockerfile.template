@@ -26,12 +26,15 @@ ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
 LABEL agent="${AGENT}"
 
-# netcat-openbsd provides `nc -U`, the forwarder every agent's git MCP
-# config spawns to bridge its stdio to the sidecar's Unix socket (see
-# functions/agents.sh); it must be present regardless of which
-# environment preset/image/dockerfile the project selects.
+# git ships directly in the shared layer (decided 2026-09-17:
+# option A) -- there is no MCP sidecar to bridge to, so no `nc`/transport
+# dependency is needed here. GIT_OPTIONAL_LOCKS=0 keeps `status`/`diff`
+# from emitting confusing lock errors against the read-only `.git` mask
+# (functions/git-mask.sh); GIT_CONFIG_NOSYSTEM=1 keeps the container from
+# reading a host-wide /etc/gitconfig that was never meant to travel here.
+ENV GIT_OPTIONAL_LOCKS=0 GIT_CONFIG_NOSYSTEM=1
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates gnupg poppler-utils imagemagick netcat-openbsd \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg poppler-utils imagemagick git \
     && rm -rf /var/lib/apt/lists/*
 
 FROM base AS claude

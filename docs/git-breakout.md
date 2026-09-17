@@ -10,7 +10,7 @@ the output. Last verified 2026-09-16.
 kernel-level read-only bind of every `.git`, applied unconditionally in every
 configuration — not by a wrapper, allow-list, or the absence of a git binary.
 
-`mask_git_readonly()` (`functions/git-mcp.sh:126-171`) binds read-only every
+`mask_git_readonly()` (`functions/git-mask.sh:126-171`) binds read-only every
 `.git` under the project tree and under every read-write extra bind — top level,
 submodules, nested repos — plus the real gitdir a worktree/submodule `.git` *file*
 points at (`resolve_git_dir()`, `:62-81`). Apptainer sorts mounts shallowest-first,
@@ -86,20 +86,22 @@ The raw-socket row is decisive: this is not "`curl` is installed"
 with arbitrary outbound TCP already has every channel `git push <url>` offers.
 No apptainer-level fix exists without root (`--net` needs privileges).
 
-**The agent can install its own git.** The image ships none (M: `command -v git`
-empty). This is anticipated: the mask is kernel-level precisely so a
-self-installed binary, a static build, or a git library that never execs all hit
-the same read-only mount.
+**The agent can already run git — from the image or self-installed.** The
+default image ships `git` directly (decided 2026-09-17); `environment.image`/
+`environment.dockerfile` mode can still select a base with none. Either way the
+mask does not care where the binary came from: a self-installed binary, a static
+build, or a git library that never execs all hit the same read-only mount.
 
-**The MCP tool allow-list was never in the enforcement path.** It is redundant
-against the integrity threat (the kernel refuses writes), and it has never run:
-`nc -U <socket>` is denied by the Canonical-shipped enforce-mode profile
-`/etc/apparmor.d/nc.openbsd` with `info="Failed name lookup - disconnected path"`.
-AppArmor mediates the *peer's* path as stored at `bind()` in the binder's mount
-namespace; the sidecar binds inside its own apptainer namespace, so that path is
-disconnected globally. M: the same `nc -U` fails identically from an unconfined
-host shell — every confined process on the machine is denied; only unconfined
-ones connect. Strike any security argument resting on this allow-list.
+**A prior MCP sidecar/tool-allow-list design was retired, and was never in
+the enforcement path anyway.** It would have been redundant against the
+integrity threat (the kernel refuses writes) even had it worked, and it
+never did: its `nc -U <socket>` transport was denied by the Canonical-shipped
+enforce-mode profile `/etc/apparmor.d/nc.openbsd` with
+`info="Failed name lookup - disconnected path"` — AppArmor mediates the
+*peer's* path as stored at `bind()` in the binder's mount namespace, and the
+sidecar bound inside its own apptainer namespace, so that path was
+disconnected globally, confirmed against an unconfined host shell too (same
+failure, no apptainer involved).
 
 ## Standing verification
 
@@ -113,10 +115,12 @@ objects landing on the remote, all of which must hold either way.
 
 Verified there and no longer open: mutating commands failing at lock creation with
 no partial state (`HEAD` unmoved, no loose object); a **self-installed** git
-subject to the same refusals — the probe fetches `git 2.39.5` from
-`deb.debian.org` into the container with no root in about a second, so the image
-shipping no git is not a control; `--git-dir` / `-C` / `GIT_DIR` aliasing refused;
-`fetch` failing with the upstream commit absent from the object store.
+subject to the same refusals as the git that now ships in the image — the probe
+vendors its own pinned `git 2.39.5` from `deb.debian.org` into the container
+with no root in about a second, independent of whatever the image itself
+provides, confirming the mask does not care which git binary is used;
+`--git-dir` / `-C` / `GIT_DIR` aliasing refused; `fetch` failing with the
+upstream commit absent from the object store.
 
 A suite of kernel-refusal assertions cannot distinguish a working control from a
 broken fixture — git writes `.git/FETCH_HEAD` before it contacts any remote, so

@@ -139,9 +139,9 @@ generate_dockerfile() {
     } > "$out"
 }
 
-# build_images: builds $SIF_IMAGE and $GITMCP_SIF on first use, or
-# unconditionally when REBUILD=1 (set by --rebuild; see functions/argv.sh).
-# Requires SIF_IMAGE/GITMCP_SIF to be set.
+# build_images: builds $SIF_IMAGE on first use, or unconditionally when
+# REBUILD=1 (set by --rebuild; see functions/argv.sh). Requires SIF_IMAGE
+# to be set.
 #
 # apptainer's "dockerfile:" bootstrap (an alias for "buildkit:", see
 # internal/pkg/build/conveyorPacker.go) takes a build CONTEXT DIRECTORY,
@@ -166,18 +166,6 @@ build_images() {
         log_info "agent image: $SIF_IMAGE (built)"
     else
         log_info "agent image: $SIF_IMAGE (reused)"
-    fi
-
-    if [[ "$REBUILD" -eq 1 || ! -f "$GITMCP_SIF" ]]; then
-        rm -f "$GITMCP_SIF"
-        apptainer build --fakeroot \
-            --build-arg "USERNAME=${USER:-$(id -un)}" \
-            --build-arg "UID=$(id -u)" \
-            --build-arg "GID=$(id -g)" \
-            "$GITMCP_SIF" "dockerfile:$SANDBOX_DIR/gitmcp"
-        log_info "gitmcp image: $GITMCP_SIF (built)"
-    else
-        log_info "gitmcp image: $GITMCP_SIF (reused)"
     fi
 }
 

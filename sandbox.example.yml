@@ -8,9 +8,8 @@
 # file, e.g.:
 #   ./sandbox.sh --environment preset=python --environment python_version=3.12 claude
 # Git access (see sandbox.sh's "Git access" header comment): the agent
-# image ships no git binary; all git access goes through the read-only
-# MCP sidecar (sandbox/git-mcp-server.py), started automatically whenever
-# the project directory has a .git. Nothing to configure here.
+# image ships a real git binary directly; the only access control is the
+# kernel-enforced read-only .git mask. Nothing to configure here.
 #
 # Recognized keys under "environment:", first match wins in this order:
 #

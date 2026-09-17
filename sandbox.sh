@@ -3,13 +3,13 @@
 # Unified sandbox entrypoint. Usage:
 #   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] <claude|opencode|omp> [agent-args...]
 #
-# Builds "<agent>.<env-tag>.sif" and "gitmcp.sif" on first use (apptainer
-# runtime) under $SANDBOX_ENGINE_IMAGE_DIR (default: $HOME/.apptainer/images;
-# override with the SANDBOX_ENGINE_IMAGE_DIR env var) from sandbox/Dockerfile,
+# Builds "<agent>.<env-tag>.sif" on first use (apptainer runtime) under
+# $SANDBOX_ENGINE_IMAGE_DIR (default: $HOME/.apptainer/images; override with
+# the SANDBOX_ENGINE_IMAGE_DIR env var) from sandbox/agent/Dockerfile,
 # selecting the agent via --build-arg AGENT=<agent> and the base image per
 # the project's execution environment, see below. The agent is then exec'd
 # inside it, with the project directory bind-mounted and set as cwd. Pass
-# --rebuild to force rebuilding both SIFs even if they already exist.
+# --rebuild to force rebuilding the SIF even if it already exists.
 #
 # Implementation is split across functions/*.sh (sourced below):
 #   log.sh          -v/-vv verbosity helpers (log_info/log_debug/log_argv)
@@ -17,8 +17,8 @@
 #   sandbox_yml.sh  <project-dir>/sandbox.yml parsing
 #   environment.sh  base-image resolution, Dockerfile generation, SIF build
 #   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
-#   git-mcp.sh       git MCP sidecar lifecycle (start/stop, .git ro mask)
-#   agents.sh       per-agent state binds, RUN_CMD, MCP config injection
+#   git-mask.sh     read-only .git mask (option A, decided 2026-09-17)
+#   agents.sh       per-agent state binds, RUN_CMD
 # Project directory: defaults to the current working directory; override with
 # --project-dir DIR (accepted anywhere in argv, before or after the agent
 # name). sandbox.yml is looked up at the root of that directory.
@@ -89,36 +89,38 @@
 #   symlinks, so a symlink inside the project pointing outside is also
 #   caught.
 #
-# Git access:
-#   The agent image deliberately stays clean of a git binary. All git
-#   access goes through a separate sidecar container (sandbox/gitmcp.sif,
-#   built from sandbox/gitmcp/Dockerfile) that is exposed to the agent as
-#   a local MCP server: the agent spawns `nc -U <socket>` (see
-#   functions/agents.sh), which relays its stdio to a Unix domain socket
-#   the sidecar created in a per-run RUN_DIR (mode 0700, socket mode
-#   0600) that is bind-mounted into both containers. There is no network
-#   listener and no token — an `apptainer instance` shares the host's
-#   network namespace (--net needs root), so a TCP listener would be
-#   reachable by every local process regardless of any bearer token; the
-#   socket file's own permissions are the access control instead. It
-#   exposes only read-only tools (git_status, git_log, git_diff,
-#   git_show, git_blame, git_branch, git_ls_remote); see
-#   sandbox/gitmcp/git-mcp-server.py. The project directory is bound
-#   READ-ONLY into the sidecar too, since no exposed tool writes. The
-#   sidecar is started before the agent and stopped on exit.
+# Git access (decided 2026-09-17: option A):
+#   The agent image ships a real `git` binary (sandbox/agent/Dockerfile.template)
+#   with GIT_OPTIONAL_LOCKS=0 and GIT_CONFIG_NOSYSTEM=1 baked in. The sole
+#   access control is the kernel-enforced read-only `.git` mask below --
+#   there is no MCP sidecar, no allow-listed tool set, and no operand
+#   validator to maintain. A prior sidecar design (a separate apptainer
+#   instance exposing 7 read-only git tools over a Unix socket) was retired:
+#   its unique property was confining `git_ls_remote`'s argument to an
+#   already-configured remote name, which guarded against argument-injection
+#   inside the sidecar's own namespace, not against a push to an arbitrary
+#   URL (no push tool ever existed) -- and the agent image already ships
+#   curl/ca-certificates with open network egress (`sandbox.sh:83-90` above),
+#   so that property added nothing an agent couldn't already do with curl.
 #
-#   As defense in depth (an agent could still `apt install`/`curl` its own
-#   git binary given network + package-manager access), every .git in the
-#   project tree — the top-level one, submodules, and nested repositories,
-#   plus the real git dir a worktree/submodule .git file points at — is
-#   additionally bind-mounted READ-ONLY into the agent container. That is
-#   kernel-enforced, not a wrapper, so it also blocks writes from a
-#   self-installed git or any git library. The same walk covers every
-#   read-write extra bind (sandbox.yml binds: / --bind), not just the
+#   Every .git in the project tree -- the top-level one, submodules, and
+#   nested repositories, plus the real git dir a worktree/submodule .git
+#   file points at -- is bind-mounted READ-ONLY into the agent container
+#   (functions/git-mask.sh). That is kernel-enforced, not a wrapper, so it
+#   holds regardless of whether the git binary in use is the one the image
+#   ships or one the agent fetched/installed itself. The same walk covers
+#   every read-write extra bind (sandbox.yml binds: / --bind), not just the
 #   project dir, since a .git anywhere writable in the container is
 #   otherwise unguarded. A gitdir a bound worktree/submodule .git file
 #   points at that lands outside every bound tree is left unmounted (and
 #   named on stderr) unless --allow-external-gitdir mounts it read-only.
+#
+#   `push` succeeds against a read-only `.git` (the remote is updated; only
+#   the local `refs/remotes/*` tracking-ref update fails, with one `error:`
+#   line, and the command does not fail because of it); `status`/`diff` work
+#   with `GIT_OPTIONAL_LOCKS=0`; `fetch --no-write-fetch-head` can sync from
+#   upstream; history-rewriting operations (`commit`, `checkout`, `rebase`,
+#   `gc`, ...) fail at lock creation with `Read-only file system`.
 
 set -euo pipefail
 
@@ -137,13 +139,13 @@ source "$FUNCTIONS_DIR/sandbox_yml.sh"
 source "$FUNCTIONS_DIR/environment.sh"
 # shellcheck source=functions/binds.sh
 source "$FUNCTIONS_DIR/binds.sh"
-# shellcheck source=functions/git-mcp.sh
-source "$FUNCTIONS_DIR/git-mcp.sh"
+# shellcheck source=functions/git-mask.sh
+source "$FUNCTIONS_DIR/git-mask.sh"
 # shellcheck source=functions/agents.sh
 source "$FUNCTIONS_DIR/agents.sh"
 
-# cleanup() (functions/git-mcp.sh) tears down the sidecar and any temporary
-# state. Registered before anything can create that state.
+# cleanup() (functions/git-mask.sh) removes the per-run scratch directory.
+# Registered before anything can create that state.
 trap cleanup EXIT
 
 parse_argv "$@"
@@ -156,7 +158,7 @@ log_info "project dir: $PROJECT_DIR"
 # inside the sandbox (RUN_CMD = its own trailing argv) instead of an
 # agent CLI, and the Dockerfile has no `script` stage. Build and reuse an
 # ordinary agent image for it -- the read-only .git mask it gets is built
-# by start_git_sidecar, identically for every agent. Used by the
+# by mask_git_readonly, identically for every agent. Used by the
 # git-escape probe (tests/git-escape/run.sh) to run
 # tests/git-escape/probe.sh inside a real agent container.
 IMAGE_AGENT="$AGENT"
@@ -175,18 +177,16 @@ parse_sandbox_yml
 resolve_environment
 log_info "environment: mode=$ENV_MODE base_image=$BASE_IMAGE env_tag=$ENV_TAG"
 
-# SIFs are build artefacts, not source: keep them out of the checkout.
+# The SIF is a build artefact, not source: keep it out of the checkout.
 IMAGE_DIR="${SANDBOX_ENGINE_IMAGE_DIR:-$HOME/.apptainer/images}"
 mkdir -p "$IMAGE_DIR"
 SIF_IMAGE="$IMAGE_DIR/$IMAGE_AGENT.$ENV_TAG.sif"
-# shellcheck disable=SC2034  # GITMCP_SIF is read by build_images (functions/environment.sh) and start_git_sidecar (functions/git-mcp.sh)
-GITMCP_SIF="$IMAGE_DIR/gitmcp.sif"
 build_images
 
 BINDS=(
     -B "$PROJECT_DIR"
 )
-# shellcheck disable=SC2034  # EXTRA_BIND_SRCS/EXTRA_BIND_RO are appended to by resolve_extra_binds (functions/binds.sh) and read by mask_git_readonly (functions/git-mcp.sh)
+# shellcheck disable=SC2034  # EXTRA_BIND_SRCS/EXTRA_BIND_RO are appended to by resolve_extra_binds (functions/binds.sh) and read by mask_git_readonly (functions/git-mask.sh)
 EXTRA_BIND_SRCS=()
 # shellcheck disable=SC2034  # see EXTRA_BIND_SRCS above
 EXTRA_BIND_RO=()
@@ -198,9 +198,8 @@ resolve_extra_binds
 # read-only over the read-write project-dir bind.
 bind_ro "$SANDBOX_YML"
 
-# Masks every .git in the project tree read-only in BINDS and, when the
-# project root is a repository, starts the git MCP sidecar.
-start_git_sidecar
+# Masks every .git in the project tree read-only in BINDS.
+mask_git_readonly
 
 configure_agent
 log_info "masks: ${GIT_MASK_COUNT:-0} .git path(s) read-only, ${#RO_MASKED[@]} read-only config bind(s)"
