@@ -15,7 +15,10 @@ Instructions for AI agents working in this repository.
   if a bind, mask, or credential path is missing or hostile.
 - Verify shell changes before yielding:
   - `bash -n <file>` on every changed script.
-  - `shellcheck` on every changed script, fix all findings.
+  - If the change touches `sandbox.sh` or `functions/*.sh`, run
+    `shellcheck sandbox.sh functions/*.sh` (together, so `source`
+    targets resolve instead of producing spurious SC1091 warnings);
+    otherwise `shellcheck` on every changed script. Fix all findings.
 
 ## `notes/`
 
