@@ -147,9 +147,109 @@ scan_opencode_api_keys() {
     done < "$file"
 }
 
+# LIMITATIONS_NOTICE_MARKER: fixed marker appended to each agent's
+# always-loaded instruction file, pointing at the generated lookup file.
+# Fixed so re-generating the overlay next run is idempotent instead
+# of accumulating copies of the note.
+LIMITATIONS_NOTICE_MARKER='<!-- sandbox-engine: sandboxed session -->'
+
+# generate_limitations_file OUT: writes the lookup file everything except
+# the two-sentence pointer goes into, so the always-loaded instruction
+# file (CLAUDE.md/AGENTS.md) stays short. Static git-behavior facts (what
+# the read-only `.git` mask does and does not block) plus a filesystem
+# section built from this run's actual resolved binds, not a guess --
+# PROJECT_DIR, every extra bind from resolve_extra_binds() with its
+# resolved ro/rw (functions/binds.sh), and whatever is already in
+# RO_MASKED at the point this is called (sandbox.yml; per-agent tool
+# config added later by configure_agent's own branches is not user
+# task-relevant and is left out on purpose).
+generate_limitations_file() {
+    local out="$1" j p mode
+    {
+        echo "# Sandbox limitations"
+        echo
+        echo "This session runs inside \`sandbox-engine\`, an apptainer sandbox. Two"
+        echo "things are restricted relative to a bare host shell: git write access,"
+        echo "and which host paths are reachable from here. If something looks"
+        echo "blocked, it probably is -- retrying with different flags will not"
+        echo "change that."
+        echo
+        echo "## Git"
+        echo
+        echo "- \`push\` succeeds against the read-only \`.git\` mask (the remote is"
+        echo "  updated); only the local \`refs/remotes/*\` tracking-ref update fails --"
+        echo "  expect one \`error: update_ref failed\` line, harmless, and the command"
+        echo "  still exits 0."
+        echo "- \`fetch --no-write-fetch-head\` can sync from upstream; plain \`fetch\`"
+        echo "  fails with \`Read-only file system\`."
+        echo "- \`status\`/\`diff\` work normally."
+        echo "- History-rewriting commands (\`commit\`, \`checkout\`, \`switch\`,"
+        echo "  \`merge\`, \`rebase\`, \`stash\`, \`branch -d/-c\`, \`worktree add\`,"
+        echo "  \`gc\`, ...) fail at lock creation with \`Read-only file system\`. This"
+        echo "  holds no matter which \`git\` binary is in use -- the one already in"
+        echo "  this image, or one fetched or installed during this session."
+        echo "- Remote URLs and credential references are redacted from every"
+        echo "  \`.git\` this container can read (\`config\`, \`FETCH_HEAD\`, the"
+        echo "  reflog); \`git log origin/master\` and ahead/behind counts still"
+        echo "  work, but \`git remote -v\` shows a placeholder instead of the real"
+        echo "  URL."
+        echo
+        echo "## Filesystem"
+        echo
+        echo "- \`$PROJECT_DIR\` -- read-write (the project this session sandboxes)."
+        for ((j = 0; j < ${#EXTRA_BIND_SRCS[@]}; j++)); do
+            mode="read-write"
+            [[ "${EXTRA_BIND_RO[$j]}" -eq 1 ]] && mode="read-only"
+            echo "- \`${EXTRA_BIND_SRCS[$j]}\` -- $mode."
+        done
+        for p in ${RO_MASKED[@]+"${RO_MASKED[@]}"}; do
+            echo "- \`$p\` -- read-only."
+        done
+        echo
+        echo "Nothing outside these paths is reachable from this container."
+    } >"$out"
+    chmod 600 "$out"
+}
+
+# bind_augmented_instructions REAL: overlay REAL (a host instruction file
+# such as CLAUDE.md/AGENTS.md -- may not exist yet) with a read-only copy
+# that additionally points at the generated limitations lookup file,
+# unless REAL already carries the same marker. Same "sanitized copy bound
+# over the real path" technique force_omp_secrets_redaction already uses
+# above, so a project's own instruction content survives untouched
+# underneath the appended note.
+bind_augmented_instructions() {
+    local real="$1" out
+    ensure_run_dir
+    out="$RUN_DIR/instructions-$(basename "$real")-$(echo -n "$real" | cksum | cut -d' ' -f1)"
+    if [[ -f "$real" ]]; then
+        cp "$real" "$out"
+    else
+        : >"$out"
+    fi
+    if ! grep -qF "$LIMITATIONS_NOTICE_MARKER" "$out" 2>/dev/null; then
+        {
+            echo
+            echo "$LIMITATIONS_NOTICE_MARKER"
+            echo "This session is sandboxed: git write access and host filesystem reach"
+            echo "are restricted. Read \$HOME/.sandbox-limitations.md before assuming a"
+            echo "host-level capability."
+        } >>"$out"
+    fi
+    chmod 600 "$out"
+    BINDS+=(-B "$out:$real:ro")
+}
+
 configure_agent() {
     # shellcheck disable=SC2034  # AGENT_ENV is read by sandbox.sh's EXEC_ARGV after configure_agent returns
     AGENT_ENV=()
+
+    if [[ "$AGENT" != "script" ]]; then
+        ensure_run_dir
+        local limitations_file="$RUN_DIR/sandbox-limitations.md"
+        generate_limitations_file "$limitations_file"
+        BINDS+=(-B "$limitations_file:$HOME/.sandbox-limitations.md:ro")
+    fi
 
     case "$AGENT" in
         claude)
@@ -175,10 +275,14 @@ configure_agent() {
             # session state, per-project trust, MCP OAuth tokens), and
             # projects/, shell-snapshots/, todos/, statsig/, file-history/,
             # history.jsonl, ide/.
-            for p in settings.json settings.local.json CLAUDE.md \
+            for p in settings.json settings.local.json \
                      hooks plugins agents commands skills rules output-styles; do
                 bind_ro "$HOME/.claude/$p"
             done
+            # CLAUDE.md is the always-loaded instruction file: overlay
+            # it with a copy of itself plus a pointer at the generated
+            # limitations lookup file, instead of a plain read-only bind.
+            bind_augmented_instructions "$HOME/.claude/CLAUDE.md"
             # Fold every user --mcp-config value into one occurrence and
             # force --strict-mcp-config unconditionally: user- and
             # project-scope MCP servers from the host (~/.claude.json,
@@ -239,7 +343,7 @@ configure_agent() {
             # (written every session), all of ~/.local/share/opencode
             # except bin/ (auth.json, mcp-auth.json, db.sqlite, storage/,
             # log/, project/), and ~/.local/state/opencode.
-            for p in opencode.json opencode.jsonc AGENTS.md \
+            for p in opencode.json opencode.jsonc \
                      plugin agent command mode tool skill themes; do
                 case "$p" in
                     opencode.json | opencode.jsonc)
@@ -248,6 +352,8 @@ configure_agent() {
                 esac
                 bind_ro "$HOME/.config/opencode/$p"
             done
+            # AGENTS.md is the always-loaded instruction file.
+            bind_augmented_instructions "$HOME/.config/opencode/AGENTS.md"
             bind_ro "$HOME/.local/share/opencode/bin"
             RUN_CMD=(opencode "${ARGS[@]}")
             ;;
@@ -284,12 +390,14 @@ configure_agent() {
             BINDS+=(-B "$omp_config_copy:$HOME/.omp/agent/config.yml:ro")
             for p in agent/models.yml agent/mcp.json agent/.mcp.json \
                      agent/.env .env agent/agents agent/skills agent/tools agent/hooks \
-                     agent/commands extensions agent/AGENTS.md; do
+                     agent/commands extensions; do
                 if [[ "$p" == agent/models.yml ]]; then
                     scan_omp_api_keys "$HOME/.omp/$p"
                 fi
                 bind_ro "$HOME/.omp/$p"
             done
+            # agent/AGENTS.md is the always-loaded instruction file.
+            bind_augmented_instructions "$HOME/.omp/agent/AGENTS.md"
             for p in "$HOME"/.omp/profiles/*/agent/config.yml \
                      "$HOME"/.omp/profiles/*/agent/mcp.json \
                      "$HOME"/.omp/profiles/*/agent/.mcp.json; do
