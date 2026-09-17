@@ -30,3 +30,17 @@ It is not part of the shipped project:
 - Nothing outside `notes/` may reference it or depend on its contents
   (no `notes/...` paths, no task-id tags like `T07` in code, comments,
   or docs shipped to users).
+
+## `docs/`
+
+`docs/` is persistent, shipped documentation: once a finding or design
+decision lands there, it is retained (not deleted alongside the `notes/`
+item that motivated it).
+
+- `docs/*` files must never reference anything in, or established only
+  in, `notes/` — no `notes/...` paths, no task-id (`T<n>`) or
+  question-id (`Q<n>`) tags, no "per the decision in notes/...".
+- `docs/` must be self-contained: each page may reference `functions/`
+  or `sandbox.sh` (the actual implementation) but nothing under
+  `notes/`. A reader with no access to `notes/` must be able to use
+  `docs/` in full.

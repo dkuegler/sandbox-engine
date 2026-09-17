@@ -1,7 +1,13 @@
 #!/bin/bash
+# --- START OF HELPTEXT ---
 #
 # Unified sandbox entrypoint. Usage:
-#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] <claude|opencode|omp> [agent-args...]
+#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] [-h|--help] <claude|opencode|omp> [agent-args...]
+#
+# -h/--help before the agent name prints this header (the comment block
+# you're reading now) and exits; the same flag after the agent name is
+# position-scoped like -v/-vv above and is forwarded untouched as that
+# agent's own -h/--help instead.
 #
 # Builds "<agent>.<env-tag>.sif" on first use (apptainer runtime) under
 # $SANDBOX_ENGINE_IMAGE_DIR (default: $HOME/.apptainer/images; override with
@@ -17,7 +23,7 @@
 #   sandbox_yml.sh  <project-dir>/sandbox.yml parsing
 #   environment.sh  base-image resolution, Dockerfile generation, SIF build
 #   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
-#   git-mask.sh     read-only .git mask (option A, decided 2026-09-17)
+#   git-mask.sh     read-only .git mask
 #   agents.sh       per-agent state binds, RUN_CMD
 # Project directory: defaults to the current working directory; override with
 # --project-dir DIR (accepted anywhere in argv, before or after the agent
@@ -68,11 +74,10 @@
 # Additional binds (sandbox.yml / --bind):
 #   Extra host paths mounted into the sandbox, on top of the project dir,
 #   $HOME, and the per-agent config binds above. **Read-only by default**
-#   (changed 2026-09-17 -- a breaking change from the prior read-write
-#   default: almost no agent task needs to write to a data mount, and
-#   read-write turned disclosure of a mounted dataset into destruction of
-#   it too). Add ":rw" explicitly to opt into read-write. A top-level
-#   "binds:" list in sandbox.yml sets project defaults (NOT under
+#   (almost no agent task needs to write to a data mount, and read-write
+#   would turn disclosure of a mounted dataset into destruction of it too).
+#   Add ":rw" explicitly to opt into read-write. A top-level "binds:" list
+#   in sandbox.yml sets project defaults (NOT under
 #   "environment:"):
 #     binds:
 #       - /data                  # host path mounted at the same container path, read-only
@@ -99,19 +104,15 @@
 #   (`log_resolved_binds`, functions/binds.sh) so an after-the-fact
 #   question about what a run could see has an answer.
 #
-# Git access (decided 2026-09-17: option A):
+# Git access:
 #   The agent image ships a real `git` binary (sandbox/agent/Dockerfile.template)
 #   with GIT_OPTIONAL_LOCKS=0 and GIT_CONFIG_NOSYSTEM=1 baked in. The sole
 #   access control is the kernel-enforced read-only `.git` mask below --
 #   there is no MCP sidecar, no allow-listed tool set, and no operand
-#   validator to maintain. A prior sidecar design (a separate apptainer
-#   instance exposing 7 read-only git tools over a Unix socket) was retired:
-#   its unique property was confining `git_ls_remote`'s argument to an
-#   already-configured remote name, which guarded against argument-injection
-#   inside the sidecar's own namespace, not against a push to an arbitrary
-#   URL (no push tool ever existed) -- and the agent image already ships
-#   curl/ca-certificates with open network egress (`sandbox.sh:83-90` above),
-#   so that property added nothing an agent couldn't already do with curl.
+#   validator. The agent image already ships curl/ca-certificates with open
+#   network egress (see "Additional binds" above), so this mask does not
+#   prevent exfiltration or pushing to an arbitrary remote by other means;
+#   it only prevents git itself from rewriting local history/refs.
 #
 #   Every .git in the project tree -- the top-level one, submodules, and
 #   nested repositories, plus the real git dir a worktree/submodule .git
@@ -131,6 +132,7 @@
 #   with `GIT_OPTIONAL_LOCKS=0`; `fetch --no-write-fetch-head` can sync from
 #   upstream; history-rewriting operations (`commit`, `checkout`, `rebase`,
 #   `gc`, ...) fail at lock creation with `Read-only file system`.
+# --- END OF HELPTEXT ---
 
 set -euo pipefail
 

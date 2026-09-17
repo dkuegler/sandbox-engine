@@ -7,6 +7,16 @@ usage() {
     exit 1
 }
 
+# print_help: dumps sandbox.sh's own top-of-file comment block (between the
+# "# --- START OF HELPTEXT ---" and "# --- END OF HELPTEXT ---" markers) to
+# stdout with the "#"/"# " comment markers stripped, so the header
+# documentation IS the --help text rather than a second copy to keep in sync.
+print_help() {
+    sed -n '/^# --- START OF HELPTEXT ---$/,/^# --- END OF HELPTEXT ---$/p' "$SCRIPT_DIR/sandbox.sh" \
+        | sed '1d;$d' \
+        | sed -E 's/^#( )?//'
+}
+
 set_cli_env() {
     local kv="$1" key val
     if [[ "$kv" != *=* ]]; then
@@ -85,6 +95,22 @@ parse_argv() {
             --allow-external-gitdir)
                 # shellcheck disable=SC2034  # ALLOW_EXTERNAL_GITDIR is read by functions/git-mask.sh's external-gitdir check
                 ALLOW_EXTERNAL_GITDIR=1
+                shift
+                ;;
+            -h|--help)
+                # Position-scoped like -v/-vv: before the agent name this is
+                # sandbox's own help; after it, it's the agent's own -h/--help
+                # and must be forwarded untouched -- but flag on stderr that
+                # what's about to print is the agent's help, not sandbox's,
+                # since both share the same flag and a user could easily
+                # mistake one for the other.
+                if [[ -z "$AGENT" ]]; then
+                    print_help
+                    exit 0
+                else
+                    echo "Note: forwarding $1 to '$AGENT' -- this is $AGENT's own help, not sandbox.sh's. For sandbox.sh's own documentation, run: $0 --help (before the agent name)." >&2
+                    ARGS+=("$1")
+                fi
                 shift
                 ;;
             -v|--verbose)
