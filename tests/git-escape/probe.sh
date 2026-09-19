@@ -31,6 +31,9 @@ set -uo pipefail
 
 REPO="${1:-$PWD}"
 EXTRA_REPO="${2:-}"
+# The --worktree writable checkout. Optional: passed by run.sh in
+# plain and negative mode alike, absent when probe.sh is invoked by hand.
+WT_REPO="${3:-}"
 SCRATCH="${SCRATCH:-/dev/shm/git-escape}"
 GIT="$SCRATCH/root/usr/bin/git"
 MIRROR="${MIRROR:-https://deb.debian.org/debian}"
@@ -223,6 +226,72 @@ for p in "$HOME/.gitconfig" "$HOME/.git-credentials"; do
     [[ -e "$p" ]] && { a9_fail=1; echo "  ..UNEXPECTED: $p is reachable inside the sandbox"; }
 done
 chk A9 "no host ~/.gitconfig or ~/.git-credentials reachable" "$a9_fail" 0
+
+# --worktree writable checkout must not reopen a path to the main
+# repository's history
+# =======================================================================
+# A linked worktree shares the main repository's object database and ref
+# namespace outright; only HEAD/index/logs/HEAD/config.worktree are its
+# own. So "the worktree is read-write" and "the main repository's history
+# is read-only" are only compatible because three separate paths are
+# masked: the worktree's own ".git" pointer file, the
+# <main>/.git/worktrees/<name>/ directory it names, and <main>/.git.
+if [[ -n "$WT_REPO" ]]; then
+    WT_REPO="$(cd "$WT_REPO" 2>/dev/null && pwd)" || { echo "PREFLIGHT: no such worktree: $3" >&2; exit 99; }
+    WT_GITDIR="$("$GIT" -C "$WT_REPO" rev-parse --absolute-git-dir 2>/dev/null)"
+    if [[ -z "$WT_GITDIR" || ! -f "$WT_REPO/.git" ]]; then
+        echo "PREFLIGHT: $WT_REPO is not a linked worktree (no .git file / no gitdir)" >&2
+        exit 99
+    fi
+
+    # A10a is positive evidence, and it comes first for the same reason the
+    # fixture checks above do: without it, every refusal below would also
+    # "pass" if the worktree simply were not mounted at all.
+    if ( : > "$WT_REPO/ESCAPE_PROBE_WT" ) 2>/dev/null; then
+        rm -f "$WT_REPO/ESCAPE_PROBE_WT"
+        ok A10a "the worktree checkout is genuinely writable (so A10b+ mean something)"
+    else
+        bad A10a "the worktree checkout is NOT writable -- A10b/A11 below prove nothing"
+    fi
+
+    ( : >> "$WT_REPO/.git" ) 2>/dev/null \
+        && bad A10b "the worktree's .git pointer file is writable -- its gitdir can be repointed" \
+        || ok A10b "the worktree's .git pointer file is read-only"
+
+    ( : > "$WT_GITDIR/ESCAPE_PROBE" ) 2>/dev/null \
+        && bad A10c "the worktree's metadata dir $WT_GITDIR is writable" \
+        || ok A10c "the worktree's metadata dir is read-only"
+
+    # A11a: the agent cannot commit from inside its own worktree. The whole
+    # design depends on this -- the commit is a host-side, post-exit,
+    # human-approved step, and a worktree commit would write objects and
+    # move a branch in the MAIN repository.
+    wt_head_before="$("$GIT" -C "$WT_REPO" rev-parse HEAD 2>/dev/null)"
+    out="$("$GIT" -C "$WT_REPO" commit --allow-empty -m wt-escape 2>&1)"; rc=$?
+    wt_head_after="$("$GIT" -C "$WT_REPO" rev-parse HEAD 2>/dev/null)"
+    [[ $rc -ne 0 ]] && ok A11a "commit from the worktree exit=$rc (non-zero)" \
+                    || bad A11a "commit from the worktree SUCCEEDED: $out"
+    chk A11b "the worktree's branch did not move" "$wt_head_after" "$wt_head_before"
+
+    # A11c is the escalation that matters most: a worktree shares the main
+    # repository's ENTIRE ref namespace, so a writable worktree gitdir
+    # would let the agent rewrite branches it was never given a checkout
+    # of -- master included.
+    main_br="$("$GIT" -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    main_before="$("$GIT" -C "$REPO" rev-parse "refs/heads/$main_br" 2>/dev/null)"
+    out="$("$GIT" -C "$WT_REPO" update-ref "refs/heads/$main_br" "$wt_head_before" 2>&1)"; rc=$?
+    main_after="$("$GIT" -C "$REPO" rev-parse "refs/heads/$main_br" 2>/dev/null)"
+    [[ $rc -ne 0 ]] && ok A11c "update-ref against the main repo's $main_br exit=$rc (non-zero)" \
+                    || bad A11c "update-ref rewrote the main repo's $main_br from the worktree: $out"
+    chk A11d "the main repo's $main_br is unmoved" "$main_after" "$main_before"
+
+    # A11e: no new, unmasked writable gitdir can be minted from here.
+    out="$("$GIT" -C "$WT_REPO" worktree add "$SCRATCH/escape-wt" -b escape-$$ 2>&1)"; rc=$?
+    [[ $rc -ne 0 ]] && ok A11e "worktree add from the worktree exit=$rc (non-zero)" \
+                    || bad A11e "worktree add minted a fresh writable gitdir: $out"
+else
+    echo "note: no worktree path passed as \$3 -- A10/A11 not exercised" >&2
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

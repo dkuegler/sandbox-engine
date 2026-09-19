@@ -8,6 +8,9 @@ established, and how to re-establish it.
 | document | subject |
 | --- | --- |
 | [`git-breakout.md`](git-breakout.md) | the git boundary: what the read-only `.git` mask enforces, measured behaviour of git against it, what is not contained, reproduction |
+| [`commit-message-generation.md`](commit-message-generation.md) | the `--worktree` message fallback: why it runs inside the sandbox, which model each agent uses, and which of the run's own flags propagate |
+| [`parallelization.md`](parallelization.md) | how claude-code, omp and opencode handle concurrent sessions, and why opencode's server mode does not survive `--containall` unmodified |
+| [`worktree-mode.md`](worktree-mode.md) | `--worktree`: what a writable git worktree shares with the main repository, which paths are masked, and where the commit happens |
 
 ## Convention
 

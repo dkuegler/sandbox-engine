@@ -65,15 +65,20 @@ git -C "$FIXTURE" add sub .gitmodules
 git -C "$FIXTURE" -c user.name=probe -c user.email=probe@invalid commit --quiet -m "add submodule"
 git -C "$FIXTURE/sub" remote set-url origin "https://$SECRET_SUBMODULE/sub.git"
 
-# Worktree, checked out OUTSIDE the project tree (mirroring tasks.md T5's
-# planned layout: worktrees live under $HOME/.agent/worktrees/..., never
-# under the project dir) -- this is the layout that exposed a real gap:
-# a worktree's config.worktree previously rode along unsanitized on its
-# parent .git's blanket read-only mount whenever the worktree's own
-# checkout wasn't independently discoverable (fixed in
-# sanitize_gitdir_metadata(), functions/git-mask.sh). Its own distinct
-# credential proves this specific path is covered, not just the project
-# and submodule cases above.
+# Worktree, checked out OUTSIDE the project tree -- the layout --worktree
+# mode uses (worktrees live under $HOME/.agent/worktrees/..., never under
+# the project dir). It carries two distinct jobs in this suite:
+#
+#   - its own credentialed config.worktree, which exposed a real gap: a
+#     worktree's config.worktree previously rode along unsanitized on its
+#     parent .git's blanket read-only mount whenever the worktree's own
+#     checkout wasn't independently discoverable (fixed in
+#     sanitize_gitdir_metadata(), functions/git-mask.sh);
+#   - and, bound READ-WRITE below, it is the --worktree writable checkout
+#     A10/A11 assert cannot reach the main repository's history. That bind
+#     is what makes it a real test of worktree mode rather than of a
+#     read-only bystander: the worktree's files must be writable while its
+#     .git pointer file, its metadata dir, and the main .git must not be.
 git -C "$FIXTURE" worktree add --quiet -b agentwt "$WORK/wt"
 git -C "$WORK/wt" config extensions.worktreeConfig true
 git -C "$WORK/wt" config --worktree remote.fork.url \
@@ -96,7 +101,7 @@ git -C "$EXTRA" remote add origin "https://$SECRET_EXTRA/extra.git"
 if [[ "$NEGATIVE" -eq 1 ]]; then
     echo "=== negative control: probe on the host, no mask, failures expected"
     set +e
-    SCRATCH="$WORK/scratch" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA"
+    SCRATCH="$WORK/scratch" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA" "$WORK/wt"
     rc=$?
     set -e
     if [[ $rc -eq 1 ]]; then
@@ -110,4 +115,5 @@ if [[ "$NEGATIVE" -eq 1 ]]; then
 fi
 
 echo "=== git-escape suite, project dir $FIXTURE"
-"$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" script --project-dir "$FIXTURE" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA"
+"$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" --bind "$WORK/wt:rw" script \
+    --project-dir "$FIXTURE" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA" "$WORK/wt"

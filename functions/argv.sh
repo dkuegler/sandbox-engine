@@ -1,9 +1,10 @@
 #!/bin/bash
 # argv parsing: usage(), --environment KEY=VALUE handling, and the main
-# option loop. Populates PROJECT_DIR, AGENT, ARGS, CLI_ENV_*, CLI_BINDS.
+# option loop. Populates PROJECT_DIR, AGENT, ARGS, CLI_ENV_*, CLI_BINDS,
+# WORKTREE_BRANCH.
 
 usage() {
-    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] [--no-update-check] <claude|opencode|omp|script> [agent-args...]" >&2
+    echo "Usage: $0 [--project-dir DIR] [--worktree BRANCH] [--commit-model MODEL] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] [--no-update-check] <claude|opencode|omp|script> [agent-args...]" >&2
     exit 1
 }
 
@@ -57,6 +58,17 @@ parse_argv() {
     VERBOSE=0
     REBUILD=0
     NO_UPDATE_CHECK=0
+    # Empty means "no worktree mode"; any value is the branch suffix the
+    # caller asked for, used verbatim (functions/worktree.sh never invents
+    # a branch name). Validated there, not here.
+    WORKTREE_BRANCH=""
+    # Explicit override for the model that writes a commit message when the
+    # agent left its own message file empty (functions/commit-message.sh).
+    # Empty means "let the agent resolve it": omp's own "commit" model
+    # role, claude's built-in "haiku" alias, opencode's configured
+    # small_model. Never inherits the coding run's --model -- that model is
+    # chosen for writing code, not for summarising a diff.
+    COMMIT_MODEL=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -96,6 +108,26 @@ parse_argv() {
             --allow-external-gitdir)
                 # shellcheck disable=SC2034  # ALLOW_EXTERNAL_GITDIR is read by functions/git-mask.sh's external-gitdir check
                 ALLOW_EXTERNAL_GITDIR=1
+                shift
+                ;;
+            --worktree)
+                [[ $# -ge 2 ]] || usage
+                WORKTREE_BRANCH="$2"
+                shift 2
+                ;;
+            --worktree=*)
+                # shellcheck disable=SC2034  # WORKTREE_BRANCH is read by functions/worktree.sh and sandbox.sh after parse_argv returns
+                WORKTREE_BRANCH="${1#--worktree=}"
+                shift
+                ;;
+            --commit-model)
+                [[ $# -ge 2 ]] || usage
+                COMMIT_MODEL="$2"
+                shift 2
+                ;;
+            --commit-model=*)
+                # shellcheck disable=SC2034  # COMMIT_MODEL is read by functions/commit-message.sh after parse_argv returns
+                COMMIT_MODEL="${1#--commit-model=}"
                 shift
                 ;;
             -h|--help)

@@ -6,11 +6,11 @@
 # per-agent MCP server to wire up here.
 
 # ensure_run_dir: create the per-run scratch directory on first use. Used
-# today only by the omp branch's secrets redaction; cleanup()
-# (functions/run-dir.sh) removes it unconditionally on exit. Writes this
-# shell's PID into the directory so reap_orphaned_run_dirs()
-# (functions/run-dir.sh) can tell a leaked directory (owner process gone)
-# from one still in active use.
+# today only by the omp branch's secrets redaction; remove_run_dir()
+# (functions/run-dir.sh) removes it unconditionally on exit, as a hook on
+# the EXIT trap (functions/cleanup.sh). Writes this shell's PID into the
+# directory so reap_orphaned_run_dirs() (functions/run-dir.sh) can tell a
+# leaked directory (owner process gone) from one still in active use.
 ensure_run_dir() {
     if [[ -z "${RUN_DIR:-}" ]]; then
         RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-engine.XXXXXX")"
@@ -80,8 +80,9 @@ require_host_env() {
     # APPTAINERENV_-prefixed, not --env: apptainer strips the prefix and
     # sets the variable inside the container, so the value never appears
     # in the world-readable /proc/<pid>/cmdline of the apptainer process;
-    # /proc/<pid>/environ is owner-only. Same trick as
-    # APPTAINERENV_OPENCODE_CONFIG_CONTENT below.
+    # /proc/<pid>/environ is owner-only. commit_msg_generate()
+    # (functions/commit-message.sh) forwards OPENCODE_CONFIG_CONTENT the
+    # same way, for the same reason.
     export "APPTAINERENV_$var=${!var}"
 }
 
@@ -196,7 +197,15 @@ generate_limitations_file() {
         echo
         echo "## Filesystem"
         echo
-        echo "- \`$PROJECT_DIR\` -- read-write (the project this session sandboxes)."
+        if [[ -n "${WORKTREE_DIR:-}" ]]; then
+            echo "- \`$WORKTREE_DIR\` -- read-write. **This is the working directory**"
+            echo "  and the only place changes are collected from."
+            mode="read-only"
+            [[ "${WORKTREE_PROJECT_RO:-1}" -eq 1 ]] || mode="read-write"
+            echo "- \`$PROJECT_DIR\` -- $mode (the project's main checkout)."
+        else
+            echo "- \`$PROJECT_DIR\` -- read-write (the project this session sandboxes)."
+        fi
         for ((j = 0; j < ${#EXTRA_BIND_SRCS[@]}; j++)); do
             mode="read-write"
             [[ "${EXTRA_BIND_RO[$j]}" -eq 1 ]] && mode="read-only"
@@ -205,6 +214,37 @@ generate_limitations_file() {
         for p in ${RO_MASKED[@]+"${RO_MASKED[@]}"}; do
             echo "- \`$p\` -- read-only."
         done
+        if [[ -n "${WORKTREE_DIR:-}" ]]; then
+            echo
+            echo "## Worktree mode"
+            echo
+            echo "This session runs in a throwaway git worktree checked out on"
+            echo "\`$WORKTREE_REF\`, not in the project's main checkout."
+            echo
+            echo "- The working directory is \`$WORKTREE_DIR\`. Make every change there."
+            echo "- **A worktree holds only files git tracks.** Anything untracked or"
+            echo "  \`.gitignore\`d in the main checkout -- local notes directories,"
+            echo "  \`.env\` files, build output, virtualenvs -- is NOT here. Look for it"
+            echo "  under \`$PROJECT_DIR\` (the main checkout) before concluding it does"
+            echo "  not exist."
+            if [[ "${WORKTREE_PROJECT_RO:-1}" -eq 1 ]]; then
+                echo "- \`$PROJECT_DIR\` is read-only this session: read from it freely,"
+                echo "  write only inside the worktree."
+            fi
+            echo "- You cannot commit. Every \`.git\` is read-only, as above, and a"
+            echo "  worktree shares the main repository's object store and refs, so that"
+            echo "  is deliberate. A human reviews your change on the host after this"
+            echo "  session exits and commits it there."
+            echo "- **Write your proposed commit message to \`\$HOME/$WORKTREE_MSG_NAME\`**"
+            echo "  before you finish. It starts empty and is read back on the host. Use"
+            echo "  exactly this shape:"
+            echo
+            worktree_message_template | sed 's/^/      /'
+            echo
+            echo "  Add an \`Additional Notes:\` block after it only if something genuinely"
+            echo "  does not fit under Issue or Solution. If you leave the file empty, one"
+            echo "  is generated from your diff by a second, tool-less sandbox run instead."
+        fi
         echo
         echo "Nothing outside these paths is reachable from this container."
     } >"$out"
@@ -218,6 +258,14 @@ generate_limitations_file() {
 # over the real path" technique force_omp_secrets_redaction already uses
 # above, so a project's own instruction content survives untouched
 # underneath the appended note.
+#
+# Worktree mode appends a second, run-specific block naming the two paths
+# and the commit-message file. That block is deliberately NOT behind the
+# marker check: the marker only guards the static notice, and the worktree
+# facts (which directory is writable, where the main checkout is, what
+# file to write) are the ones an agent needs before its first tool call,
+# not after it thinks to read a lookup file. Most importantly it says
+# where to look for the untracked/ignored files a worktree does not have.
 bind_augmented_instructions() {
     local real="$1" out
     ensure_run_dir
@@ -236,6 +284,21 @@ bind_augmented_instructions() {
             echo "host-level capability."
         } >>"$out"
     fi
+    if [[ -n "${WORKTREE_DIR:-}" ]]; then
+        {
+            echo
+            echo "$LIMITATIONS_NOTICE_MARKER worktree"
+            echo "This session runs in a throwaway git worktree on branch \`$WORKTREE_REF\`:"
+            echo "- Working directory: \`$WORKTREE_DIR\` (read-write). Change files here."
+            echo "- Main checkout: \`$PROJECT_DIR\` (read-only). A worktree contains only"
+            echo "  git-tracked files, so anything untracked or gitignored -- notes"
+            echo "  directories, \`.env\`, build output -- lives there, not here. Search"
+            echo "  the main checkout before concluding a file does not exist."
+            echo "- You cannot commit: every \`.git\` is read-only. Write the commit"
+            echo "  message to \`\$HOME/$WORKTREE_MSG_NAME\` and a human reviews and"
+            echo "  commits it on the host. See \$HOME/.sandbox-limitations.md."
+        } >>"$out"
+    fi
     chmod 600 "$out"
     BINDS+=(-B "$out:$real:ro")
 }
@@ -249,7 +312,33 @@ configure_agent() {
         local limitations_file="$RUN_DIR/sandbox-limitations.md"
         generate_limitations_file "$limitations_file"
         BINDS+=(-B "$limitations_file:$HOME/.sandbox-limitations.md:ro")
+        # --worktree mode: the one file in this whole sandbox the agent is
+        # given read-WRITE for a purpose other than editing the project --
+        # its own proposed commit message, read back on the host after the
+        # container exits (functions/worktree.sh). It lives in RUN_DIR, so
+        # remove_run_dir()/reap_orphaned_run_dirs() (functions/run-dir.sh)
+        # already own its lifecycle, and it is mounted under $HOME rather
+        # than in the worktree so it cannot end up inside the commit it
+        # describes.
+        if [[ -n "${WORKTREE_DIR:-}" ]]; then
+            WORKTREE_MSG_HOST="$RUN_DIR/commit-message"
+            : >"$WORKTREE_MSG_HOST"
+            chmod 600 "$WORKTREE_MSG_HOST"
+            BINDS+=(-B "$WORKTREE_MSG_HOST:$HOME/$WORKTREE_MSG_NAME")
+        fi
     fi
+
+    # Everything appended to BINDS from here on is this agent's own
+    # config/credential state, and nothing else: the project dir, the
+    # worktree, the extra binds and the .git masks were all added by
+    # sandbox.sh before this function was called, and the two run-specific
+    # files above were added just now. sandbox.sh slices BINDS at this
+    # index into AGENT_CONFIG_BINDS, which is the whole bind set the
+    # sandboxed commit-message generator gets (functions/commit-message.sh)
+    # -- so a per-agent config bind added to the case below is carried
+    # there automatically rather than having to be remembered twice.
+    # shellcheck disable=SC2034  # AGENT_CONFIG_BIND_START is read by sandbox.sh after configure_agent returns
+    AGENT_CONFIG_BIND_START=${#BINDS[@]}
 
     case "$AGENT" in
         claude)

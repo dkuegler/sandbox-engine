@@ -196,6 +196,20 @@ mask_git_readonly() {
         [[ "${extra_srcs[$j]}" == "$PROJECT_DIR" || "${extra_srcs[$j]}" == "$PROJECT_DIR"/* ]] && continue
         roots+=("${extra_srcs[$j]}")
     done
+    # --worktree mode (functions/worktree.sh) binds a git worktree
+    # READ-WRITE from outside the project tree, so it is walked exactly
+    # like a read-write extra bind. That walk is what masks the three
+    # paths a worktree's history is reachable through: its own ".git"
+    # (a "gitdir:" pointer FILE -- bound read-only over itself here, so
+    # the agent cannot repoint it at somewhere writable either), the
+    # <main>/.git/worktrees/<name>/ directory resolve_git_dir() reads out
+    # of it, and, via the PROJECT_DIR root above, <main>/.git itself.
+    # A linked worktree shares the main repository's object database and
+    # ref namespace, so leaving any of the three writable would hand the
+    # container write access to the main repository's history.
+    if [[ -n "${WORKTREE_DIR:-}" ]]; then
+        roots+=("$WORKTREE_DIR")
+    fi
 
     for root in "${roots[@]}"; do
         start_ts="$(date +%s.%N)"
