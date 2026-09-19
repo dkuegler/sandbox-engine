@@ -13,7 +13,10 @@
 #
 # Also owns cleanup() for the per-run scratch directory (RUN_DIR), which is
 # no longer git-specific: functions/agents.sh's ensure_run_dir() creates it
-# on demand for the omp branch's secrets redaction, independent of git.
+# on demand for the omp branch's secrets redaction, independent of git, and
+# sandbox.sh's own EXEC_ARGV construction uses it unconditionally (every
+# agent, including `script`) for the /tmp bind that replaces
+# --writable-tmpfs's 64 MiB ceiling.
 
 # cleanup is registered as the EXIT trap by sandbox.sh *before* anything
 # else runs, so every variable it touches is referenced defensively.

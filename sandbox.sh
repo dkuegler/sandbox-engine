@@ -243,13 +243,27 @@ if [[ "$VERBOSE" -ge 2 ]]; then
     log_argv "RUN_CMD" "${RUN_CMD[@]}"
 fi
 
+# --writable-tmpfs gives only 64 MiB total, shared between / and /tmp
+# (measured: `df` reports `tmpfs 64M 64M 0 100% /tmp` inside a live
+# agent, notes/tasks.md T13) -- too small for ordinary work (a `pip
+# install`, an `npm i`, one extracted Debian package). `--containall`'s
+# own `--contain` mounts a fresh tiny tmpfs over /tmp, so /tmp needs a
+# separate bind on top. RUN_DIR (ensure_run_dir(), functions/agents.sh)
+# is already cleaned up unconditionally by cleanup() and reaped if
+# orphaned (reap_orphaned_run_dirs, both functions/git-mask.sh), so both
+# pieces below ride that same lifecycle for free -- no new cleanup path
+# needed.
+ensure_run_dir
+mkdir -p "$RUN_DIR/tmp"
+
 EXEC_ARGV=(
     apptainer exec --containall --no-home
     --cwd "$PROJECT_DIR"
     "${BINDS[@]}"
     "${AGENT_ENV[@]}"
     --home "$HOME"
-    ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} --writable-tmpfs
+    ${GPU_ARGS[@]+"${GPU_ARGS[@]}"}
+    -B "$RUN_DIR/tmp:/tmp"
     "$SIF_IMAGE"
     "${RUN_CMD[@]}"
 )
