@@ -16,12 +16,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=tests/git-escape/fixtures.sh
+source "$SCRIPT_DIR/fixtures.sh"
 NEGATIVE=0
 [[ "${1:-}" == "--negative" ]] && NEGATIVE=1
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/git-escape.XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
+
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
 
 # Throwaway repository under test. `origin` is set here, on the host,
 # because .git is read-only by the time the probe runs -- the probe cannot
@@ -37,11 +41,62 @@ git -C "$FIXTURE" add README
 git -C "$FIXTURE" \
     -c user.name=probe -c user.email=probe@invalid \
     commit --quiet -m "fixture base"
+# Project-level credentialed origin -- the A7-A9 sanitizer-coverage
+# assertions in probe.sh check that this never reaches the agent, same as
+# the already-covered A1-A6 kernel-refusal assertions check writes never
+# do. Distinct from A3/A4's own "probe" remote (a transient -c override,
+# never persisted to config) so neither interferes with the other.
+git -C "$FIXTURE" remote add origin "https://$SECRET_PROJECT/proj.git"
+
+# Submodule, with its own distinct credentialed origin -- proves the
+# sanitizer is not accidentally scoped to the project's top-level .git
+# only. The bare source must have a real commit before `submodule add`
+# clones it, or git reports "cloned an empty repository" and leaves no
+# gitdir for the submodule to have its own config in.
+git init --quiet --bare "$WORK/subsrc.git"
+git clone --quiet "$WORK/subsrc.git" "$WORK/subtmp"
+echo x > "$WORK/subtmp/x"
+git -C "$WORK/subtmp" -c user.name=probe -c user.email=probe@invalid add x
+git -C "$WORK/subtmp" -c user.name=probe -c user.email=probe@invalid commit --quiet -m subinit
+git -C "$WORK/subtmp" push --quiet origin HEAD:master
+rm -rf "$WORK/subtmp"
+git -C "$FIXTURE" -c protocol.file.allow=always submodule add --quiet "$WORK/subsrc.git" sub
+git -C "$FIXTURE" add sub .gitmodules
+git -C "$FIXTURE" -c user.name=probe -c user.email=probe@invalid commit --quiet -m "add submodule"
+git -C "$FIXTURE/sub" remote set-url origin "https://$SECRET_SUBMODULE/sub.git"
+
+# Worktree, checked out OUTSIDE the project tree (mirroring tasks.md T5's
+# planned layout: worktrees live under $HOME/.agent/worktrees/..., never
+# under the project dir) -- this is the layout that exposed a real gap:
+# a worktree's config.worktree previously rode along unsanitized on its
+# parent .git's blanket read-only mount whenever the worktree's own
+# checkout wasn't independently discoverable (fixed in
+# sanitize_gitdir_metadata(), functions/git-mask.sh). Its own distinct
+# credential proves this specific path is covered, not just the project
+# and submodule cases above.
+git -C "$FIXTURE" worktree add --quiet -b agentwt "$WORK/wt"
+git -C "$WORK/wt" config extensions.worktreeConfig true
+git -C "$WORK/wt" config --worktree remote.fork.url \
+    "https://$SECRET_WORKTREE/fork.git"
+
+# A second repository standing in for a read-write extra bind
+# (sandbox.yml binds:/--bind) -- proves the sanitizer covers every
+# read-write extra bind mask_git_readonly() walks, not just the project
+# dir. Only exercised in plain mode, where sandbox.sh can actually mount
+# it; --negative runs probe.sh directly on the host with no apptainer
+# involved at all, so its own filesystem access needs no bind.
+EXTRA="$WORK/extra"
+mkdir -p "$EXTRA"
+git init --quiet "$EXTRA"
+printf 'extra fixture\n' > "$EXTRA/e"
+git -C "$EXTRA" add e
+git -C "$EXTRA" -c user.name=probe -c user.email=probe@invalid commit --quiet -m einit
+git -C "$EXTRA" remote add origin "https://$SECRET_EXTRA/extra.git"
 
 if [[ "$NEGATIVE" -eq 1 ]]; then
     echo "=== negative control: probe on the host, no mask, failures expected"
     set +e
-    SCRATCH="$WORK/scratch" "$SCRIPT_DIR/probe.sh" "$FIXTURE"
+    SCRATCH="$WORK/scratch" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA"
     rc=$?
     set -e
     if [[ $rc -eq 1 ]]; then
@@ -55,4 +110,4 @@ if [[ "$NEGATIVE" -eq 1 ]]; then
 fi
 
 echo "=== git-escape suite, project dir $FIXTURE"
-"$REPO_ROOT/sandbox.sh" script --project-dir "$FIXTURE" "$SCRIPT_DIR/probe.sh" "$FIXTURE"
+"$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" script --project-dir "$FIXTURE" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA"

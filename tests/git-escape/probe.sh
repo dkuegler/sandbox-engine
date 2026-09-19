@@ -30,12 +30,18 @@
 set -uo pipefail
 
 REPO="${1:-$PWD}"
+EXTRA_REPO="${2:-}"
 SCRATCH="${SCRATCH:-/dev/shm/git-escape}"
 GIT="$SCRATCH/root/usr/bin/git"
 MIRROR="${MIRROR:-https://deb.debian.org/debian}"
 SUITE="${SUITE:-bookworm}"
 PINNED_GIT="${PINNED_GIT:-2.39.5-0+deb12u3}"
 REPO="$(cd "$REPO" 2>/dev/null && pwd)" || { echo "PREFLIGHT: no such repo: ${1:-$PWD}" >&2; exit 99; }
+if [[ -n "$EXTRA_REPO" ]]; then
+    EXTRA_REPO="$(cd "$EXTRA_REPO" 2>/dev/null && pwd)" || { echo "PREFLIGHT: no such extra-bind repo: $2" >&2; exit 99; }
+fi
+# shellcheck source=tests/git-escape/fixtures.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures.sh"
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
 export PATH="$SCRATCH/root/usr/lib/git-core:$PATH"
 export GIT_AUTHOR_NAME=probe GIT_AUTHOR_EMAIL=probe@invalid
@@ -177,6 +183,46 @@ for probe_cmd in \
     $probe_cmd >/dev/null 2>&1 && { a6_fail=1; echo "  ..SUCCEEDED: $probe_cmd"; }
 done
 chk A6 "--git-dir/-C/GIT_DIR aliasing still refused" "$a6_fail" 0
+
+# --- A7: no fixture credential reachable anywhere bound into the sandbox --
+# not just the project's own top-level .git. Recursive grep across every
+# bound path this probe was told about (the project tree, plus the
+# extra-bind fixture when run.sh passed one), not just known gitdirs, so a
+# credential that escapes through a path this suite does not specifically
+# enumerate (a nested worktree's metadata directory, an unexpected copy,
+# ...) still gets caught. Covers the project's own origin, the submodule's
+# origin (nested inside $REPO), and the worktree's config.worktree (also
+# nested inside $REPO/.git/worktrees/, per mask_git_readonly()'s own
+# recursive read-only mount of the whole .git tree) in one pass.
+a7_fail=0
+for secret in "$SECRET_PROJECT" "$SECRET_SUBMODULE" "$SECRET_WORKTREE" "$SECRET_EXTRA"; do
+    grep -rq -- "$secret" "$REPO" 2>/dev/null && { a7_fail=1; echo "  ..LEAK in project tree: $secret"; }
+    [[ -n "$EXTRA_REPO" ]] && grep -rq -- "$secret" "$EXTRA_REPO" 2>/dev/null \
+        && { a7_fail=1; echo "  ..LEAK in extra bind: $secret"; }
+done
+chk A7 "no fixture credential reachable anywhere bound into the sandbox" "$a7_fail" 0
+
+# --- A8: the redaction actually ran (positive evidence) -- an empty or
+# missing config would also "pass" A7 without the sanitizer having done
+# anything, the same false-positive risk A1-A6's own preflight checks
+# guard against for kernel refusals (see the file header).
+a8_seen=0
+grep -q "REDACTED-BY-SANDBOX" "$REPO/.git/config" 2>/dev/null && a8_seen=$((a8_seen + 1))
+a8_want=1
+if [[ -n "$EXTRA_REPO" ]]; then
+    grep -q "REDACTED-BY-SANDBOX" "$EXTRA_REPO/.git/config" 2>/dev/null && a8_seen=$((a8_seen + 1))
+    a8_want=2
+fi
+chk A8 "sanitizer placeholder present in every masked config checked" "$a8_seen" "$a8_want"
+
+# --- A9: no host global git config is reachable at all -- guards against a
+# future change silently binding one in, which would bypass this
+# sanitizer entirely regardless of how correct it is.
+a9_fail=0
+for p in "$HOME/.gitconfig" "$HOME/.git-credentials"; do
+    [[ -e "$p" ]] && { a9_fail=1; echo "  ..UNEXPECTED: $p is reachable inside the sandbox"; }
+done
+chk A9 "no host ~/.gitconfig or ~/.git-credentials reachable" "$a9_fail" 0
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]
