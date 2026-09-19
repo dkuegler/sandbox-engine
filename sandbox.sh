@@ -25,6 +25,7 @@
 #   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
 #   git-mask.sh     read-only .git mask
 #   agents.sh       per-agent state binds, RUN_CMD
+#   run-dir.sh      per-run scratch directory lifecycle (cleanup, reap)
 # Project directory: defaults to the current working directory; override with
 # --project-dir DIR (accepted anywhere in argv, before or after the agent
 # name). sandbox.yml is looked up at the root of that directory.
@@ -155,13 +156,15 @@ source "$FUNCTIONS_DIR/binds.sh"
 source "$FUNCTIONS_DIR/git-mask.sh"
 # shellcheck source=functions/agents.sh
 source "$FUNCTIONS_DIR/agents.sh"
+# shellcheck source=functions/run-dir.sh
+source "$FUNCTIONS_DIR/run-dir.sh"
 
-# cleanup() (functions/git-mask.sh) removes the per-run scratch directory.
+# cleanup() (functions/run-dir.sh) removes the per-run scratch directory.
 # Registered before anything can create that state.
 trap cleanup EXIT
 
 # Reap any leaked scratch directory from a run that was SIGKILLed before its
-# own cleanup() could fire, before this run creates its own.
+# own cleanup() (functions/run-dir.sh) could fire, before this run creates its own.
 reap_orphaned_run_dirs
 
 parse_argv "$@"
@@ -250,7 +253,7 @@ fi
 # own `--contain` mounts a fresh tiny tmpfs over /tmp, so /tmp needs a
 # separate bind on top. RUN_DIR (ensure_run_dir(), functions/agents.sh)
 # is already cleaned up unconditionally by cleanup() and reaped if
-# orphaned (reap_orphaned_run_dirs, both functions/git-mask.sh), so both
+# orphaned (reap_orphaned_run_dirs, both functions/run-dir.sh), so both
 # pieces below ride that same lifecycle for free -- no new cleanup path
 # needed.
 ensure_run_dir
