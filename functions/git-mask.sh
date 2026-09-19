@@ -118,19 +118,32 @@ redact_urls() {
 }
 
 # sanitize_gitdir_metadata REALDIR: for one gitdir actually being mounted
-# read-only (the top-level .git, a submodule's, or a worktree's), write
-# sanitized copies of every file known to carry a remote URL or credential
-# reference into RUN_DIR, and append a read-only bind overriding the real
-# path with the sanitized copy -- same trick force_omp_secrets_redaction
-# and bind_augmented_instructions (functions/agents.sh) already use. No
+# read-only (the top-level .git, a submodule's, a worktree's, or a
+# worktree's own per-worktree metadata directory), write sanitized copies
+# of every file known to carry a remote URL or credential reference into
+# RUN_DIR, and append a read-only bind overriding the real path with the
+# sanitized copy -- same trick force_omp_secrets_redaction and
+# bind_augmented_instructions (functions/agents.sh) already use. No
 # ordering requirement on the BINDS array itself: apptainer sorts mounts by
 # destination depth (mask_git_readonly's own comment below), and
 # "$REALDIR/config" is always deeper than the "$REALDIR" mask this
 # overrides, so it always applies after regardless of insertion order.
+#
+# Recurses into "$REALDIR/worktrees/*/" (each entry is itself a
+# per-worktree metadata directory with its own config.worktree/logs/HEAD)
+# so a *registered* worktree's credentials are sanitized purely from
+# REALDIR being masked at all -- regardless of whether that worktree's own
+# checkout ".git" file is itself reachable inside the sandbox. Without
+# this, a worktree's config.worktree/logs/HEAD ride along on REALDIR's own
+# blanket read-only mount, in full, unredacted: mask_git_readonly()'s
+# find-based walk only calls this function for something literally named
+# ".git" or resolved *from* one, and "worktrees/<name>/" is neither.
+# Terminates after one level: a per-worktree metadata directory has no
+# worktrees/ of its own.
 sanitize_gitdir_metadata() {
     local realdir="$1"
     local -a rels=(config config.worktree FETCH_HEAD logs/HEAD)
-    local rel src out
+    local rel src out wt
     ensure_run_dir
     GIT_SANITIZE_IDX=$((${GIT_SANITIZE_IDX:-0} + 1))
     for rel in "${rels[@]}"; do
@@ -142,6 +155,10 @@ sanitize_gitdir_metadata() {
             FETCH_HEAD | logs/HEAD) redact_urls "$src" "$out" ;;
         esac
         BINDS+=(-B "$out:$src:ro")
+    done
+    for wt in "$realdir"/worktrees/*/; do
+        [[ -d "$wt" ]] || continue
+        sanitize_gitdir_metadata "${wt%/}"
     done
 }
 
