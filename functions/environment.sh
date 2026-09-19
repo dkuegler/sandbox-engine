@@ -139,6 +139,96 @@ generate_dockerfile() {
     } > "$out"
 }
 
+# check_agent_update: best-effort, rate-limited check for whether a newer
+# <agent> CLI release exists than the one already baked into $SIF_IMAGE,
+# and if so, offers to rebuild. This is about the *agent CLI's* version
+# drift, not sandbox-engine's own version, and not SIF *build-input*
+# staleness either -- that is already automatic: ENV_TAG changes with
+# sandbox.yml/--environment/base image, so a changed tag builds a fresh
+# SIF on its own, and --rebuild forces one regardless. None of the three
+# agents pin a version in sandbox/agent/Dockerfile.template (`claude` is
+# `npm install -g @anthropic-ai/claude-code`; `opencode`/`omp` are
+# curl-piped install scripts), so every rebuild installs whatever is
+# current at build time and the baked-in version silently drifts from
+# upstream between rebuilds with nothing else to surface that.
+#
+# Every step here is best-effort: missing apptainer/curl, no network, a
+# malformed response, or no /dev/tty to prompt on all degrade silently to
+# build/reuse the image exactly as before -- this must never fail or add
+# meaningful latency to a run, so every fallible command substitution
+# below is paired with an explicit `|| var=""` fallback (a pipeline's
+# failure under `set -o pipefail` otherwise trips the caller's `set -e`,
+# even when a later stage of that same pipe succeeds). The per-(agent,
+# environment) cache is written on every attempt, successful or not, so a
+# persistently offline host pays the short, timeout-bounded network cost
+# at most once an hour, not once per invocation.
+check_agent_update() {
+    [[ "${NO_UPDATE_CHECK:-0}" -eq 1 ]] && return 0
+    [[ -f "$SIF_IMAGE" ]] || return 0 # nothing built yet to compare against
+    command -v apptainer >/dev/null 2>&1 || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+
+    local cache_file="$SIF_IMAGE.info"
+    if [[ -f "$cache_file" ]]; then
+        local mtime age
+        mtime="$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)"
+        age=$(( $(date +%s) - mtime ))
+        [[ "$age" -lt 3600 ]] && return 0
+    fi
+
+    local latest=""
+    case "$IMAGE_AGENT" in
+        claude)
+            latest="$(curl -fsSL --max-time 3 https://registry.npmjs.org/@anthropic-ai/claude-code/latest 2>/dev/null \
+                | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')" || latest=""
+            ;;
+        opencode)
+            # Same endpoint opencode.ai/v2/install itself queries for its own latest version.
+            latest="$(curl -fsSL --max-time 3 https://opencode.ai/update/api/latest/cli/npm 2>/dev/null \
+                | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')" || latest=""
+            ;;
+        omp)
+            # Same endpoint omp.sh/install.sh's binary-install path itself queries.
+            latest="$(curl -fsSL --max-time 3 https://api.github.com/repos/can1357/oh-my-pi/releases/latest 2>/dev/null \
+                | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')" || latest=""
+            latest="${latest#v}"
+            ;;
+        *)
+            : # unknown agent (e.g. script mode's fallback) -- nothing to compare against
+            ;;
+    esac
+
+    printf 'Agent: %s\nDate: %s\nVersion available: %s\n' "$IMAGE_AGENT" "$(date +%s)" "$latest" > "$cache_file" \
+      2>/dev/null || true
+    [[ -n "$latest" ]] || return 0
+
+    local baked_version
+    baked_version="$(apptainer exec "$SIF_IMAGE" "$IMAGE_AGENT" --version 2>/dev/null)" || baked_version=""
+    baked_version="${baked_version##* }"
+    baked_version="${baked_version#v}"
+    [[ -n "$baked_version" ]] || return 0
+    [[ "$baked_version" == "$latest" ]] && return 0
+
+    if [[ ! -r /dev/tty ]]; then
+        printf "note: a newer %s release is available (%s -> %s); pass --rebuild to update." "$IMAGE_AGENT" \
+          "$baked_version" "$latest" >&2
+        return 0
+    fi
+
+    local reply
+    if printf 'A newer %s release is available (%s -> %s). Rebuild the image now? [y/N] ' \
+          "$IMAGE_AGENT" "$baked_version" "$latest" 2>/dev/null >/dev/tty; then
+        read -r reply </dev/tty 2>/dev/null || reply=""
+        case "$reply" in
+            [yY]*)
+                # shellcheck disable=SC2034  # REBUILD is read by build_images (functions/environment.sh)
+                REBUILD=1
+                ;;
+        esac
+    fi
+    return 0
+}
+
 # build_images: builds $SIF_IMAGE on first use, or unconditionally when
 # REBUILD=1 (set by --rebuild; see functions/argv.sh). Requires SIF_IMAGE
 # to be set.

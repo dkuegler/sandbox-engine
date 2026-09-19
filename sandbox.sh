@@ -2,7 +2,7 @@
 # --- START OF HELPTEXT ---
 #
 # Unified sandbox entrypoint. Usage:
-#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] [-h|--help] <claude|opencode|omp> [agent-args...]
+#   ./sandbox.sh [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] [--no-update-check] [-h|--help] <claude|opencode|omp> [agent-args...]
 #
 # -h/--help before the agent name prints this header (the comment block
 # you're reading now) and exits; the same flag after the agent name is
@@ -197,6 +197,13 @@ log_info "environment: mode=$ENV_MODE base_image=$BASE_IMAGE env_tag=$ENV_TAG"
 IMAGE_DIR="${SANDBOX_ENGINE_IMAGE_DIR:-$HOME/.apptainer/images}"
 mkdir -p "$IMAGE_DIR"
 SIF_IMAGE="$IMAGE_DIR/$IMAGE_AGENT.$ENV_TAG.sif"
+
+# Best-effort: never blocks or fails a run (functions/environment.sh's own
+# doc comment). May set REBUILD=1 if the human accepts the prompt, in
+# which case build_images below rebuilds through its existing path --
+# --no-update-check (functions/argv.sh) skips this entirely.
+check_agent_update || true
+
 build_images
 
 BINDS=(

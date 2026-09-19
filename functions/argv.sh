@@ -3,7 +3,7 @@
 # option loop. Populates PROJECT_DIR, AGENT, ARGS, CLI_ENV_*, CLI_BINDS.
 
 usage() {
-    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] <claude|opencode|omp|script> [agent-args...]" >&2
+    echo "Usage: $0 [--project-dir DIR] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] [--no-update-check] <claude|opencode|omp|script> [agent-args...]" >&2
     exit 1
 }
 
@@ -56,6 +56,7 @@ parse_argv() {
     ALLOW_EXTERNAL_GITDIR=0
     VERBOSE=0
     REBUILD=0
+    NO_UPDATE_CHECK=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -135,6 +136,11 @@ parse_argv() {
             --rebuild)
                 # shellcheck disable=SC2034  # REBUILD is read by build_images (functions/environment.sh)
                 REBUILD=1
+                shift
+                ;;
+            --no-update-check)
+                # shellcheck disable=SC2034  # NO_UPDATE_CHECK is read by check_agent_update (functions/environment.sh)
+                NO_UPDATE_CHECK=1
                 shift
                 ;;
             claude|opencode|omp|script)
