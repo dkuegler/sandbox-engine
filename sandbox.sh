@@ -316,6 +316,19 @@ fi
 # Masks every .git in the project tree read-only in BINDS.
 mask_git_readonly
 
+# Masks every project-root file/dir an agent CLI treats as executable
+# config (MCP server command lines, plugins, hooks) read-only, on top of
+# the plain read-write project-dir bind -- functions/binds.sh's
+# mask_project_agent_config(). Both the main checkout and the worktree
+# copy are masked, same reasoning as the sandbox.yml masking above: the
+# worktree holds its own tracked copy, and the main checkout's copy is
+# masked here rather than relying solely on its whole-tree read-only bind
+# in worktree mode, since a non-worktree run leaves it read-write.
+mask_project_agent_config "$PROJECT_DIR"
+if [[ -n "${WORKTREE_DIR:-}" ]]; then
+    mask_project_agent_config "$WORKTREE_DIR"
+fi
+
 configure_agent
 # The config-only tail of BINDS (see AGENT_CONFIG_BIND_START,
 # functions/agents.sh): the agent's own state and credentials, without the

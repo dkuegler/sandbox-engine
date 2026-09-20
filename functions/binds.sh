@@ -157,6 +157,78 @@ bind_ro() {
     RO_MASKED+=("$p")
 }
 
+# mask_project_agent_config DIR: bind-mask, read-only, every project-root
+# file/directory a coding-agent CLI treats as executable configuration --
+# MCP server command lines, plugin/hook code, permission overrides -- the
+# same class of surface already masked under each agent's global config
+# dir in configure_agent() below, but for the project itself, which is
+# otherwise bound plain read-write so the agent can do its actual job.
+#
+# DIR-root only, deliberately: every one of these agents (claude, opencode,
+# omp) is always launched with its cwd at the project root (or the
+# worktree root, which is what DIR is when --worktree is active) --
+# settings.md's own doc for omp states discovery "does not walk ancestor
+# directories looking for the nearest .omp/", and neither of the other two
+# looks above its cwd either. Walking the rest of the tree for nested
+# copies is not this function's job: unlike .git (mask_git_readonly()),
+# these files only take effect at the fixed root the agent's cwd already
+# sits at, so there is nothing below the surface a deeper walk would find
+# that the agent would ever load as its own config.
+#
+# Unconditional, independent of $AGENT: omp's own MCP discovery
+# (docs/mcp-config.md) reads a checkout's .claude/mcp.json,
+# .codex/config.toml, .gemini/settings.json, project-root opencode.json,
+# .cursor/mcp.json, .windsurf/mcp_config.json, and .vscode/mcp.json in
+# addition to its own -- so a file written by *any* agent this run, or
+# left over from a prior run, is a live MCP-server-launch vector for omp
+# specifically, and a hook/plugin-execution vector for its native tool on
+# the human's next bare-host run of whichever CLI that is. Masking every
+# one of these regardless of which agent this run is using is what
+# actually closes that, rather than only closing it for whichever CLI
+# happens to be running today.
+mask_project_agent_config() {
+    local dir="$1" p
+    # Claude Code: project-scope settings, its own MCP file, and the
+    # subagent/command/skill content directories mirrored from its global
+    # equivalents above.
+    for p in .claude/settings.json .claude/settings.local.json \
+             .claude/mcp.json .claude/.mcp.json; do
+        bind_ro "$dir/$p"
+    done
+    for p in .claude/hooks .claude/plugins .claude/agents .claude/commands \
+             .claude/skills .claude/rules .claude/output-styles; do
+        bind_ro "$dir/$p" dir
+    done
+    # opencode: project-root config file (both spellings) and its own
+    # content directories (both current-plural and back-compat-singular
+    # names, same reasoning as the global opencode mask above).
+    bind_ro "$dir/opencode.json"
+    bind_ro "$dir/opencode.jsonc"
+    for p in .opencode/plugin .opencode/plugins .opencode/agent .opencode/agents \
+             .opencode/command .opencode/commands .opencode/mode .opencode/modes \
+             .opencode/tool .opencode/tools .opencode/skill .opencode/skills \
+             .opencode/theme .opencode/themes; do
+        bind_ro "$dir/$p" dir
+    done
+    # omp: project-local settings/MCP files (docs/settings.md, "Project"
+    # row; docs/mcp-config.md, "Project: .omp/mcp.json").
+    for p in .omp/config.yml .omp/settings.json .omp/mcp.json .omp/.mcp.json; do
+        bind_ro "$dir/$p"
+    done
+    # Root fallback MCP files every one of the three agents' discovery
+    # chains can read (docs/mcp-config.md's "root mcp.json / .mcp.json"
+    # fallback; Claude Code's own top-level .mcp.json).
+    bind_ro "$dir/mcp.json"
+    bind_ro "$dir/.mcp.json"
+    # Other tools' project config omp's cross-tool MCP discovery reads
+    # even when none of the three supported agents is that tool.
+    bind_ro "$dir/.codex/config.toml"
+    bind_ro "$dir/.gemini/settings.json"
+    bind_ro "$dir/.cursor/mcp.json"
+    bind_ro "$dir/.windsurf/mcp_config.json"
+    bind_ro "$dir/.vscode/mcp.json"
+}
+
 # log_resolved_binds: one summary line per run naming every bind actually
 # handed to apptainer -- source, destination (if any), and ro/rw -- so an
 # after-the-fact question about what a run could see has an answer.
