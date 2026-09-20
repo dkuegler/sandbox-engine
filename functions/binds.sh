@@ -120,14 +120,39 @@ bind_scope_check() {
     exit 1
 }
 
-# bind_ro PATH: bind PATH read-only over itself, so a read-write bind of
-# an ancestor cannot be written through at PATH. Silently skips a path
-# that does not exist on the host -- apptainer fails the run on a missing
-# bind source, and these paths are all optional per-agent config.
-# Records the path in RO_MASKED for --verbose reporting.
+# bind_ro PATH [KIND]: bind PATH read-only over itself, so a read-write
+# bind of an ancestor cannot be written through at PATH. Records the path
+# in RO_MASKED for --verbose reporting.
+#
+# When PATH does not exist on the host, an empty RUN_DIR placeholder is
+# bound read-only over it instead of skipping the mask (KIND selects
+# "file" (default) or "dir"). This closes a real gap: startup only
+# pre-creates the top-level per-agent directories (~/.claude,
+# ~/.config/opencode, ~/.omp, ...), not the specific children this
+# function masks (settings.json, plugins/, ...). For every one of those
+# a given host happens not to have yet, the parent is bound read-write
+# and the specific child was previously left unbound entirely -- so the
+# agent could create it inside the container, and it would exist,
+# unmasked, on the host the moment the container exits, ready to execute
+# on the human's next bare-host run of that agent. The RUN_DIR-source
+# pattern (bind something ensure_run_dir() creates over a destination
+# that may not exist on the host) is the same one
+# bind_augmented_instructions() already relies on. No write ever touches
+# the real (missing) path or its parent on the host.
 bind_ro() {
-    local p="$1"
-    [[ -e "$p" ]] || return 0
+    local p="$1" kind="${2:-file}" placeholder
+    if [[ ! -e "$p" ]]; then
+        ensure_run_dir
+        placeholder="$RUN_DIR/ro-mask-$(printf '%s' "$p" | sha256sum | cut -c1-16)"
+        if [[ "$kind" == dir ]]; then
+            mkdir -p "$placeholder"
+        else
+            : > "$placeholder"
+        fi
+        BINDS+=(-B "$placeholder:$p:ro")
+        RO_MASKED+=("$p (absent on host; masked empty)")
+        return 0
+    fi
     BINDS+=(-B "$p:$p:ro")
     RO_MASKED+=("$p")
 }

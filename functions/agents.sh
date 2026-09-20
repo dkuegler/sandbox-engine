@@ -366,7 +366,10 @@ configure_agent() {
             # history.jsonl, ide/.
             for p in settings.json settings.local.json \
                      hooks plugins agents commands skills rules output-styles; do
-                bind_ro "$HOME/.claude/$p"
+                case "$p" in
+                    settings.json | settings.local.json) bind_ro "$HOME/.claude/$p" ;;
+                    *)                                    bind_ro "$HOME/.claude/$p" dir ;;
+                esac
             done
             # CLAUDE.md is the always-loaded instruction file: overlay
             # it with a copy of itself plus a pointer at the generated
@@ -427,19 +430,31 @@ configure_agent() {
             bind_ro "$HOME/.opencode"
             # opencode.json/opencode.jsonc define mcp.<name>.command arrays,
             # plugin paths, lsp.*.command, formatter.*.command and
-            # experimental.hook.* -- all executed; plugin/ is JS/TS loaded
-            # at startup. Left read-write: ~/.config/opencode/tui.json
-            # (written every session), all of ~/.local/share/opencode
-            # except bin/ (auth.json, mcp-auth.json, db.sqlite, storage/,
-            # log/, project/), and ~/.local/state/opencode.
+            # experimental.hook.* -- all executed; plugins/ is JS/TS loaded
+            # at startup, and agents/, commands/ and skills/ are prompt
+            # content that persists into the human's next bare-host run.
+            # BOTH spellings of every subdirectory are masked: opencode's
+            # current layout is the plural one (agents/, commands/, modes/,
+            # plugins/, skills/, tools/, themes/) and the singular names are
+            # kept for backwards compatibility, so both are loaded and
+            # masking only one spelling would leave a writable path that
+            # executes on the host. Left read-write:
+            # ~/.config/opencode/tui.json (written every session), all of
+            # ~/.local/share/opencode except bin/ (auth.json, mcp-auth.json,
+            # db.sqlite, storage/, log/, project/), and
+            # ~/.local/state/opencode.
             for p in opencode.json opencode.jsonc \
-                     plugin agent command mode tool skill themes; do
+                     plugin plugins agent agents command commands \
+                     mode modes tool tools skill skills theme themes; do
                 case "$p" in
                     opencode.json | opencode.jsonc)
                         scan_opencode_api_keys "$HOME/.config/opencode/$p"
+                        bind_ro "$HOME/.config/opencode/$p"
+                        ;;
+                    *)
+                        bind_ro "$HOME/.config/opencode/$p" dir
                         ;;
                 esac
-                bind_ro "$HOME/.config/opencode/$p"
             done
             # AGENTS.md is the always-loaded instruction file.
             bind_augmented_instructions "$HOME/.config/opencode/AGENTS.md"
@@ -480,10 +495,15 @@ configure_agent() {
             for p in agent/models.yml agent/mcp.json agent/.mcp.json \
                      agent/.env .env agent/agents agent/skills agent/tools agent/hooks \
                      agent/commands extensions; do
-                if [[ "$p" == agent/models.yml ]]; then
-                    scan_omp_api_keys "$HOME/.omp/$p"
-                fi
-                bind_ro "$HOME/.omp/$p"
+                case "$p" in
+                    agent/models.yml | agent/mcp.json | agent/.mcp.json | agent/.env | .env)
+                        [[ "$p" == agent/models.yml ]] && scan_omp_api_keys "$HOME/.omp/$p"
+                        bind_ro "$HOME/.omp/$p"
+                        ;;
+                    *)
+                        bind_ro "$HOME/.omp/$p" dir
+                        ;;
+                esac
             done
             # agent/AGENTS.md is the always-loaded instruction file.
             bind_augmented_instructions "$HOME/.omp/agent/AGENTS.md"
