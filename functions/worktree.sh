@@ -34,7 +34,8 @@
 #   WORKTREE_REF         "agent/$WORKTREE_BRANCH"
 #   WORKTREE_REPO_ROOT   the main repository's top level (== PROJECT_DIR)
 #   WORKTREE_DIR         $HOME/.agent/worktrees/<project-key>/<branch>
-#   WORKTREE_PROJECT_RO  1 when the main checkout is mounted read-only
+#   WORKTREE_PROJECT_MODE  ro|rw|deny -- how the main checkout is exposed
+#                          (see worktree_confirm_readonly_project)
 #   WORKTREE_MSG_HOST    host path of the agent's commit-message file
 #   WORKTREE_REJECT_ACTION  keep|discard|rerun, set by the reject menu
 
@@ -174,21 +175,35 @@ worktree_preflight() {
     # not, so the agent can neither read nor forge this. Keyed by a digest
     # of the branch name so "feat/x" and "feat-x" cannot share a lock.
     WORKTREE_LOCK="$HOME/.agent/worktrees/$key/.lock-$(printf '%s' "$WORKTREE_BRANCH" | sha256sum | cut -c1-12)"
-    WORKTREE_PROJECT_RO=1
+    WORKTREE_PROJECT_MODE=ro
     WORKTREE_MSG_HOST=""
 }
 
 # worktree_confirm_readonly_project: worktree mode changes this sandbox's
-# containment posture in exactly one visible way -- the main checkout stops
-# being writable -- so it is confirmed interactively, every run, on
-# /dev/tty. Same channel and same reasoning as bind_scope_check()
-# (functions/binds.sh): stdin is the agent's own input stream, so a
-# confirmation read from stdin could be answered by the thing being
-# confined. Read-only is the default and the safe answer; making the main
-# checkout writable exists only as a deliberate per-run keystroke, never as
-# a flag and never unattended. Note that "w" relaxes the *working tree*
-# only -- every .git stays read-only-masked in both cases, so neither
-# answer lets the agent rewrite history.
+# containment posture in one visible way -- the main checkout's working
+# tree stops being writable, or stops being reachable at all -- so it is
+# confirmed interactively, every run, on /dev/tty. Same channel and same
+# reasoning as bind_scope_check() (functions/binds.sh): stdin is the
+# agent's own input stream, so a confirmation read from stdin could be
+# answered by the thing being confined. Read-only is the default and the
+# safe answer.
+#
+# Three postures, recorded in WORKTREE_PROJECT_MODE:
+#   ro   (default) -- the main checkout's working tree is bound read-only.
+#   rw   -- the main checkout's working tree is bound read-write, as a
+#           deliberate per-run keystroke, never a flag and never
+#           unattended.
+#   deny -- the main checkout's working tree is not bound at all. Git
+#           still works: a linked worktree's history lives in
+#           <main>/.git, not in the working tree, and mask_git_readonly()
+#           (functions/git-mask.sh) mounts exactly that -- <main>/.git,
+#           read-only -- unconditionally, on every run, regardless of
+#           this choice. What "deny" withholds is the main checkout's
+#           untracked/ignored content (notes, .env, build output) that a
+#           worktree does not carry.
+#
+# Every .git stays read-only-masked in all three cases, so none of them
+# let the agent rewrite history.
 worktree_confirm_readonly_project() {
     local reply
     # -r alone is not a reliable predictor: /dev/tty exists and is
@@ -206,22 +221,31 @@ worktree_confirm_readonly_project() {
             "" \
             "The agent works only in the worktree. The main checkout is mounted read-only" \
             "so nothing it does can modify your working files; every .git stays read-only" \
-            "in either case, so it cannot rewrite history either way." \
+            "in every case, so it cannot rewrite history no matter which option you choose." \
             "" 2>/dev/null >/dev/tty; then
-            if printf 'Also mount %s read-only? [y/N] (or "w" to let the agent write the main checkout too) ' \
+            if printf 'Mount %s [r]ead-only, read-[w]rite, or [d]eny access to it entirely? ' \
                 "$PROJECT_DIR" 2>/dev/null >/dev/tty; then
                 read -r reply </dev/tty 2>/dev/null || reply=""
                 case "$reply" in
                     [wW]*)
-                        WORKTREE_PROJECT_RO=0
-                        echo "warning: main checkout $PROJECT_DIR mounted READ-WRITE by explicit confirmation;" >&2
-                        echo "         edits it makes there are outside the worktree and will NOT appear in" >&2
-                        echo "         the approval diff or reach $WORKTREE_REF." >&2
+                        WORKTREE_PROJECT_MODE=rw
+                        echo "info: main checkout $PROJECT_DIR mounted READ-WRITE by explicit confirmation; edits" >&2
+                        echo "      it makes there are outside the worktree and will NOT appear in the approval" >&2
+                        echo "      diff or reach $WORKTREE_REF." >&2
                         return 0
                         ;;
-                    [yY]*)
-                        # shellcheck disable=SC2034  # WORKTREE_PROJECT_RO is read by sandbox.sh when it builds BINDS, and by generate_limitations_file (functions/agents.sh)
-                        WORKTREE_PROJECT_RO=1
+                    [yYrR]*)
+                        # shellcheck disable=SC2034  # WORKTREE_PROJECT_MODE is read by sandbox.sh when it builds BINDS, and by generate_limitations_file (functions/agents.sh)
+                        WORKTREE_PROJECT_MODE=ro
+                        return 0
+                        ;;
+                    [nNdD]*)
+                        # shellcheck disable=SC2034  # see above
+                        WORKTREE_PROJECT_MODE=deny
+                        echo "info: main checkout $PROJECT_DIR NOT mounted by explicit denial; the agent sees only" >&2
+                        echo "      the worktree plus $PROJECT_DIR/.git (needed for git itself). untracked/ignored" >&2
+                        echo "      files that exist only in the main checkout (notes, .env, build output) are not" >&2
+                        echo "      reachable this session." >&2
                         return 0
                         ;;
                 esac

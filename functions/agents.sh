@@ -200,9 +200,11 @@ generate_limitations_file() {
         if [[ -n "${WORKTREE_DIR:-}" ]]; then
             echo "- \`$WORKTREE_DIR\` -- read-write. **This is the working directory**"
             echo "  and the only place changes are collected from."
-            mode="read-only"
-            [[ "${WORKTREE_PROJECT_RO:-1}" -eq 1 ]] || mode="read-write"
-            echo "- \`$PROJECT_DIR\` -- $mode (the project's main checkout)."
+            case "${WORKTREE_PROJECT_MODE:-ro}" in
+                rw) echo "- \`$PROJECT_DIR\` -- read-write (the project's main checkout)." ;;
+                deny) echo "- \`$PROJECT_DIR\` -- not mounted (denied); only its \`.git\` is reachable, read-only." ;;
+                *) echo "- \`$PROJECT_DIR\` -- read-only (the project's main checkout)." ;;
+            esac
         else
             echo "- \`$PROJECT_DIR\` -- read-write (the project this session sandboxes)."
         fi
@@ -222,14 +224,22 @@ generate_limitations_file() {
             echo "\`$WORKTREE_REF\`, not in the project's main checkout."
             echo
             echo "- The working directory is \`$WORKTREE_DIR\`. Make every change there."
-            echo "- **A worktree holds only files git tracks.** Anything untracked or"
-            echo "  \`.gitignore\`d in the main checkout -- local notes directories,"
-            echo "  \`.env\` files, build output, virtualenvs -- is NOT here. Look for it"
-            echo "  under \`$PROJECT_DIR\` (the main checkout) before concluding it does"
-            echo "  not exist."
-            if [[ "${WORKTREE_PROJECT_RO:-1}" -eq 1 ]]; then
-                echo "- \`$PROJECT_DIR\` is read-only this session: read from it freely,"
-                echo "  write only inside the worktree."
+            if [[ "${WORKTREE_PROJECT_MODE:-ro}" == deny ]]; then
+                echo "- \`$PROJECT_DIR\` (the main checkout) is **not mounted** this session --"
+                echo "  denied at the start of the run. Only its \`.git\` is reachable (read-only,"
+                echo "  needed because the worktree shares its object store). Anything untracked"
+                echo "  or \`.gitignore\`d in the main checkout -- local notes directories, \`.env\`"
+                echo "  files, build output, virtualenvs -- is not reachable this session at all."
+            else
+                echo "- **A worktree holds only files git tracks.** Anything untracked or"
+                echo "  \`.gitignore\`d in the main checkout -- local notes directories,"
+                echo "  \`.env\` files, build output, virtualenvs -- is NOT here. Look for it"
+                echo "  under \`$PROJECT_DIR\` (the main checkout) before concluding it does"
+                echo "  not exist."
+                if [[ "${WORKTREE_PROJECT_MODE:-ro}" == ro ]]; then
+                    echo "- \`$PROJECT_DIR\` is read-only this session: read from it freely,"
+                    echo "  write only inside the worktree."
+                fi
             fi
             echo "- You cannot commit. Every \`.git\` is read-only, as above, and a"
             echo "  worktree shares the main repository's object store and refs, so that"
@@ -290,10 +300,24 @@ bind_augmented_instructions() {
             echo "$LIMITATIONS_NOTICE_MARKER worktree"
             echo "This session runs in a throwaway git worktree on branch \`$WORKTREE_REF\`:"
             echo "- Working directory: \`$WORKTREE_DIR\` (read-write). Change files here."
-            echo "- Main checkout: \`$PROJECT_DIR\` (read-only). A worktree contains only"
-            echo "  git-tracked files, so anything untracked or gitignored -- notes"
-            echo "  directories, \`.env\`, build output -- lives there, not here. Search"
-            echo "  the main checkout before concluding a file does not exist."
+            case "${WORKTREE_PROJECT_MODE:-ro}" in
+                deny)
+                    echo "- Main checkout: \`$PROJECT_DIR\` is NOT mounted this session (denied)."
+                    echo "  Only its \`.git\` is reachable, read-only. Untracked/gitignored files"
+                    echo "  that exist only in the main checkout are not reachable at all."
+                    ;;
+                rw)
+                    echo "- Main checkout: \`$PROJECT_DIR\` (read-write, by explicit confirmation)."
+                    echo "  Edits made there are outside the worktree and will NOT appear in the"
+                    echo "  approval diff or reach \`$WORKTREE_REF\`."
+                    ;;
+                *)
+                    echo "- Main checkout: \`$PROJECT_DIR\` (read-only). A worktree contains only"
+                    echo "  git-tracked files, so anything untracked or gitignored -- notes"
+                    echo "  directories, \`.env\`, build output -- lives there, not here. Search"
+                    echo "  the main checkout before concluding a file does not exist."
+                    ;;
+            esac
             echo "- You cannot commit: every \`.git\` is read-only. Write the commit"
             echo "  message to \`\$HOME/$WORKTREE_MSG_NAME\` and a human reviews and"
             echo "  commits it on the host. See \$HOME/.sandbox-limitations.md."

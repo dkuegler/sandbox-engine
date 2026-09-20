@@ -285,11 +285,18 @@ build_images
 # agent's changes can only exist where the approval gate will look for them.
 BINDS=()
 if [[ -n "${WORKTREE_DIR:-}" ]]; then
-    if [[ "$WORKTREE_PROJECT_RO" -eq 1 ]]; then
-        BINDS+=(-B "$PROJECT_DIR:$PROJECT_DIR:ro")
-    else
-        BINDS+=(-B "$PROJECT_DIR")
-    fi
+    case "$WORKTREE_PROJECT_MODE" in
+        rw)
+            BINDS+=(-B "$PROJECT_DIR")
+            ;;
+        deny)
+            # main checkout not bound at all; mask_git_readonly() below still
+            # mounts $PROJECT_DIR/.git read-only, which is all git itself needs.
+            ;;
+        *)
+            BINDS+=(-B "$PROJECT_DIR:$PROJECT_DIR:ro")
+            ;;
+    esac
     BINDS+=(-B "$WORKTREE_DIR")
 else
     BINDS+=(-B "$PROJECT_DIR")
