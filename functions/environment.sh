@@ -205,6 +205,13 @@ check_agent_update() {
     local baked_version
     baked_version="$(apptainer exec "$SIF_IMAGE" "$IMAGE_AGENT" --version 2>/dev/null)" || baked_version=""
     baked_version="${baked_version##* }"
+    # omp prints "omp/<version>" as a single space-free token (claude/opencode
+    # print "<name> <version>", already handled by the space-split above), so
+    # strip a leading "<name>/" the same way before the "v" strip below --
+    # otherwise baked_version stays "omp/18.2.7" against a bare "18.2.7"
+    # latest and the two never compare equal even when they are the same
+    # release.
+    baked_version="${baked_version#"$IMAGE_AGENT"/}"
     baked_version="${baked_version#v}"
     [[ -n "$baked_version" ]] || return 0
     [[ "$baked_version" == "$latest" ]] && return 0
