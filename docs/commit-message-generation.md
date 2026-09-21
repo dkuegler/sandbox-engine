@@ -1,6 +1,6 @@
 # Commit-message generation: where it runs, on what model, with which flags
 
-Last verified: 2026-09-20 (omp v18.2.5). `M` = measured, output quoted. `D` =
+Last verified: 2026-09-21 (omp v18.2.5). `M` = measured, output quoted. `D` =
 derived from source or documentation, not exercised.
 
 Subject: how `sandbox.sh --worktree <branch>` obtains a commit message when the
@@ -25,8 +25,29 @@ does **not** get the project checkout or the worktree.
 Reason: every supported agent auto-loads instruction files (`CLAUDE.md`,
 `AGENTS.md`), rules and skills from its working directory. Mounting the tree the
 previous agent just wrote would let that agent choose the generator's own
-instructions. Instead the container's cwd is an empty scratch directory inside
-its private `/tmp`, and the diff arrives as one inert argv string.
+instructions. Instead the container's cwd is a directory created for this run
+alone, holding nothing, and the diff arrives as one inert argv string.
+
+That directory is created **through the `/tmp` bind, not beside it**. The
+generator's scratch directory on the host is bound *at* `/tmp` in the
+container, so the container path `/tmp/commit-msg-cwd` is the host path
+`<scratch>/commit-msg-cwd` — the `/tmp` prefix has to be stripped before the
+`mkdir`:
+
+```
+mkdir -p "$scratch${COMMIT_MSG_CWD#/tmp}"
+```
+
+`D` — creating `"$scratch$COMMIT_MSG_CWD"` instead puts the directory at
+`/tmp/tmp/commit-msg-cwd` inside the container. The `--cwd` the generator is
+given then names a path that does not exist, which is either a failed run
+falling into the placeholder path or a run whose working directory nobody
+chose. Pure path arithmetic, invisible from either side alone.
+
+It contains no instruction file for any agent to discover because the scratch
+directory is created fresh for this generation and nothing else writes into
+it. The coding agent's `/tmp` is a different directory, `rm -rf`'d and
+recreated, so the agent cannot pre-seed the generator's filesystem.
 
 The bind set is not re-listed in `functions/commit-message.sh`. `configure_agent`
 (`functions/agents.sh`) records `AGENT_CONFIG_BIND_START` at the point where the

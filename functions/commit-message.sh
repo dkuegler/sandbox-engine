@@ -1,38 +1,22 @@
 #!/bin/bash
 # Commit-message generation for --worktree mode (functions/worktree.sh):
-# asking an agent to describe a change it did not describe itself.
+# asking an agent to describe a change it did not describe itself. Full
+# rationale in docs/commit-message-generation.md; in short:
 #
-# WHY THIS RUNS IN THE SANDBOX. The text handed to the generator is a diff
-# the sandboxed agent just wrote, i.e. attacker-controlled input in exactly
-# the threat model this tool exists for. Running the generator on the host
-# would mean an agent-authored file deciding what an unsandboxed process
-# reads and does -- the one thing every other path here refuses. So
-# generation goes through `apptainer exec` against the same SIF the agent
-# itself ran in, and the only thing that crosses back to the host is the
-# generated text on stdout, which a human then approves or rejects.
-#
-# WHY THE BIND SET IS SMALLER THAN THE AGENT'S OWN. The generator needs the
-# agent's config and credentials, and nothing else. It explicitly does NOT
-# get the project checkout or the worktree: a coding agent auto-loads
-# instruction files (CLAUDE.md / AGENTS.md), rules and skills from its
-# working directory, so pointing the generator at the tree the previous
-# agent just wrote would let that agent dictate the generator's system
-# prompt. Instead the container's cwd is an empty scratch directory and the
-# diff arrives as one inert argv string. AGENT_CONFIG_BINDS (sandbox.sh) is
-# the config-only slice of the run's binds, captured from configure_agent's
-# own appends (functions/agents.sh) rather than re-listed here, so a future
-# per-agent config bind is carried automatically instead of being silently
-# missing.
-#
-# WHY TOOLS ARE OFF ANYWAY. Containment stops the generator from touching
-# the host, not from acting inside a container that holds live
-# credentials -- with tools enabled, a prompt injection in the diff could
-# read the mounted auth files and exfiltrate them over the agent image's
-# open network egress. Each agent therefore gets its own documented
-# "no execution" switch (see the table in docs/commit-message-generation.md).
-# Defence in depth: the worst case that survives both layers is a
-# misleading commit message, which the mandatory approval gate shows the
-# human verbatim next to the diff it claims to describe.
+# - Runs IN THE SANDBOX, not the host: the diff handed to the generator
+#   is attacker-controlled text the sandboxed agent just wrote. Goes
+#   through `apptainer exec` against the same SIF the agent ran in; only
+#   the generated stdout text crosses back, for a human to approve.
+# - Its bind set is SMALLER than the agent's own: no project checkout or
+#   worktree, so an agent-authored CLAUDE.md/AGENTS.md there cannot
+#   dictate the generator's own system prompt. AGENT_CONFIG_BINDS
+#   (sandbox.sh) is the config-only bind slice, captured automatically
+#   from configure_agent's own appends rather than re-listed here.
+# - Tools are OFF too (per-agent switches in docs/commit-message-generation.md):
+#   containment stops the generator reaching the host, not acting inside
+#   a container that holds live credentials and open egress. Worst case
+#   surviving both layers: a misleading commit message, shown to the
+#   human next to the diff it claims to describe.
 #
 # Globals published for functions/worktree.sh:
 #   COMMIT_MSG_CMD        the agent argv built by commit_msg_build_cmd()
@@ -323,8 +307,15 @@ commit_msg_model_args() {
 # ---------------------------------------------------------------------------
 # The agent command
 # ---------------------------------------------------------------------------
-# COMMIT_MSG_CWD is inside the scratch tmpfs bind below, so it exists, is
-# empty, and contains no instruction file for any agent to discover.
+# COMMIT_MSG_CWD is the container's working directory for a generation
+# run: it exists, it is empty, and no agent discovers an instruction file
+# in it (see the header above for why that matters).
+#
+# Created inside $scratch with the /tmp prefix STRIPPED, because $scratch
+# is itself bound at /tmp: "$scratch$COMMIT_MSG_CWD" would create
+# /tmp/tmp/commit-msg-cwd inside the container and leave --cwd pointing
+# at a directory that does not exist (docs/commit-message-generation.md
+# has the measured failure mode).
 COMMIT_MSG_CWD='/tmp/commit-msg-cwd'
 
 # commit_msg_build_cmd PROMPT: the agent argv, hardened per agent.
@@ -420,7 +411,7 @@ commit_msg_generate() {
     # reap_orphaned_run_dirs() (functions/run-dir.sh) already own, so this
     # adds no new cleanup path.
     rm -rf "$scratch"
-    mkdir -p "$scratch$COMMIT_MSG_CWD" || return 1
+    mkdir -p "$scratch${COMMIT_MSG_CWD#/tmp}" || return 1  # Strip /tmp: $scratch IS /tmp in container
 
     # shellcheck disable=SC2054  # "home,cwd" is one apptainer flag value, not two array elements
     local -a argv=(
