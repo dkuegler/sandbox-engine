@@ -343,6 +343,17 @@ configure_agent
 # entire bind set the sandboxed commit-message generator runs with, so that
 # an agent-authored diff cannot reach a checkout whose instruction files
 # would then be auto-loaded (functions/commit-message.sh).
+#
+# An unset offset is a hard error rather than a 0 default: slicing from 0
+# would hand the generator the whole bind set -- project dir, worktree,
+# extra binds, .git masks -- which is precisely the isolation this slice
+# exists to create, and it would do so silently. configure_agent() sets
+# the offset unconditionally, so reaching this means the invariant it
+# rests on no longer holds and nothing here can guess a safe substitute.
+if [[ -z "${AGENT_CONFIG_BIND_START:-}" ]]; then
+    echo "sandbox: configure_agent left AGENT_CONFIG_BIND_START unset -- refusing to run the commit-message generator with an unknown bind set" >&2
+    exit 1
+fi
 # shellcheck disable=SC2034  # AGENT_CONFIG_BINDS is read by commit_msg_generate (functions/commit-message.sh)
 AGENT_CONFIG_BINDS=("${BINDS[@]:${AGENT_CONFIG_BIND_START:-0}}")
 log_info "masks: ${GIT_MASK_COUNT:-0} .git path(s) read-only, ${#RO_MASKED[@]} read-only config bind(s)"
