@@ -274,6 +274,16 @@ generate_limitations_file() {
 # file to write) are the ones an agent needs before its first tool call,
 # not after it thinks to read a lookup file. Most importantly it says
 # where to look for the untracked/ignored files a worktree does not have.
+#
+# Kept terse on purpose: every line here loads into every session's system
+# prompt, unlike generate_limitations_file()'s output (read only on
+# demand, agents.sh:157-166). Verbosity here was reviewed and trimmed
+# once already: no fact was dropped, only restated tighter (fewer clauses
+# per fact, abbreviated ro/rw, no second full sentence pointing at
+# .sandbox-limitations.md when the base marker block four lines above
+# already gave that pointer). If a fact stops being needed before the
+# agent's first tool call, move it into generate_limitations_file()
+# instead of re-trimming it here.
 bind_augmented_instructions() {
     local real="$1" out
     ensure_run_dir
@@ -296,29 +306,27 @@ bind_augmented_instructions() {
         {
             echo
             echo "$LIMITATIONS_NOTICE_MARKER worktree"
-            echo "This session runs in a throwaway git worktree on branch \`$WORKTREE_REF\`:"
-            echo "- Working directory: \`$WORKTREE_DIR\` (read-write). Change files here."
+            echo "Throwaway git worktree on branch \`$WORKTREE_REF\`:"
+            echo "- Write changes in \`$WORKTREE_DIR\` (rw)."
             case "${WORKTREE_PROJECT_MODE:-ro}" in
                 deny)
-                    echo "- Main checkout: \`$PROJECT_DIR\` is NOT mounted this session (denied)."
-                    echo "  Only its \`.git\` is reachable, read-only. Untracked/gitignored files"
-                    echo "  that exist only in the main checkout are not reachable at all."
+                    echo "- Main checkout \`$PROJECT_DIR\` is NOT mounted (denied); only its"
+                    echo "  \`.git\` is reachable (ro). Untracked/gitignored files there are"
+                    echo "  unreachable entirely."
                     ;;
                 rw)
-                    echo "- Main checkout: \`$PROJECT_DIR\` (read-write, by explicit confirmation)."
-                    echo "  Edits made there are outside the worktree and will NOT appear in the"
-                    echo "  approval diff or reach \`$WORKTREE_REF\`."
+                    echo "- Main checkout \`$PROJECT_DIR\` (rw, explicit confirmation). Edits"
+                    echo "  there are outside the worktree and won't appear in the approval"
+                    echo "  diff or reach \`$WORKTREE_REF\`."
                     ;;
                 *)
-                    echo "- Main checkout: \`$PROJECT_DIR\` (read-only). A worktree contains only"
-                    echo "  git-tracked files, so anything untracked or gitignored -- notes"
-                    echo "  directories, \`.env\`, build output -- lives there, not here. Search"
-                    echo "  the main checkout before concluding a file does not exist."
+                    echo "- Main checkout \`$PROJECT_DIR\` (ro). Worktrees hold only tracked"
+                    echo "  files -- untracked/gitignored paths (notes dirs, \`.env\`, build"
+                    echo "  output) exist only there."
                     ;;
             esac
-            echo "- You cannot commit: every \`.git\` is read-only. Write the commit"
-            echo "  message to \`\$HOME/$WORKTREE_MSG_NAME\` and a human reviews and"
-            echo "  commits it on the host. See \$HOME/.sandbox-limitations.md."
+            echo "- No commits: \`.git\` is read-only. Put the commit message in"
+            echo "  \`\$HOME/$WORKTREE_MSG_NAME\`; a human applies it on the host."
         } >>"$out"
     fi
     chmod 600 "$out"
