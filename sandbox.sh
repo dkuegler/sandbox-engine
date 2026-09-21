@@ -398,7 +398,7 @@ fi
 # that eventually happens uses this host's own ambient git identity and
 # config. Every exit path leaves the worktree on disk except the single one
 # the human explicitly asks to discard.
-WORKTREE_REVIEW="$RUN_DIR/review.txt"
+WORKTREE_DIFF_STATE="$RUN_DIR/diff_state.txt"
 WORKTREE_MSG_FINAL="$RUN_DIR/commit-message.final"
 while true; do
     log_argv "apptainer exec argv" "${EXEC_ARGV[@]}"
@@ -411,10 +411,10 @@ while true; do
         exit "$CONTAINER_RC"
     fi
 
-    worktree_build_review "$WORKTREE_REVIEW"
+    worktree_build_diff_state "$WORKTREE_DIFF_STATE"
     if worktree_has_changes; then
-        worktree_resolve_commit_message "$WORKTREE_MSG_FINAL" "$WORKTREE_REVIEW"
-        if worktree_approval_gate "$WORKTREE_MSG_FINAL" "$WORKTREE_REVIEW"; then
+        worktree_resolve_message "$WORKTREE_MSG_FINAL" "$WORKTREE_DIFF_STATE"
+        if worktree_approval_gate "$WORKTREE_MSG_FINAL" "$WORKTREE_DIFF_STATE"; then
             if worktree_commit "$WORKTREE_MSG_FINAL"; then
                 worktree_after_commit
                 exit 0

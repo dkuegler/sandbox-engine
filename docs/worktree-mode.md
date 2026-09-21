@@ -95,8 +95,8 @@ $ git add -A -N
 $ after=$(find .git/objects -type f | wc -l)    # 5
 ```
 
-One loose object (the empty-blob placeholder). The review text therefore
-diffs untracked files with `git diff --no-index` instead, which never opens
+One loose object (the empty-blob placeholder). The diff state therefore
+renders untracked files with `git diff --no-index` instead, which never opens
 the object database for writing, so a rejected run leaves the main
 repository's objects and index byte-for-byte unchanged.
 

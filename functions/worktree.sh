@@ -2,42 +2,37 @@
 # --worktree <branch>: run the agent in a throwaway git worktree checked
 # out on agent/<branch>, review the result on the host TTY after the
 # container has exited, and commit it there -- never inside the container.
-#
-# WHY THE COMMIT IS HOST-SIDE. A linked worktree shares nearly all of the
-# main repository's git directory: the object database
-# (<main>/.git/objects), the ref namespace (refs/heads/*, packed-refs) and
-# config are a single shared copy; only HEAD, index, ORIG_HEAD, logs/HEAD
-# and config.worktree are per-worktree, under <main>/.git/worktrees/<name>/
-# (git-worktree(1)). Measured directly against git 2.39.5: a commit made
-# inside a worktree lands on the MAIN repository's refs/heads/<branch> and
-# writes its objects into <main>/.git/objects, readable from the main
-# checkout afterwards. A writable worktree gitdir therefore *is* write
-# access to the main repository's history -- `git update-ref`, `branch -f`
-# and `push --force` issued from a worktree reach every branch in the main
-# repo, not just the worktree's own.
-#
-# So worktree mode binds the worktree's *checkout* read-write (the agent
-# edits files) while all three gitdir paths stay read-only-masked exactly
-# like every other gitdir (functions/git-mask.sh): <worktree>/.git (the
-# "gitdir:" pointer file -- masked as a file, so the agent cannot repoint
-# it either), <main>/.git/worktrees/<name>/, and <main>/.git itself. The
-# agent cannot commit at all; the human commits here, after review.
-#
-# WHAT THIS DELIBERATELY DOES NOT DO: push. No forge credential and no real
-# remote URL enters the container for this feature, and nothing in this
-# file contacts a remote. An approved run commits onto agent/<branch> in
-# the main repository and prints the exact `git push` command for the human
-# to run themselves.
+# See docs/worktree-mode.md for why (a linked worktree's writable gitdir
+# is write access to the MAIN repository's entire history, not just the
+# branch checked out here) and for what stays masked. In short: the
+# worktree's checkout is bound read-write; every gitdir (the worktree's
+# own, its per-worktree metadata under <main>/.git/worktrees/<name>/, and
+# <main>/.git itself) stays read-only like any other gitdir
+# (functions/git-mask.sh), so the agent cannot commit at all -- the human
+# commits here, after review. Nothing is pushed: no forge credential and
+# no remote URL enters the container for this feature; an approved run
+# prints the `git push` command for the human to run themselves.
 #
 # Globals published for sandbox.sh / functions/agents.sh:
-#   WORKTREE_BRANCH      the --worktree argument, verbatim (never invented)
-#   WORKTREE_REF         "agent/$WORKTREE_BRANCH"
-#   WORKTREE_REPO_ROOT   the main repository's top level (== PROJECT_DIR)
-#   WORKTREE_DIR         $HOME/.agent/worktrees/<project-key>/<branch>
+#   WORKTREE_BRANCH        the --worktree argument, verbatim (never invented)
+#   WORKTREE_REF           "agent/$WORKTREE_BRANCH"
+#   WORKTREE_REPO_ROOT     the main repository's top level (== PROJECT_DIR)
+#   WORKTREE_DIR           $HOME/.agent/worktrees/<project-key>/<branch>
 #   WORKTREE_PROJECT_MODE  ro|rw|deny -- how the main checkout is exposed
 #                          (see worktree_confirm_readonly_project)
-#   WORKTREE_MSG_HOST    host path of the agent's commit-message file
-#   WORKTREE_REJECT_ACTION  keep|discard|rerun, set by the reject menu
+#   WORKTREE_MSG_HOST      host path of the agent's commit-message file
+#   WORKTREE_REJECT_ACTION keep|discard|rerun, set by the reject menu
+#   WORKTREE_DIFF_STATE_HASH
+#                          hash of the diff state, recorded by
+#                          worktree_build_diff_state and re-checked
+#                          immediately before the commit, so an approval
+#                          can only land the tree it saw
+#   WORKTREE_PREREVIEW_STATE_LOG
+#                          host path of the persistent state-render log:
+#                          every worktree_render_state() pass (the initial
+#                          render and the pre-commit recheck alike) is
+#                          appended here, timestamped, so a mismatch can
+#                          be diffed after the fact from outside
 
 # The file the agent fills in with its own proposed commit message. Mounted
 # read-write at $HOME/<this> inside the container; read back on the host
@@ -46,13 +41,13 @@
 # describes.
 WORKTREE_MSG_NAME='.sandbox-commit-message'
 
-# Display/prompt caps. The review text is built once and reused by both the
-# approval gate and the sandboxed message fallback, so the two can never
-# disagree about what was reviewed.
-WORKTREE_REVIEW_MAX_LINES=5000
+# Display caps. The diff state is rendered once and used by both the
+# approval gate and the sandboxed message generator, so the human and the
+# model that proposes a message see the same change. These bound only what
+# is SHOWN; the state file itself is never truncated, because it is the
+# record of what the approval covers.
 WORKTREE_GATE_DIFF_LINES=400
 WORKTREE_PROMPT_DIFF_LINES=1200
-WORKTREE_UNTRACKED_MAX=50
 
 # worktree_fail MSG [DETAIL...]: refuse the run with a single-owner error
 # message. Every refusal in this file is a "do not guess" refusal: the
@@ -175,6 +170,12 @@ worktree_preflight() {
     # not, so the agent can neither read nor forge this. Keyed by a digest
     # of the branch name so "feat/x" and "feat-x" cannot share a lock.
     WORKTREE_LOCK="$HOME/.agent/worktrees/$key/.lock-$(printf '%s' "$WORKTREE_BRANCH" | sha256sum | cut -c1-12)"
+    # Persistent log of rendered pre-review tree state: appended on every
+    # pass (initial render, pre-commit recheck) so a hash mismatch can be
+    # diffed after the fact. Lives beside the worktree, never inside it --
+    # the parent is not bound into the container, so the agent can neither
+    # read nor forge this log, and it survives a kept/rejected worktree.
+    WORKTREE_PREREVIEW_STATE_LOG="$HOME/.agent/worktrees/$key/.state-render.log"
     WORKTREE_PROJECT_MODE=ro
     WORKTREE_MSG_HOST=""
 }
@@ -193,17 +194,12 @@ worktree_preflight() {
 #   rw   -- the main checkout's working tree is bound read-write, as a
 #           deliberate per-run keystroke, never a flag and never
 #           unattended.
-#   deny -- the main checkout's working tree is not bound at all. Git
-#           still works: a linked worktree's history lives in
-#           <main>/.git, not in the working tree, and mask_git_readonly()
-#           (functions/git-mask.sh) mounts exactly that -- <main>/.git,
-#           read-only -- unconditionally, on every run, regardless of
-#           this choice. What "deny" withholds is the main checkout's
-#           untracked/ignored content (notes, .env, build output) that a
-#           worktree does not carry.
-#
-# Every .git stays read-only-masked in all three cases, so none of them
-# let the agent rewrite history.
+#   deny -- the main checkout's working tree is not bound at all. This
+#           does not hide the repository's history -- every .git stays
+#           read-only-masked in all three cases regardless of this
+#           choice (docs/worktree-mode.md has the full reasoning); "deny"
+#           withholds only the main checkout's untracked/ignored content
+#           (notes, .env, build output) that a worktree does not carry.
 worktree_confirm_readonly_project() {
     local reply
     # -r alone is not a reliable predictor: /dev/tty exists and is
@@ -275,20 +271,11 @@ worktree_ref_checkout_path() {
 }
 
 # worktree_lock_acquire: guard one worktree against a second concurrent
-# run. git's own "'<branch>' is already checked out at '<path>'" check is
-# the exclusivity mechanism for worktree *creation* and still applies
-# below, but it cannot see a second run that RESUMES an existing worktree
-# -- and resume is exactly what a crashed prior run leaves behind. Without
-# this, two agents would share one checkout and one index.
-#
-# Why not use the existence of agent/<branch> as the lock: a ref is the
-# run's OUTPUT and outlives it (an approved run keeps the branch and
-# removes the worktree), so it cannot express "a run is happening right
-# now" -- it is true for a live run, a crashed run and a landed one alike.
-# The one case a ref does cover, creation, is already covered atomically by
-# `git worktree add -b`. `git worktree lock` is not this either: measured,
-# it only blocks `worktree remove`/`prune`/`move`, and a locked worktree
-# stays fully writable and committable by any process.
+# run -- git's own worktree-creation check cannot see a second run that
+# RESUMES an existing worktree, which is exactly what a crashed prior run
+# leaves behind. See docs/worktree-mode.md ("Concurrency") for why
+# agent/<branch>'s existence and `git worktree lock` cannot substitute
+# for this.
 #
 # mkdir is the atomic primitive (it fails if the directory exists); the
 # owner pid inside distinguishes a live run from one that was SIGKILLed,
@@ -296,9 +283,8 @@ worktree_ref_checkout_path() {
 # reap_orphaned_run_dirs() (functions/run-dir.sh). The owner HOST is
 # recorded next to it because `kill -0` is meaningless across machines:
 # $HOME can be a network mount, in which case two hosts share this lock
-# path and the worktree it guards, and pid 4711 being alive here says
-# nothing about the run on the other host. A foreign-host lock is
-# therefore never taken over automatically.
+# path, and a foreign-host lock is therefore never taken over
+# automatically.
 #
 # Releasing is registered here, on success, rather than wired into any
 # other module's teardown: the hook exists exactly when the lock does.
@@ -433,39 +419,131 @@ Solution:
 EOF
 }
 
-# worktree_build_review OUT: the exact content of the pending change,
-# written once and then used for BOTH the approval gate's display and the
-# fallback generator's prompt -- so the human and the model that
-# proposes a message are looking at the same thing.
+# worktree_render_state OUT LABEL: the ONE place that computes the
+# committable state of the worktree. What it renders -- the porcelain
+# status, the tracked diff against HEAD, and the per-file diff of every
+# untracked, non-ignored path -- is by definition everything a commit from
+# this worktree would capture, because `git add -A` stages exactly that
+# set. Both consumers are derived from the SAME bytes this function
+# produces, never from a second, independently written computation over
+# the same tree: worktree_build_diff_state records it as the baseline the
+# approval covers, and worktree_current_state_hash hashes a fresh render
+# before the commit to decide whether the tree still matches. One renderer
+# means approval and commit can never disagree about what the state is.
+#
+# LABEL names the caller's purpose ("initial", "recheck"); it goes into the
+# persistent log header so several appends can be told apart afterwards.
+#
+# Invariants this function owns, both load-bearing for the security
+# posture above:
+#
+# - Nothing can be committed that the diff state did not render. The
+#   rendered set is the set `git add -A` will stage, with no cap on the
+#   number of untracked files and no truncation of the file, because a
+#   review that silently stops short is a review of a different change
+#   than the one that lands.
+# - -z on ls-files and core.quotePath=false on status are load-bearing,
+#   not cosmetic: by default git C-quotes any path holding a non-ASCII or
+#   control byte, quotes included, and that quoted string names no file --
+#   so the per-file diff failed while the header still printed, and a
+#   reviewer saw a filename and concluded the file was empty.
 #
 # Deliberately does NOT stage anything first. `git add -A -N` would make
-# one `git diff HEAD` cover untracked files too, but measured it writes a
-# loose object (the empty-blob placeholder) into the MAIN repository's
-# shared object store. Nothing about merely reviewing a change should touch
-# the main repository, so untracked files are diffed with --no-index
-# instead, which never opens the object database for writing. A rejected
-# run therefore leaves the main repository's objects and index untouched.
-worktree_build_review() {
-    local out="$1" f n=0
+# one `git diff HEAD` cover untracked files too, but it writes to the
+# MAIN repository's shared object store (measured: docs/worktree-mode.md,
+# "Commit path"). Untracked files are diffed with --no-index instead,
+# which never opens the object database for writing, so a rejected run
+# leaves the main repository's objects and index untouched.
+#
+# `git diff --no-index` exits 1 when its two inputs differ, which is the
+# normal case here -- every untracked file differs from /dev/null -- so
+# only a status above 1 is a failure. That failure is fatal rather than
+# swallowed: a file that cannot be rendered must never reach a commit the
+# human believes they reviewed.
+#
+# Every completed render is appended, timestamped and labelled, to
+# WORKTREE_PREREVIEW_STATE_LOG ($HOME/.agent/worktrees/<key>/.state-render.log,
+# outside the worktree and never bound into the container). This is the
+# debugging record for the initial/recheck hashes: when worktree_commit
+# reports a mismatch, the "initial" and "recheck" blocks in this log are
+# the two states that were compared, diffable after the fact from outside
+# the sandbox. The log is host-only (unbound path), append-only, and
+# grows by one block per render -- a handful of kilobytes per run.
+worktree_render_state() {
+    local out="$1" label="$2" list="${RUN_DIR:?RUN_DIR must exist before state is rendered}/render-untracked.z"
+    local f qf rc
+    # The untracked list is captured before the block below rather than
+    # streamed into it from a process substitution: a substitution's exit
+    # status is unreachable, so a failing `ls-files` would look exactly
+    # like "there are no untracked files" -- and `git add -A` would then
+    # commit every one of them unreviewed.
+    if ! git -C "$WORKTREE_DIR" ls-files --others --exclude-standard -z >"$list"; then
+        worktree_fail "cannot list the untracked files in $WORKTREE_DIR" \
+            "the worktree remains intact and nothing was committed."
+    fi
     {
         echo "# status"
-        git -C "$WORKTREE_DIR" status --porcelain 2>/dev/null
+        # Every input below is a hard failure, never a swallowed error.
+        # The commit stages whatever is in the tree; the review is the
+        # only thing standing between that and the human, so a review
+        # that is quietly missing a section is worse than no review at
+        # all.
+        if ! git -C "$WORKTREE_DIR" -c core.quotePath=false status --porcelain; then
+            worktree_fail "cannot read the status of $WORKTREE_DIR" \
+                "the worktree remains intact and nothing was committed."
+        fi
         echo
         echo "# diff of tracked files against HEAD"
-        git -C "$WORKTREE_DIR" diff HEAD 2>/dev/null
-        while IFS= read -r f; do
-            [[ -n "$f" ]] || continue
-            n=$((n + 1))
-            if [[ "$n" -gt "$WORKTREE_UNTRACKED_MAX" ]]; then
-                echo "# ... further untracked files omitted from this review text"
-                break
-            fi
+        if ! git -C "$WORKTREE_DIR" diff HEAD; then
+            worktree_fail "cannot diff $WORKTREE_DIR against HEAD" \
+                "the worktree remains intact and nothing was committed."
+        fi
+        while IFS= read -r -d '' f; do
+            # %q rather than the raw name: with -z the path arrives
+            # verbatim, and one containing a newline would otherwise
+            # forge further header lines inside the text the human reads.
+            printf -v qf '%q' "$f"
             echo
-            echo "# new file: $f"
-            git -C "$WORKTREE_DIR" diff --no-index -- /dev/null "$f" 2>/dev/null || true
-        done < <(git -C "$WORKTREE_DIR" ls-files --others --exclude-standard 2>/dev/null)
-    } | head -n "$WORKTREE_REVIEW_MAX_LINES" >"$out"
+            echo "# new file: $qf"
+            rc=0
+            git -C "$WORKTREE_DIR" diff --no-index -- /dev/null "$f" || rc=$?
+            # --no-index reports 1 for "they differ", which is the whole
+            # point of the call; anything above that is a real failure.
+            if [[ "$rc" -gt 1 ]]; then
+                worktree_fail "cannot render $qf in $WORKTREE_DIR (git diff exited $rc)" \
+                    "the worktree is intact and nothing was committed." \
+                    "a change is offered for approval only when every part of it can be shown."
+            fi
+        done <"$list"
+    } >"$out"
+    if [[ -n "${WORKTREE_PREREVIEW_STATE_LOG:-}" ]]; then
+        {
+            echo "==== $(date '+%Y-%m-%dT%H:%M:%S%z') pid=$$ label=$label ===="
+            cat -- "$out"
+            echo
+        } >>"$WORKTREE_PREREVIEW_STATE_LOG"
+    fi
+}
+
+# worktree_current_state_hash: hash a FRESH render of the state, using the
+# same worktree_render_state bytes the approval covers -- so the
+# comparison in worktree_commit is between two outputs of one function,
+# never between what was reviewed and a separately written hash computation.
+worktree_current_state_hash() {
+    local tmp="${RUN_DIR:?RUN_DIR must exist before state is rendered}/recheck-state"
+    worktree_render_state "$tmp" "recheck"
+    sha256sum -- "$tmp" | cut -d' ' -f1
+}
+
+# worktree_build_diff_state OUT: render the pending change once via
+# worktree_render_state, then hash THOSE EXACT BYTES. The hash is taken
+# over the file the human is shown, not over a second computation, so the
+# approval answers "is this still the tree behind THIS file?".
+worktree_build_diff_state() {
+    local out="$1"
+    worktree_render_state "$out" "initial"
     chmod 600 "$out"
+    WORKTREE_DIFF_STATE_HASH="$(sha256sum -- "$out" | cut -d' ' -f1)"
 }
 
 # worktree_has_changes: anything at all for a commit to capture, ignoring
@@ -476,9 +554,12 @@ worktree_has_changes() {
     [[ -n "$st" ]]
 }
 
-# worktree_generate_commit_message OUT REVIEW: ask the agent to describe
+# worktree_generate_message OUT STATE: ask the agent to describe
 # the change it just made, for the case where it left its own
-# commit-message file empty.
+# commit-message file empty. STATE is a summarized diff state of the
+# repo -- worktree_render_state's output (porcelain status, tracked
+# diff against HEAD, new-file diffs) -- what the model reads to write
+# the message; the human review happens later, at the approval gate.
 #
 # This function owns only WHAT to ask. How to ask it without handing
 # agent-authored text to an unsandboxed process is commit_msg_generate()'s
@@ -487,8 +568,8 @@ worktree_has_changes() {
 # neither the project checkout nor the worktree mounted -- so nothing the
 # previous agent wrote can be auto-loaded as instructions, and nothing it
 # writes here can reach the host except the text a human then approves.
-worktree_generate_commit_message() {
-    local out="$1" review="$2" prompt
+worktree_generate_message() {
+    local out="$1" state="$2" prompt
     prompt="$(printf '%s\n' \
         "Write a git commit message for the change below." \
         "Reply with the message only -- no preamble, no code fences, no commentary." \
@@ -500,7 +581,7 @@ worktree_generate_commit_message() {
         "The change:" \
         "")"
     prompt="$prompt
-$(head -n "$WORKTREE_PROMPT_DIFF_LINES" "$review")"
+$(head -n "$WORKTREE_PROMPT_DIFF_LINES" "$state")"
     commit_msg_generate "$out" "$prompt"
 }
 
@@ -525,12 +606,14 @@ worktree_placeholder_message() {
     chmod 600 "$out"
 }
 
-# worktree_resolve_commit_message OUT REVIEW: agent-written file if it has
-# content, sandboxed generation if not. Sets WORKTREE_MSG_SOURCE, which the
+# worktree_resolve_message OUT STATE: agent-written file if it has
+# content, sandboxed generation if not. STATE is the summarized diff
+# state of the repo (worktree_render_state's output) handed to the
+# generator when one is needed. Sets WORKTREE_MSG_SOURCE, which the
 # approval gate shows the human -- "who wrote this message" is part of what
 # is being approved.
-worktree_resolve_commit_message() {
-    local out="$1" review="$2" src="${WORKTREE_MSG_HOST:-}"
+worktree_resolve_message() {
+    local out="$1" state="$2" src="${WORKTREE_MSG_HOST:-}"
     if [[ -n "$src" && -f "$src" ]] && grep -q '[^[:space:]]' "$src" 2>/dev/null; then
         cp "$src" "$out"
         chmod 600 "$out"
@@ -538,7 +621,7 @@ worktree_resolve_commit_message() {
         return 0
     fi
     echo "worktree: the agent left ~/$WORKTREE_MSG_NAME empty; generating a message in the sandbox" >&2
-    if worktree_generate_commit_message "$out" "$review"; then
+    if worktree_generate_message "$out" "$state"; then
         WORKTREE_MSG_SOURCE="generated in the sandbox (the agent left the file empty)"
         return 0
     fi
@@ -546,16 +629,16 @@ worktree_resolve_commit_message() {
     WORKTREE_MSG_SOURCE="placeholder (agent file empty, generation failed)"
 }
 
-# worktree_approval_gate MSG REVIEW: mandatory. No flag, no environment
+# worktree_approval_gate MSG STATE: mandatory. No flag, no environment
 # variable and no answer other than an explicit "y" commits anything, and
 # there is no unattended path at all -- a missing TTY refuses.
 #
-# The review text goes to stderr so a logged run keeps the audit trail of
+# The diff state goes to stderr so a logged run keeps the audit trail of
 # what was approved; the question itself is asked on /dev/tty, because
 # stdin belongs to the agent.
 worktree_approval_gate() {
-    local msg="$1" review="$2" total reply
-    total="$(wc -l <"$review" | tr -d '[:space:]')"
+    local msg="$1" state="$2" total reply
+    total="$(wc -l <"$state" | tr -d '[:space:]')"
     {
         echo
         echo "======================================================================"
@@ -568,7 +651,7 @@ worktree_approval_gate() {
         cat "$msg"
         echo
         echo "--- change ($total lines) ---"
-        head -n "$WORKTREE_GATE_DIFF_LINES" "$review"
+        head -n "$WORKTREE_GATE_DIFF_LINES" "$state"
         if [[ "$total" -gt "$WORKTREE_GATE_DIFF_LINES" ]]; then
             echo
             echo "... truncated. Full change:"
@@ -629,8 +712,46 @@ worktree_reject_menu() {
 
 # worktree_commit MSG: stage everything not ignored and commit it, on the
 # host, with the host's own identity -- the human approved it and owns it.
+#
+# Returns 0 when the commit landed, 2 when the human asked for the state
+# render and the message to be rebuilt (the tree moved under the review),
+# and 1 when nothing was committed for any other reason. sandbox.sh treats every
+# non-zero alike -- not committed, fall through to the reject menu -- so
+# the distinction is informational, and both non-zero values are safe.
+#
 worktree_commit() {
-    local msg="$1"
+    local msg="$1" now reply
+    # The approval was given for one specific tree, so that tree is
+    # re-hashed here rather than assumed to have stayed put.
+    now="$(worktree_current_state_hash)"
+    if [[ "$now" != "${WORKTREE_DIFF_STATE_HASH:-}" ]]; then
+        {
+            echo
+            echo "worktree: $WORKTREE_DIR changed after the reviewed state was rendered."
+            echo "          reviewed: ${WORKTREE_DIFF_STATE_HASH:-<none recorded>}"
+            echo "          now:      $now"
+            echo "          the approval you gave covers the earlier state, not this one."
+            echo
+            echo "  r  re-render the state, rebuild the message, then ask again"
+            echo "  c  commit the current message and the current tree anyway"
+            echo "  anything else: commit nothing (default)"
+            echo
+        } >&2
+        reply=""
+        if [[ -r /dev/tty ]]; then
+            if printf 'Choose [r/c/N] ' 2>/dev/null >/dev/tty; then
+                read -r reply </dev/tty 2>/dev/null || reply=""
+            fi
+        fi
+        case "$reply" in
+            [rR]*) return 2 ;;
+            [cC]*) ;;
+            *)
+                echo "worktree: nothing committed; the worktree is intact at $WORKTREE_DIR" >&2
+                return 1
+                ;;
+        esac
+    fi
     if ! git -C "$WORKTREE_DIR" add -A; then
         worktree_fail "git add failed in $WORKTREE_DIR; nothing was committed"
     fi

@@ -16,7 +16,7 @@
 #     takes over a crashed one, refuses one held from another host, and
 #     releases through a registered teardown hook rather than through a
 #     call wired into unrelated cleanup code;
-#   - reviewing a change writes nothing into the main repository;
+#   - rendering a diff state writes nothing into the main repository;
 #   - the host-side commit lands on agent/<branch> in the main repository;
 #   - discarding never silently deletes a branch carrying real commits;
 #   - the commit-message fallback is generated INSIDE the sandbox, with
@@ -265,34 +265,34 @@ WORKTREE_DIR="$saved_wt"
 BINDS=()
 mask_git_readonly >/dev/null 2>&1
 
-# --- W8: reviewing a change writes nothing into the main repository ------
+# --- W8: rendering a diff state writes nothing into the main repository --
 # `git add -A -N` would make one `git diff HEAD` cover untracked files too,
 # but measured it writes a loose object (the empty-blob placeholder) into
-# the shared object store. Review must not touch the main repository at
-# all, so the review text is built without staging anything.
+# the shared object store. Rendering the diff state must not touch the
+# main repository at all, so it is rendered without staging anything.
 printf 'edited\n' >> "$WORKTREE_DIR/tracked.txt"
 printf 'brand new\n' > "$WORKTREE_DIR/added.txt"
 printf 'build junk\n' > "$WORKTREE_DIR/IGNORED"
 objs_before="$(find "$MAIN_GITDIR/objects" -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
 idx_before="$(md5sum "$WT_GITDIR/index" 2>/dev/null | cut -d' ' -f1)"
-worktree_build_review "$W/review.txt"
+worktree_build_diff_state "$W/diff_state.txt"
 objs_after="$(find "$MAIN_GITDIR/objects" -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
 idx_after="$(md5sum "$WT_GITDIR/index" 2>/dev/null | cut -d' ' -f1)"
 [[ "$objs_before" == "$objs_after" ]] \
-    && ok W8 "building the review wrote no object into the main repository ($objs_before)" \
-    || bad W8 "review wrote objects into the main repository ($objs_before -> $objs_after)"
+    && ok W8 "building the diff state wrote no object into the main repository ($objs_before)" \
+    || bad W8 "the diff-state render wrote objects into the main repository ($objs_before -> $objs_after)"
 [[ "$idx_before" == "$idx_after" ]] \
-    && ok W8b "building the review left the worktree index untouched" \
-    || bad W8b "review modified the worktree index"
+    && ok W8b "building the diff state left the worktree index untouched" \
+    || bad W8b "the diff-state render modified the worktree index"
 
-# The review still has to SHOW the untracked file, or the human approves a
+# The diff state still has to SHOW the untracked file, or the human approves a
 # commit containing content they were never shown.
-grep -q 'brand new' "$W/review.txt" \
-    && ok W8c "the review shows the content of untracked files" \
-    || bad W8c "untracked file content is missing from the review"
-grep -q 'build junk' "$W/review.txt" \
-    && bad W8d "the review shows .gitignore'd content that will not be committed" \
-    || ok W8d "the review omits .gitignore'd content, matching what the commit will contain"
+grep -q 'brand new' "$W/diff_state.txt" \
+    && ok W8c "the diff state shows the content of untracked files" \
+    || bad W8c "untracked file content is missing from the diff state"
+grep -q 'build junk' "$W/diff_state.txt" \
+    && bad W8d "the diff state shows .gitignore'd content that will not be committed" \
+    || ok W8d "the diff state omits .gitignore'd content, matching what the commit will contain"
 
 # --- W9: the agent's own message is used verbatim, fallback untouched ----
 WORKTREE_MSG_HOST="$W/agent-msg"
@@ -302,7 +302,7 @@ mkdir -p "$W/bin"
 printf '#!/bin/sh\necho GENERATOR-RAN\nexit 0\n' > "$W/bin/omp"
 chmod +x "$W/bin/omp"
 PATH="$W/bin:$PATH"
-worktree_resolve_commit_message "$W/msg.final" "$W/review.txt" >/dev/null 2>&1
+worktree_resolve_message "$W/msg.final" "$W/diff_state.txt" >/dev/null 2>&1
 if grep -q 'Agent title' "$W/msg.final" && ! grep -q 'GENERATOR-RAN' "$W/msg.final"; then
     ok W9 "a non-empty agent message is used verbatim; the fallback never runs"
 else
@@ -373,7 +373,7 @@ split_argv() {
 }
 
 rm -f "$W/appt-argv"
-worktree_resolve_commit_message "$W/msg.final" "$W/review.txt" >/dev/null 2>&1
+worktree_resolve_message "$W/msg.final" "$W/diff_state.txt" >/dev/null 2>&1
 grep -q 'Generated title' "$W/msg.final" \
     && ok W10 "an empty agent file falls back to generated message" \
     || bad W10 "fallback did not produce a message"
@@ -486,7 +486,7 @@ AGENT=omp
 # --- W11: generator failure still reaches the gate -----------------------
 printf '#!/bin/sh\nexit 3\n' > "$W/bin/apptainer"
 chmod +x "$W/bin/apptainer"
-worktree_resolve_commit_message "$W/msg.final" "$W/review.txt" >/dev/null 2>&1
+worktree_resolve_message "$W/msg.final" "$W/diff_state.txt" >/dev/null 2>&1
 if grep -q '[^[:space:]]' "$W/msg.final" && grep -q "$WORKTREE_REF" "$W/msg.final"; then
     ok W11 "a failed generator still yields a non-empty message, so the human still reviews"
 else
