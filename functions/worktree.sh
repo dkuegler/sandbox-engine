@@ -213,13 +213,20 @@ worktree_confirm_readonly_project() {
             "--worktree $WORKTREE_BRANCH" \
             "  worktree (read-write): $WORKTREE_DIR" \
             "  branch:                $WORKTREE_REF" \
-            "  main checkout:         $PROJECT_DIR  -> READ-ONLY" \
+            "  main checkout:         $PROJECT_DIR" \
             "" \
             "The agent works only in the worktree. The main checkout is mounted read-only" \
             "so nothing it does can modify your working files; every .git stays read-only" \
             "in every case, so it cannot rewrite history no matter which option you choose." \
+            "" \
+            "[n] does not hide the repository. It leaves the main checkout's WORKING TREE" \
+            "unmounted, while $PROJECT_DIR/.git -- and every nested repository's .git --" \
+            "stays mounted read-only exactly as in the other two options, so the full" \
+            "tracked history stays readable. What [d] withholds is the untracked and" \
+            "ignored content that exists only in the main checkout (notes, .env, build" \
+            "output) and that a worktree does not carry." \
             "" 2>/dev/null >/dev/tty; then
-            if printf 'Mount %s [r]ead-only, read-[w]rite, or [d]eny access to it entirely? ' \
+            if printf 'Mount the %s (main) working tree [r]ead-only, read-[w]rite, or do [n]ot mount it? ' \
                 "$PROJECT_DIR" 2>/dev/null >/dev/tty; then
                 read -r reply </dev/tty 2>/dev/null || reply=""
                 case "$reply" in
@@ -238,9 +245,10 @@ worktree_confirm_readonly_project() {
                     [nNdD]*)
                         # shellcheck disable=SC2034  # see above
                         WORKTREE_PROJECT_MODE=deny
-                        echo "info: main checkout $PROJECT_DIR NOT mounted by explicit denial; the agent sees only" >&2
-                        echo "      the worktree plus $PROJECT_DIR/.git (needed for git itself). untracked/ignored" >&2
-                        echo "      files that exist only in the main checkout (notes, .env, build output) are not" >&2
+                        echo "info: main checkout $PROJECT_DIR working tree NOT mounted by explicit denial;" >&2
+                        echo "      the agent sees the worktree plus $PROJECT_DIR/.git, read-only (git itself" >&2
+                        echo "      needs it), so tracked history stays readable. untracked/ignored files that" >&2
+                        echo "      exist only in the main checkout (notes, .env, build output) are not" >&2
                         echo "      reachable this session." >&2
                         return 0
                         ;;

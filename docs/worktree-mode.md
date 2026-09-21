@@ -71,6 +71,17 @@ exist only there, and the agent is told so in its own instruction file
 every file in the main checkout deleted except `.git`, `status`, `log`,
 `diff` and `commit` in the worktree all returned rc=0.
 
+The confirmation offers read-only, read-write and deny/do not mount. **`deny`
+does not hide the repository's history.** It skips the `$PROJECT_DIR` bind,
+so the main *working tree* is not mounted and the untracked and ignored files
+that live only there are out of reach — but `mask_git_readonly()`'s walk is
+unconditional, so `$PROJECT_DIR/.git`, and every nested repository's `.git`,
+are still bound read-only. Tracked content of every branch therefore stays
+readable through the shared object store (`D` — the walk's roots do not depend
+on the answer). The prompt says that, rather than "deny access to it
+entirely": a human choosing `deny` to keep a secret out of the container gets
+nothing from it if the secret was ever committed.
+
 ## Commit path
 
 The container is never given a way to commit: every gitdir is read-only, so
