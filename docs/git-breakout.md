@@ -146,7 +146,7 @@ cd /tmp && rm -rf gitro && mkdir -p gitro/ctx && cd gitro
 printf 'FROM debian:bookworm-slim\nRUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates\n' > ctx/Dockerfile
 apptainer build -F gitro.sif dockerfile:ctx
 SIF=/tmp/gitro/gitro.sif
-apptainer exec --containall --no-home "$SIF" git --version   # MUST print a version
+apptainer exec --containall --no-mount home "$SIF" git --version   # MUST print a version
 
 git init -q repo && cd repo && git config user.email a@b && git config user.name a
 echo one > f && git add f && git commit -qm one
@@ -156,7 +156,7 @@ cd /tmp/gitro && git clone -q remote.git up && cd up
 git config user.email a@b && git config user.name a
 echo upstream >> f && git commit -qam two && git push -q origin master
 UP=$(git rev-parse HEAD); cd /tmp/gitro; R=/tmp/gitro/repo
-run(){ apptainer exec --containall --no-home -B /tmp/gitro -B "$R/.git:$R/.git:ro" \
+run(){ apptainer exec --containall --no-mount home -B /tmp/gitro -B "$R/.git:$R/.git:ro" \
         "$SIF" sh -c "cd $R; $1"; }
 
 echo "BEFORE: $(git --git-dir=$R/.git rev-parse refs/remotes/origin/master)"
@@ -166,6 +166,9 @@ run "git cat-file -t $UP; echo objects_present=\$?"
 run 'git push origin master; echo "push exit=$?"'
 run 'GIT_OPTIONAL_LOCKS=0 git status; echo "status exit=$?"'
 ```
+
+The recorded runs used `--no-home`, which apptainer documents as equivalent to
+`--no-mount home` (**D**); the sandbox itself passes only `--no-mount`.
 
 The `git --version` line is not optional: a container without git turns every
 step into `git: not found` (exit 127), indistinguishable from a refused write if

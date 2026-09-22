@@ -25,7 +25,7 @@ ensure_run_dir() {
 # own setting -- disabled by default upstream. This matters independently
 # of *how* a credential reaches the container: measured live, omp's own
 # bash tool does not scrub environment variables (`env`/`printenv` return
-# a forwarded APPTAINERENV_* value in full), so without this, a
+# a forwarded variable's value in full), so without this, a
 # host-supplied credential the agent chooses to print reaches the model
 # verbatim. The obfuscator auto-detects env vars matching
 # KEY/SECRET/TOKEN/PASSWORD/PASS/AUTH/CREDENTIAL/PRIVATE/OAUTH plus
@@ -64,7 +64,7 @@ force_omp_secrets_redaction() {
 }
 
 # require_host_env VAR CONTEXT: forward the host's VAR into the container
-# via APPTAINERENV_ if this shell's environment has it set (e.g. because
+# via backend_forward_env if this shell's environment has it set (e.g. because
 # the user exported it in ~/.bashrc), otherwise refuse to launch instead
 # of silently starting an agent that will fail to authenticate. CONTEXT
 # names the config file:line that referenced VAR, for the error message.
@@ -77,13 +77,11 @@ require_host_env() {
         echo "       export it (e.g. add \"export $var=...\" to ~/.bashrc) and re-run." >&2
         exit 1
     fi
-    # APPTAINERENV_-prefixed, not --env: apptainer strips the prefix and
-    # sets the variable inside the container, so the value never appears
-    # in the world-readable /proc/<pid>/cmdline of the apptainer process;
-    # /proc/<pid>/environ is owner-only. commit_msg_generate()
+    # backend_forward_env (functions/apptainer.sh) keeps the value off
+    # every command line. commit_msg_generate()
     # (functions/commit-message.sh) forwards OPENCODE_CONFIG_CONTENT the
     # same way, for the same reason.
-    export "APPTAINERENV_$var=${!var}"
+    backend_forward_env "$var" "${!var}"
 }
 
 # scan_omp_api_keys FILE: forward every apiKey that is already a bare
@@ -169,7 +167,7 @@ generate_limitations_file() {
     {
         echo "# Sandbox limitations"
         echo
-        echo "This session runs inside \`sandbox-engine\`, an apptainer sandbox. Two"
+        echo "This session runs inside \`sandbox-engine\` (backend: $SANDBOX_BACKEND). Two"
         echo "things are restricted relative to a bare host shell: git write access,"
         echo "and which host paths are reachable from here. If something looks"
         echo "blocked, it probably is -- retrying with different flags will not"
@@ -328,9 +326,6 @@ bind_augmented_instructions() {
 }
 
 configure_agent() {
-    # shellcheck disable=SC2034  # AGENT_ENV is read by sandbox.sh's EXEC_ARGV after configure_agent returns
-    AGENT_ENV=()
-
     if [[ "$AGENT" != "script" ]]; then
         ensure_run_dir
         local limitations_file="$RUN_DIR/sandbox-limitations.md"

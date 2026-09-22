@@ -5,7 +5,7 @@
 #
 # - Runs IN THE SANDBOX, not the host: the diff handed to the generator
 #   is attacker-controlled text the sandboxed agent just wrote. Goes
-#   through `apptainer exec` against the same SIF the agent ran in; only
+#   through the sandbox backend against the same image the agent ran in; only
 #   the generated stdout text crosses back, for a human to approve.
 # - Its bind set is SMALLER than the agent's own: no project checkout or
 #   worktree, so an agent-authored CLAUDE.md/AGENTS.md there cannot
@@ -335,7 +335,7 @@ commit_msg_build_cmd() {
         omp)
             # --no-tools/--no-lsp remove the execution surface; the four
             # discovery switches stop anything on disk from being loaded as
-            # instructions. --cwd is passed in addition to apptainer's own
+            # instructions. --cwd is passed in addition to the backend's own
             # --cwd because omp documents relocating itself out of $HOME on
             # its own, and this is the agent whose behaviour is directly
             # testable here.
@@ -377,15 +377,15 @@ commit_msg_build_cmd() {
 
 # commit_msg_available: whether a sandboxed generation can even be
 # attempted. `script` is a run mode rather than an agent -- there is no
-# agent CLI in the image to ask -- and a missing image or apptainer means
+# agent CLI in the image to ask -- and a missing image or runtime means
 # the same thing as a failed generation: the placeholder path takes over.
 commit_msg_available() {
     case "$AGENT" in
         claude|opencode|omp) ;;
         *) return 1 ;;
     esac
-    command -v apptainer >/dev/null 2>&1 || return 1
-    [[ -n "${SIF_IMAGE:-}" && -f "$SIF_IMAGE" ]] || return 1
+    backend_available || return 1
+    backend_image_present || return 1
     return 0
 }
 
@@ -413,27 +413,19 @@ commit_msg_generate() {
     rm -rf "$scratch"
     mkdir -p "$scratch${COMMIT_MSG_CWD#/tmp}" || return 1  # Strip /tmp: $scratch IS /tmp in container
 
-    # shellcheck disable=SC2054  # "home,cwd" is one apptainer flag value, not two array elements
-    local -a argv=(
-        apptainer exec --containall --no-mount home,cwd
-        --cwd "$COMMIT_MSG_CWD"
-        ${AGENT_CONFIG_BINDS[@]+"${AGENT_CONFIG_BINDS[@]}"}
-        --home "$HOME"
-        -B "$scratch:/tmp"
-        "$SIF_IMAGE"
-        "${COMMIT_MSG_CMD[@]}"
-    )
+    # Same containment as the agent's own launch, minus the checkout
+    # (backend_generator_argv, functions/apptainer.sh).
+    backend_generator_argv "$COMMIT_MSG_CWD" "$scratch" "${COMMIT_MSG_CMD[@]}"
+    local -a argv=("${BACKEND_ARGV[@]}")
 
     log_info "commit message: generating in the sandbox with ${COMMIT_MSG_MODEL_NOTE:-the default model}"
-    log_argv "commit-message apptainer argv" "${argv[@]}"
+    log_argv "commit-message $SANDBOX_BACKEND argv" "${argv[@]}"
 
     # Subshell, so the opencode override cannot leak into the environment
     # of the NEXT agent run: the reject menu's "re-run" path re-executes
     # the real agent from this same shell, and an inherited
-    # permission:"deny" would silently cripple it. APPTAINERENV_-prefixed
-    # rather than --env for the reason given in require_host_env()
-    # (functions/agents.sh): the value never reaches a world-readable
-    # /proc/<pid>/cmdline.
+    # permission:"deny" would silently cripple it. backend_forward_env
+    # keeps the value off every command line (functions/apptainer.sh).
     (
         if [[ "$AGENT" == "opencode" ]]; then
             # Config sources are MERGED, and an agent's own settings override
@@ -448,9 +440,9 @@ commit_msg_generate() {
             # agent that fails opencode's own schema (`description` is
             # required).
             if [[ "${COMMIT_MSG_OPENCODE_AGENT_SELECTED:-0}" -eq 1 ]]; then
-                export APPTAINERENV_OPENCODE_CONFIG_CONTENT="{\"permission\":\"deny\",\"agent\":{\"$COMMIT_MSG_OPENCODE_AGENT\":{\"permission\":\"deny\",\"tools\":{\"*\":false}}}}"
+                backend_forward_env OPENCODE_CONFIG_CONTENT "{\"permission\":\"deny\",\"agent\":{\"$COMMIT_MSG_OPENCODE_AGENT\":{\"permission\":\"deny\",\"tools\":{\"*\":false}}}}"
             else
-                export APPTAINERENV_OPENCODE_CONFIG_CONTENT='{"permission":"deny"}'
+                backend_forward_env OPENCODE_CONFIG_CONTENT '{"permission":"deny"}'
             fi
         fi
         if command -v timeout >/dev/null 2>&1; then

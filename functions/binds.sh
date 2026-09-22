@@ -1,7 +1,8 @@
 #!/bin/bash
 # Extra bind resolution: sandbox.yml "binds:" list + repeatable --bind
 # flags, validated and expanded (relative paths against the project dir,
-# "~/" against $HOME) into the BINDS array apptainer consumes via -B.
+# "~/" against $HOME) into the BINDS array the sandbox backend consumes
+# (functions/apptainer.sh).
 
 # resolve_extra_binds: extra binds default to READ-ONLY. A spec must say
 # ":rw" to opt into read-write; ":ro" is accepted too, redundantly, for
@@ -230,7 +231,7 @@ mask_project_agent_config() {
 }
 
 # log_resolved_binds: one summary line per run naming every bind actually
-# handed to apptainer -- source, destination (if any), and ro/rw -- so an
+# handed to the backend -- source, destination (if any), and ro/rw -- so an
 # after-the-fact question about what a run could see has an answer.
 # BINDS entries are "-B" markers interleaved with "SRC[:DST[:OPTS]]"
 # strings; only the latter are real binds.

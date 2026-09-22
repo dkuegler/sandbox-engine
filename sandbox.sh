@@ -19,9 +19,10 @@
 #
 # Implementation is split across functions/*.sh (sourced below):
 #   log.sh          -v/-vv verbosity helpers (log_info/log_debug/log_argv)
+#   apptainer.sh    the sandbox backend: every runtime-specific flag and call
 #   argv.sh         --project-dir/--environment/--bind/agent argv parsing
 #   sandbox_yml.sh  <project-dir>/sandbox.yml parsing
-#   environment.sh  base-image resolution, Dockerfile generation, SIF build
+#   environment.sh  base-image resolution, Dockerfile generation, image build
 #   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
 #   git-mask.sh     read-only .git mask
 #   agents.sh       per-agent state binds, RUN_CMD
@@ -194,6 +195,8 @@ FUNCTIONS_DIR="$SCRIPT_DIR/functions"
 
 # shellcheck source=functions/log.sh
 source "$FUNCTIONS_DIR/log.sh"
+# shellcheck source=functions/apptainer.sh
+source "$FUNCTIONS_DIR/apptainer.sh"
 # shellcheck source=functions/argv.sh
 source "$FUNCTIONS_DIR/argv.sh"
 # shellcheck source=functions/sandbox_yml.sh
@@ -267,10 +270,8 @@ parse_sandbox_yml
 resolve_environment
 log_info "environment: mode=$ENV_MODE base_image=$BASE_IMAGE env_tag=$ENV_TAG"
 
-# The SIF is a build artefact, not source: keep it out of the checkout.
-IMAGE_DIR="${SANDBOX_ENGINE_IMAGE_DIR:-$HOME/.apptainer/images}"
-mkdir -p "$IMAGE_DIR"
-SIF_IMAGE="$IMAGE_DIR/$IMAGE_AGENT.$ENV_TAG.sif"
+# The image and where it lives are the backend's (functions/apptainer.sh).
+backend_image_ref "$IMAGE_AGENT" "$ENV_TAG"
 
 # Best-effort: never blocks or fails a run (functions/environment.sh's own
 # doc comment). May set REBUILD=1 if the human accepts the prompt, in
@@ -359,17 +360,15 @@ AGENT_CONFIG_BINDS=("${BINDS[@]:${AGENT_CONFIG_BIND_START:-0}}")
 log_info "masks: ${GIT_MASK_COUNT:-0} .git path(s) read-only, ${#RO_MASKED[@]} read-only config bind(s)"
 log_resolved_binds
 
-# Only pass --nv/--rocm when the matching GPU stack looks present, so a
-# plain CPU host doesn't get apptainer probing for a driver that isn't
-# there. See resolve_gpu_flags() in functions/environment.sh.
-resolve_gpu_flags
+# GPU passthrough only when the host's GPU stack looks present, so a plain
+# CPU host doesn't get the runtime probing for a driver that isn't there.
+backend_gpu_args
 
 if [[ "$VERBOSE" -ge 2 ]]; then
     for __bind_spec in "${BINDS[@]}"; do
         [[ "$__bind_spec" == "-B" ]] && continue
         log_debug "bind: $__bind_spec"
     done
-    log_argv "AGENT_ENV" "${AGENT_ENV[@]}"
     log_argv "GPU_ARGS" ${GPU_ARGS[@]+"${GPU_ARGS[@]}"}
     log_argv "RUN_CMD" "${RUN_CMD[@]}"
 fi
@@ -386,20 +385,13 @@ fi
 ensure_run_dir
 mkdir -p "$RUN_DIR/tmp"
 
-EXEC_ARGV=(
-    apptainer exec --containall --no-home
-    --cwd "${WORKTREE_DIR:-$PROJECT_DIR}"
-    "${BINDS[@]}"
-    "${AGENT_ENV[@]}"
-    --home "$HOME"
-    ${GPU_ARGS[@]+"${GPU_ARGS[@]}"}
-    -B "$RUN_DIR/tmp:/tmp"
-    "$SIF_IMAGE"
-    "${RUN_CMD[@]}"
-)
+# The launch line -- containment, network, HOME pinning -- is the
+# backend's (functions/apptainer.sh).
+backend_launch_argv "${WORKTREE_DIR:-$PROJECT_DIR}" "$RUN_DIR/tmp" "${RUN_CMD[@]}"
+EXEC_ARGV=("${BACKEND_ARGV[@]}")
 # Project mode: the agent's own exit status is this script's exit status.
 if [[ -z "${WORKTREE_DIR:-}" ]]; then
-    log_argv "apptainer exec argv" "${EXEC_ARGV[@]}"
+    log_argv "$SANDBOX_BACKEND argv" "${EXEC_ARGV[@]}"
     "${EXEC_ARGV[@]}"
     exit 0
 fi
@@ -412,7 +404,7 @@ fi
 WORKTREE_DIFF_STATE="$RUN_DIR/diff_state.txt"
 WORKTREE_MSG_FINAL="$RUN_DIR/commit-message.final"
 while true; do
-    log_argv "apptainer exec argv" "${EXEC_ARGV[@]}"
+    log_argv "$SANDBOX_BACKEND argv" "${EXEC_ARGV[@]}"
     CONTAINER_RC=0
     "${EXEC_ARGV[@]}" || CONTAINER_RC=$?
     if [[ "$CONTAINER_RC" -ne 0 ]]; then

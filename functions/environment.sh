@@ -140,19 +140,19 @@ generate_dockerfile() {
 }
 
 # check_agent_update: best-effort, rate-limited check for whether a newer
-# <agent> CLI release exists than the one already baked into $SIF_IMAGE,
+# <agent> CLI release exists than the one already baked into the image,
 # and if so, offers to rebuild. This is about the *agent CLI's* version
-# drift, not sandbox-engine's own version, and not SIF *build-input*
+# drift, not sandbox-engine's own version, and not image *build-input*
 # staleness either -- that is already automatic: ENV_TAG changes with
 # sandbox.yml/--environment/base image, so a changed tag builds a fresh
-# SIF on its own, and --rebuild forces one regardless. None of the three
+# image on its own, and --rebuild forces one regardless. None of the three
 # agents pin a version in sandbox/agent/Dockerfile.template (`claude` is
 # `npm install -g @anthropic-ai/claude-code`; `opencode`/`omp` are
 # curl-piped install scripts), so every rebuild installs whatever is
 # current at build time and the baked-in version silently drifts from
 # upstream between rebuilds with nothing else to surface that.
 #
-# Every step here is best-effort: missing apptainer/curl, no network, a
+# Every step here is best-effort: no runtime or curl, no network, a
 # malformed response, or no /dev/tty to prompt on all degrade silently to
 # build/reuse the image exactly as before -- this must never fail or add
 # meaningful latency to a run, so every fallible command substitution
@@ -164,11 +164,11 @@ generate_dockerfile() {
 # at most once an hour, not once per invocation.
 check_agent_update() {
     [[ "${NO_UPDATE_CHECK:-0}" -eq 1 ]] && return 0
-    [[ -f "$SIF_IMAGE" ]] || return 0 # nothing built yet to compare against
-    command -v apptainer >/dev/null 2>&1 || return 0
+    backend_image_present || return 0 # nothing built yet to compare against
+    backend_available || return 0
     command -v curl >/dev/null 2>&1 || return 0
 
-    local cache_file="$SIF_IMAGE.info"
+    local cache_file="$SANDBOX_IMAGE_INFO"
     if [[ -f "$cache_file" ]]; then
         local mtime age
         mtime="$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)"
@@ -203,7 +203,7 @@ check_agent_update() {
     [[ -n "$latest" ]] || return 0
 
     local baked_version
-    baked_version="$(apptainer exec "$SIF_IMAGE" "$IMAGE_AGENT" --version 2>/dev/null)" || baked_version=""
+    baked_version="$(backend_agent_version "$IMAGE_AGENT" 2>/dev/null)" || baked_version=""
     baked_version="${baked_version##* }"
     # omp prints "omp/<version>" as a single space-free token (claude/opencode
     # print "<name> <version>", already handled by the space-split above), so
@@ -236,58 +236,20 @@ check_agent_update() {
     return 0
 }
 
-# build_images: builds $SIF_IMAGE on first use, or unconditionally when
-# REBUILD=1 (set by --rebuild; see functions/argv.sh). Requires SIF_IMAGE
-# to be set.
-#
-# apptainer's "dockerfile:" bootstrap (an alias for "buildkit:", see
-# internal/pkg/build/conveyorPacker.go) takes a build CONTEXT DIRECTORY,
-# and the recipe filename inside it is fixed to "Dockerfile" unless a def
-# file overrides it (conveyorPacker_buildkit.go: bk.context =
-# Header["from"], bk.filename defaults to "Dockerfile"). So the spec must
-# name a directory holding a file literally called Dockerfile.
-#
-# apptainer refuses to overwrite an existing SIF without --force, so a
-# rebuild removes the old file first; that also leaves no half-written
-# image behind if the build itself fails.
+# build_images: builds the agent image on first use, or unconditionally
+# when REBUILD=1 (set by --rebuild; see functions/argv.sh). Requires
+# backend_image_ref (functions/apptainer.sh) to have set the image.
 build_images() {
-    if [[ "$REBUILD" -eq 1 || ! -f "$SIF_IMAGE" ]]; then
-        rm -f "$SIF_IMAGE"
+    if [[ "$REBUILD" -eq 1 ]] || ! backend_image_present; then
+        backend_image_remove
         generate_dockerfile
-        apptainer build --fakeroot \
-            --build-arg "USERNAME=${USER:-$(id -un)}" \
-            --build-arg "UID=$(id -u)" \
-            --build-arg "GID=$(id -g)" \
-            --build-arg "AGENT=${IMAGE_AGENT:-$AGENT}" \
-            "$SIF_IMAGE" "dockerfile:$SANDBOX_DIR/agent"
-        log_info "agent image: $SIF_IMAGE (built)"
+        backend_build_image "$SANDBOX_DIR/agent" \
+            "USERNAME=${USER:-$(id -un)}" \
+            "UID=$(id -u)" \
+            "GID=$(id -g)" \
+            "AGENT=${IMAGE_AGENT:-$AGENT}"
+        log_info "agent image: $SANDBOX_IMAGE (built)"
     else
-        log_info "agent image: $SIF_IMAGE (reused)"
-    fi
-}
-
-# resolve_gpu_flags: sets GPU_ARGS to the apptainer flags matching
-# whatever GPU stack the host actually has, instead of always passing
-# --nv. --nv is NVIDIA-specific (it binds in the proprietary driver's
-# userspace libraries); passing it unconditionally on a host with no
-# NVIDIA device at all just makes apptainer emit "no NVIDIA driver"
-# noise. /dev/nvidia0 is the character device the proprietary driver
-# creates once loaded, and /dev/kfd is ROCm's compute device for AMD
-# GPUs (--rocm is its apptainer counterpart). /dev/dri is deliberately
-# NOT used to gate --nv: it is the generic DRM render-node path shared
-# by Intel/AMD/Nvidia alike, so an Intel-only laptop has it too, and
-# would trip --nv into probing for a CUDA stack that was never there.
-resolve_gpu_flags() {
-    GPU_ARGS=()
-    # Plain "test && append" would abort the whole script under
-    # set -e the moment a device is absent -- a bare "cmd1 && cmd2"
-    # statement's exit status is cmd1's when cmd1 is false, and set -e
-    # treats that as a script-ending failure outside an if/while/&&-or
-    # context. `if` conditions are exempt, so use those instead.
-    if [[ -e /dev/nvidia0 ]]; then
-        GPU_ARGS+=(--nv)
-    fi
-    if [[ -e /dev/kfd ]]; then
-        GPU_ARGS+=(--rocm)
+        log_info "agent image: $SANDBOX_IMAGE (reused)"
     fi
 }

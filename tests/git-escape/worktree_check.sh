@@ -84,6 +84,8 @@ git -C "$W/other/main" commit -q -m twin || fail_setup "commit into twin"
 # --- load the real implementation ----------------------------------------
 # shellcheck source=functions/log.sh
 source "$REPO_ROOT/functions/log.sh"
+# shellcheck source=functions/apptainer.sh
+source "$REPO_ROOT/functions/apptainer.sh"
 # shellcheck source=functions/agents.sh
 source "$REPO_ROOT/functions/agents.sh"
 # shellcheck source=functions/git-mask.sh
@@ -327,8 +329,8 @@ printf 'Generated title\n\nIssue:\ni\n'
 STUB
 chmod +x "$W/bin/apptainer"
 
-SIF_IMAGE="$W/agent.sif"
-: > "$SIF_IMAGE"
+SANDBOX_IMAGE="$W/agent.sif"
+: > "$SANDBOX_IMAGE"
 AGENT=omp
 ARGS=()
 COMMIT_MODEL=""
@@ -364,7 +366,7 @@ split_argv() {
     local a seen=0
     APPT_PRE=() APPT_POST=() APPT_IMAGE=0
     while IFS= read -r a || [[ -n "$a" ]]; do
-        if [[ "$seen" -eq 0 && "$a" == "$SIF_IMAGE" ]]; then
+        if [[ "$seen" -eq 0 && "$a" == "$SANDBOX_IMAGE" ]]; then
             seen=1 APPT_IMAGE=1
             continue
         fi
