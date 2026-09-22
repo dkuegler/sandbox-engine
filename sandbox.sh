@@ -389,6 +389,15 @@ mkdir -p "$RUN_DIR/tmp"
 # backend's (functions/apptainer.sh).
 backend_launch_argv "${WORKTREE_DIR:-$PROJECT_DIR}" "$RUN_DIR/tmp" "${RUN_CMD[@]}"
 EXEC_ARGV=("${BACKEND_ARGV[@]}")
+
+# The last host-side moment before the agent takes the terminal. Every
+# check that can warn has run by now, and from here on a full-screen TUI
+# repaints over anything already printed -- so if this run warned about
+# anything, stop and make sure a human has read it. Silent when the run
+# was clean. Called once, above both modes: worktree mode re-execs inside
+# a loop below, and the gate is about this run's host-side findings, not
+# about each round.
+confirm_warnings
 # Project mode: the agent's own exit status is this script's exit status.
 if [[ -z "${WORKTREE_DIR:-}" ]]; then
     log_argv "$SANDBOX_BACKEND argv" "${EXEC_ARGV[@]}"

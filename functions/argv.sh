@@ -4,7 +4,7 @@
 # WORKTREE_BRANCH.
 
 usage() {
-    echo "Usage: $0 [--project-dir DIR] [--worktree BRANCH] [--commit-model MODEL] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] [--no-update-check] <claude|opencode|omp|script> [agent-args...]" >&2
+    echo "Usage: $0 [--project-dir DIR] [--worktree BRANCH] [--commit-model MODEL] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [--ignore-warnings] [-v|--verbose|-vv] [--rebuild] [--no-update-check] <claude|opencode|omp|script> [agent-args...]" >&2
     exit 1
 }
 
@@ -55,6 +55,10 @@ parse_argv() {
     CLI_BINDS=()
     ALLOW_EXTERNAL_BINDS=0
     ALLOW_EXTERNAL_GITDIR=0
+    # Explicit opt-in to start a run that warned, when there is no
+    # terminal to confirm on. Same shape as the two flags above: stated on
+    # the command line, never inferred from the environment.
+    IGNORE_WARNINGS=0
     VERBOSE=0
     REBUILD=0
     NO_UPDATE_CHECK=0
@@ -108,6 +112,11 @@ parse_argv() {
             --allow-external-gitdir)
                 # shellcheck disable=SC2034  # ALLOW_EXTERNAL_GITDIR is read by functions/git-mask.sh's external-gitdir check
                 ALLOW_EXTERNAL_GITDIR=1
+                shift
+                ;;
+            --ignore-warnings)
+                # shellcheck disable=SC2034  # IGNORE_WARNINGS is read by confirm_warnings (functions/log.sh)
+                IGNORE_WARNINGS=1
                 shift
                 ;;
             --worktree)

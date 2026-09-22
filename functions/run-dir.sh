@@ -49,7 +49,7 @@ reap_orphaned_run_dirs() {
         pid="$(cat "$dir/.owner_pid" 2>/dev/null)"
         [[ "$pid" =~ ^[0-9]+$ ]] || continue
         if ! kill -0 "$pid" 2>/dev/null; then
-            echo "reaping orphaned run directory: $dir (owner pid $pid is gone)" >&2
+            log_warn "reaping orphaned run directory: $dir (owner pid $pid is gone)"
             rm -rf "$dir"
         fi
     done

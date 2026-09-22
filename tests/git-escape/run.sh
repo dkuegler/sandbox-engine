@@ -115,5 +115,11 @@ if [[ "$NEGATIVE" -eq 1 ]]; then
 fi
 
 echo "=== git-escape suite, project dir $FIXTURE"
-"$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" --bind "$WORK/wt:rw" script \
+# --ignore-warnings is deliberate, not incidental. This harness drives
+# sandbox.sh through `script` mode with no TTY, so the warning gate has
+# nobody to confirm with and would refuse the run outright. The suite must
+# stay unattended, and a warning here is not a reason to skip the mask
+# assertions -- the warning text still prints, and the assertions are what
+# decide pass or fail.
+"$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" --bind "$WORK/wt:rw" --ignore-warnings script \
     --project-dir "$FIXTURE" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA" "$WORK/wt"
