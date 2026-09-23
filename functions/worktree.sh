@@ -178,6 +178,12 @@ worktree_preflight() {
     WORKTREE_PREREVIEW_STATE_LOG="$HOME/.agent/worktrees/$key/.state-render.log"
     WORKTREE_PROJECT_MODE=ro
     WORKTREE_MSG_HOST=""
+    # Agent-created config candidates are decided per file at the approval
+    # gate; these are the outcome arrays, defined from the start so
+    # worktree_commit is behavior-identical when it is reached without a
+    # gate pass (tests, crash resume).
+    WORKTREE_CONFIG_EXCLUDE=()
+    WORKTREE_CONFIG_DELETE=()
 }
 
 # worktree_confirm_readonly_project: worktree mode changes this sandbox's
@@ -672,6 +678,107 @@ worktree_approval_gate() {
         echo "the correctness of whatever is merged out of this branch. Nothing is pushed."
         echo
     } >&2
+    # Agent-created config candidates: untracked paths that are
+    # config-shaped (mask-entry paths, content of mask-entry directories,
+    # or "anywhere:" basenames at any depth). The commit must not sweep
+    # them in -- each one is shown and decided individually, and only an
+    # explicit "add" stages it. Every decision's default is "exclude":
+    # left uncommitted in the worktree, which then survives the commit
+    # (worktree_after_commit removes only a worktree with nothing left
+    # over). "delete" removes the file before the commit.
+    WORKTREE_CONFIG_EXCLUDE=()
+    WORKTREE_CONFIG_DELETE=()
+    local -a candidates=()
+    # Captured to a file, with the status checked, rather than streamed
+    # from a process substitution: inside "< <(...)" a failed git read
+    # would be indistinguishable from "the agent created nothing", so the
+    # per-file block below would be skipped and `git add -A` would sweep
+    # every plant into the commit unreviewed.
+    local candlist="${RUN_DIR:?RUN_DIR must exist before the gate runs}/cfg-candidates.z"
+    if ! config_shaped_untracked "$WORKTREE_DIR" "$candlist"; then
+        worktree_fail "cannot enumerate the agent-created config paths in $WORKTREE_DIR" \
+            "the worktree is intact and nothing was committed." \
+            "a change is offered for approval only when every part of it can be shown."
+    fi
+    while IFS= read -r -d '' f; do candidates+=("$f"); done <"$candlist"
+    if [[ ${#candidates[@]} -gt 0 ]]; then
+        local f rel reply2 ftype
+        {
+            echo
+            echo "--- agent-created config files: shown individually, committed only on an explicit yes ---"
+            echo
+        } >&2
+        for f in "${candidates[@]}"; do
+            rel="${f#"$WORKTREE_DIR"/}"
+            # The agent chose this path's TYPE as well as its name. Ask
+            # what it is before reading it: a fifo would block this gate
+            # forever on open(2), after the diff was shown and before the
+            # commit prompt, and a symlink would display its TARGET's
+            # content while `git add -A` stages the LINK -- so the human
+            # would approve bytes that are not the bytes committed. The
+            # agent chose the mode too: an unreadable file cannot be
+            # shown either.
+            ftype="$(config_display_type "$f")"
+            if [[ -z "$ftype" && ! -r "$f" ]]; then
+                ftype="regular file, not readable"
+            fi
+            {
+                printf '  config-shaped untracked path: %q\n' "$rel"
+                if [[ -n "$ftype" ]]; then
+                    echo "  type: $ftype"
+                    echo "  content: not shown -- only a readable regular file is read here."
+                else
+                    echo "  content:"
+                    sanitize_agent_display <"$f" | head -n 60
+                    if [[ "$(wc -l <"$f" | tr -d '[:space:]')" -gt 60 ]]; then
+                        printf '%s\n' "  ... (truncated; the full file is on disk)"
+                    fi
+                fi
+            } >&2
+            # "add" is offered only for a regular file whose content was
+            # actually displayed above. For anything else the choice is
+            # exclude or delete: committing content nobody could be shown
+            # is the thing this whole block exists to prevent.
+            #
+            # "exclude" is RECORDED only for a path `git add -A` can
+            # actually stage, because that record becomes a pathspec which
+            # must match afterwards. Measured: `git add -A` silently skips a
+            # fifo, socket or device node, but DOES stage a symlink (mode
+            # 120000). Recording an unstageable path would make the unstage
+            # step fail "pathspec did not match", which the commit step
+            # reads as "the tree moved under the review" -- turning an
+            # agent-created fifo into a refusal of the human's own commit.
+            if [[ -n "$ftype" ]]; then
+                if printf '  decide: e[x]clude: leave it in the worktree, decide later / [d]elete it [x] ' 2>/dev/null >/dev/tty; then
+                    read -r reply2 </dev/tty 2>/dev/null || reply2=""
+                    case "$reply2" in
+                        [dD]*) WORKTREE_CONFIG_DELETE+=("$f") ;;
+                        *)
+                            if [[ -f "$f" || -L "$f" ]]; then
+                                WORKTREE_CONFIG_EXCLUDE+=("$f")
+                            fi
+                            ;;
+                    esac
+                elif [[ -f "$f" || -L "$f" ]]; then
+                    # No terminal: hold back anything the commit could
+                    # otherwise sweep in.
+                    WORKTREE_CONFIG_EXCLUDE+=("$f")
+                fi
+                continue
+            fi
+            if printf '  decide: [a]dd to the commit / e[x]clude: leave it in the worktree, decide later / [d]elete it [x] ' 2>/dev/null >/dev/tty; then
+                read -r reply2 </dev/tty 2>/dev/null || reply2=""
+                case "$reply2" in
+                    [aA]*) : ;;
+                    [dD]*) WORKTREE_CONFIG_DELETE+=("$f") ;;
+                    *) WORKTREE_CONFIG_EXCLUDE+=("$f") ;;
+                esac
+            else
+                # No terminal: the safe default is not committing it.
+                WORKTREE_CONFIG_EXCLUDE+=("$f")
+            fi
+        done
+    fi
     if [[ -r /dev/tty ]]; then
         if printf 'Commit this onto %s in %s? [y/N] ' "$WORKTREE_REF" "$WORKTREE_REPO_ROOT" 2>/dev/null >/dev/tty; then
             read -r reply </dev/tty 2>/dev/null || reply=""
@@ -760,11 +867,58 @@ worktree_commit() {
                 ;;
         esac
     fi
+    # The recorded per-file decisions about agent-created config paths are
+    # applied AFTER the recheck above: the approval binds the tree the
+    # review rendered, and these edits are decisions ABOUT that tree, not
+    # new content. Deleted files leave the tree before staging; the
+    # excluded ones are unstaged right after, so "git add -A" still
+    # stages exactly the reviewed tree while the commit carries only what
+    # the human added.
+    local f
+    for f in ${WORKTREE_CONFIG_DELETE[@]+"${WORKTREE_CONFIG_DELETE[@]}"}; do
+        # -L first: deleting a symlink unlinks the LINK, never whatever
+        # it points at, which may be any host file the user can read.
+        if [[ -L "$f" ]]; then
+            rm -f -- "$f"
+        elif [[ -d "$f" ]]; then
+            rm -rf -- "$f"
+        else
+            rm -f -- "$f"
+        fi
+    done
     if ! git -C "$WORKTREE_DIR" add -A; then
         worktree_fail "git add failed in $WORKTREE_DIR; nothing was committed"
     fi
+    if [[ ${#WORKTREE_CONFIG_EXCLUDE[@]} -gt 0 ]]; then
+        # Each excluded path is written as an explicitly LITERAL,
+        # root-relative pathspec. --pathspec-file-nul only changes the
+        # separator and disables C-quoting; it does NOT make the entries
+        # literal, and pathspec wildcards stay live -- measured: an entry
+        # "sub/*.md" unstages every sibling .md the pattern matches. The
+        # agent picks these filenames, so a name that is also a glob would
+        # silently drop reviewed, approved work from the commit.
+        # ":(top,literal)" matches exactly the one path and nothing else.
+        if ! {
+            for f in "${WORKTREE_CONFIG_EXCLUDE[@]}"; do
+                printf ':(top,literal)%s\0' "${f#"$WORKTREE_DIR"/}"
+            done
+        } >"${RUN_DIR:?}/cfg-exclude.z"; then
+            worktree_fail "could not record the excluded config file list" \
+                "the worktree is intact; nothing was committed."
+        fi
+        # No --ignore-unmatch: after `git add -A` every excluded path must
+        # be staged, so a pathspec matching nothing means the tree moved
+        # under the review. That is exactly the condition to refuse on,
+        # not to hide.
+        if ! git -C "$WORKTREE_DIR" rm -q --cached \
+            --pathspec-from-file="$RUN_DIR/cfg-exclude.z" --pathspec-file-nul; then
+            worktree_fail "could not unstage the config files you chose to exclude" \
+                "an excluded path that is no longer staged means $WORKTREE_DIR changed" \
+                "after the review was rendered; the worktree is intact and nothing was committed."
+        fi
+    fi
     if git -C "$WORKTREE_DIR" diff --cached --quiet; then
-        echo "worktree: nothing staged after git add -A; not committing" >&2
+        echo "worktree: nothing staged after git add -A (and after unstaging the excluded config files); not committing" >&2
         return 1
     fi
     if ! git -C "$WORKTREE_DIR" commit -q -F "$msg"; then

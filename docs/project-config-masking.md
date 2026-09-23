@@ -277,9 +277,52 @@ name. Nothing is deleted and nothing is committed automatically. The same report
 runs after every round in worktree mode when the main checkout is mounted
 read-write, because the approval gate reviews only the worktree.
 
-In worktree mode, a file created inside the worktree is part of the approval
-gate's review like any other untracked file, and reaches the branch only if the
-human approves the commit.
+`D` — in worktree mode each such file gets its own decision in the approval
+gate, with its content shown, sanitized: **add** it to the commit, **exclude**
+it (the default: leave it in the worktree and decide later — the file stays
+uncommitted, and the worktree is then not removed after the commit, because
+`worktree_after_commit()` removes only a worktree with nothing left over), or
+**delete** it before the commit. The ordering in `worktree_commit()`
+(`functions/worktree.sh`) is: the pre-commit tree-hash recheck runs **first**,
+against the state the review rendered; the recorded per-file decisions are
+applied after it, because they are decisions *about* that tree rather than new
+content. Deleted files are removed before staging, then `git add -A` stages
+everything, then the excluded files are unstaged with `git rm --cached`. The
+commit therefore carries only what the human added — but the staging step has
+already written those blobs into the main repository's shared object store, so
+"excluded" means "not in the commit", not "never written".
+
+Three properties of that gate are load-bearing:
+
+- **The file's type is checked before it is read.** The agent chooses the
+  path's type as well as its name. A FIFO would block the gate forever on
+  `open(2)` — after the diff is displayed and before the commit prompt — and a
+  symlink would display its *target's* content while `git add -A` stages the
+  link, so the human would approve bytes that are not the bytes committed.
+  Anything that is not a readable regular file is named by type, read not at
+  all, and offered only exclude-or-delete, never "add".
+- **Excluded paths are unstaged as literal pathspecs.** `--pathspec-file-nul`
+  changes the separator; it does not make entries literal, and pathspec
+  wildcards stay live — an entry `sub/*.md` unstages every sibling `.md` the
+  pattern matches (`M` — test M12 in `tests/git-escape/worktree_check.sh`).
+  Since the agent picks these filenames, a name that is also a glob would
+  silently drop reviewed, approved work from the commit. Each path is written
+  `:(top,literal)<path>`, and `--ignore-unmatch` is not used: after
+  `git add -A` every excluded path must be staged, so a pathspec matching nothing
+  means the tree moved and the run refuses.
+- **The candidate list fails closed.** It is written to a caller-named file
+  whose exit status is checked, never streamed out of a process substitution,
+  because a failing git read inside `< <(...)` is invisible — the caller sees
+  an empty list, and an empty list is indistinguishable from "the agent created
+  nothing". The gate would then be skipped entirely and `git add -A` would
+  sweep every plant into the commit unreviewed.
+
+The gate's candidate sweep (`config_shaped_untracked()`) matches a `project:`
+path exactly, anything inside a `project:` directory, and every `anywhere:`
+basename at any depth. It is deliberately over-inclusive: a false positive costs
+one keystroke; a false negative is a plant that loads on the human's next
+bare-host session. The matching is handed to git as pathspecs rather than looped
+over in shell, so the sweep costs one tree walk in C.
 
 ## The startup block
 

@@ -166,8 +166,9 @@
 #     load in this session and is invisible to later sandboxed runs; it
 #     reaches the host only through a human act: reported in full when
 #     the run ends (normal mode, and a main checkout mounted read-write
-#     in worktree mode) or shown in the approval gate's review (worktree
-#     mode).
+#     in worktree mode) or decided individually at the approval gate
+#     (worktree mode): add to the commit, exclude (leave it in the
+#     worktree, decide later), or delete, with its content shown.
 #   - a symlink, on disk or as HEAD records it: the run is refused. A
 #     bind follows a link to wherever it points, so config paths must be
 #     regular files or directories.

@@ -746,7 +746,7 @@ report_config_masking() {
         done
         if [[ -n "${WORKTREE_DIR:-}" ]]; then
             echo "  (worktree mode: files the agent created at the unbound [worktree]" \
-                "paths appear in the approval gate's review)"
+                "paths are decided individually at the approval gate)"
             # The unbound heading says the agent MAY create files there;
             # for the main checkout that depends on how it is mounted.
             case "${WORKTREE_PROJECT_MODE:-ro}" in
@@ -828,6 +828,57 @@ report_created_config_paths() {
         printf '%s%s\n' "sandbox: nothing here is deleted or committed automatically." \
             " Keep it, commit it by hand, or remove it."
     } >&2
+}
+
+# config_shaped_untracked DIR OUT: every untracked, not-ignored path under
+# DIR that is config-shaped: a mask-entry path, anything inside a
+# mask-entry directory, or an "anywhere:" basename at any depth. Writes
+# NUL-separated absolute paths to OUT; the worktree approval gate's
+# per-file decisions feed from it. Deliberately over-inclusive: a false
+# positive costs one question the human answers with a keystroke, a false
+# negative is a plant that loads on the human's next bare-host session.
+#
+# Matching is handed to git as pathspecs rather than done in a bash loop
+# over every untracked path, so the gate costs one tree walk in C however
+# many untracked files the worktree holds.
+#
+# Results go to a caller-named FILE and the caller checks the exit status,
+# rather than being streamed out of a process substitution. That is not a
+# style choice: the git read below can fail, and inside "< <(...)" that
+# failure is invisible -- the caller sees an empty list, and an empty list
+# is indistinguishable from "the agent created no config files". The
+# per-file gate would then be skipped and `git add -A` would sweep every
+# plant into the commit unreviewed. The same trap is documented at
+# worktree_render_state()'s own untracked-list capture, for the same
+# reason.
+config_shaped_untracked() {
+    local dir="$1" out="$2" i rel name hits
+    local -a specs=()
+    project_config_mask_load
+    for i in "${!PROJECT_CONFIG_MASK_PATH[@]}"; do
+        rel="${PROJECT_CONFIG_MASK_PATH[i]}"
+        if [[ "${PROJECT_CONFIG_MASK_KIND[i]}" == dir ]]; then
+            # Anything anywhere under a masked config directory.
+            specs+=(":(literal,top)$rel" ":(glob,top)$rel/**")
+        else
+            specs+=(":(literal,top)$rel")
+        fi
+    done
+    for name in "${PROJECT_CONFIG_MASK_ANYWHERE[@]}"; do
+        specs+=(":(glob,top)**/$name")
+    done
+    : >"$out" || return 1
+    git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    ensure_run_dir
+    mkdir -p -- "$RUN_DIR/cfgmask-snap"
+    hits="$RUN_DIR/cfgmask-snap/shaped-untracked"
+    if ! git -C "$dir" ls-files --others --exclude-standard -z -- "${specs[@]}" >"$hits" 2>/dev/null; then
+        return 1
+    fi
+    while IFS= read -r -d '' rel; do
+        printf '%s\0' "$dir/$rel" >>"$out" || return 1
+    done <"$hits"
+    return 0
 }
 
 # log_resolved_binds: one summary line per run naming every bind actually

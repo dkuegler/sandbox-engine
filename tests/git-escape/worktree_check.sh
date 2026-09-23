@@ -662,6 +662,32 @@ done
 [[ "$main_rows" -gt 0 && "$wt_rows" -gt 0 ]] \
     && ok M10 "masking a second checkout keeps the first one's report rows" \
     || bad M10 "the second mask pass discarded the first checkout's partition"
+# The gate's candidate list must propagate a failed git read, not return
+# an empty list that reads as "the agent created nothing".
+(
+    # shellcheck disable=SC2317  # invoked indirectly, as the `git` shadow inside this subshell
+    git() { [[ "$*" == *"ls-files --others"* ]] && return 1; command git "$@"; }
+    config_shaped_untracked "$MASKREPO" "$W/cand-fail.z"
+) >/dev/null 2>&1 \
+    && bad M11 "a failed untracked-file read produced an empty candidate list" \
+    || ok M11 "a failed candidate enumeration refuses instead of returning empty"
+# Literal pathspecs: an excluded file whose NAME is a glob must not unstage its
+# neighbours from a commit the human already approved.
+GLOBREPO="$W/globrepo"
+mkdir -p "$GLOBREPO/sub"
+git init --quiet "$GLOBREPO"
+printf 'b\n' > "$GLOBREPO/base"
+git -C "$GLOBREPO" add base
+git -C "$GLOBREPO" commit --quiet -m base
+printf 'w\n' > "$GLOBREPO/sub/work.md"
+printf 'o\n' > "$GLOBREPO/sub/other.md"
+printf 'p\n' > "$GLOBREPO/sub/*.md"
+git -C "$GLOBREPO" add -A
+printf ':(top,literal)%s\0' 'sub/*.md' > "$W/exclude-glob.z"
+git -C "$GLOBREPO" rm -q --cached --pathspec-from-file="$W/exclude-glob.z" --pathspec-file-nul
+[[ "$(git -C "$GLOBREPO" diff --cached --name-only | sort | tr '\n' ' ')" == "sub/other.md sub/work.md " ]] \
+    && ok M12 "a glob-named excluded file unstages only itself" \
+    || bad M12 "a glob-named excluded file dropped reviewed work from the commit"
 # A config path must not be a symlink, neither on disk nor as HEAD records
 # it: the bind would follow the link to some other host file.
 LINKREPO="$W/linkrepo"
