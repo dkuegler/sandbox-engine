@@ -533,36 +533,6 @@ worktree_render_state() {
     fi
 }
 
-# worktree_sanitize_display: stdin -> stdout, minus the control bytes a
-# terminal acts on rather than prints.
-#
-# The commit message and the diff body are agent-authored bytes on their
-# way to the human's terminal, and a terminal executes what it is sent:
-# "\e[2J\e[H" clears the screen and homes the cursor, so agent content can
-# end by repainting the display with a short, innocent-looking summary and
-# a counterfeit "[y/N]" prompt -- the human then approves a change they
-# never saw. File content and the message file are the two channels.
-# Filenames are not one: git C-quotes every path holding a control or
-# non-ASCII byte before printing it.
-#
-# `cat -v` would do this too and is deliberately not used: it renders every
-# byte >= 0x80 as "M-" noise, which turns any UTF-8 diff into garbage. A
-# byte-oriented tr (LC_ALL=C) cannot touch a multibyte sequence, because
-# every one of its bytes is >= 0x80 and no range below reaches there. The
-# ranges delete 000-010 and 013-037 plus 177 (DEL), so exactly 011 (tab)
-# and 012 (newline) survive.
-#
-# 015 (CR) is deleted with the rest, which costs nothing and closes a real
-# hole. A lone CR returns the cursor to column 0, so the remainder of the
-# line overprints what was already drawn: a diff body of
-# "+ os.system(...)\r+ # harmless comment" is displayed as the comment
-# alone. Hiding one line is the whole attack -- it does not need to repaint
-# the screen. Nothing is lost on ordinary content either, since this
-# filters the DISPLAY, not the file: a CRLF line still ends at its LF.
-worktree_sanitize_display() {
-    LC_ALL=C tr -d '\000-\010\013-\037\177'
-}
-
 # worktree_current_state_hash: hash a FRESH render of the state, using the
 # same worktree_render_state bytes the approval covers -- so the
 # comparison in worktree_commit is between two outputs of one function,
@@ -686,10 +656,10 @@ worktree_approval_gate() {
         echo "======================================================================"
         echo
         echo "--- proposed commit message [$WORKTREE_MSG_SOURCE] ---"
-        worktree_sanitize_display <"$msg"
+        sanitize_agent_display <"$msg"
         echo
         echo "--- change ($total lines) ---"
-        head -n "$WORKTREE_GATE_DIFF_LINES" "$state" | worktree_sanitize_display
+        head -n "$WORKTREE_GATE_DIFF_LINES" "$state" | sanitize_agent_display
         if [[ "$total" -gt "$WORKTREE_GATE_DIFF_LINES" ]]; then
             echo
             echo "... truncated. Full change:"

@@ -96,6 +96,8 @@ source "$REPO_ROOT/functions/cleanup.sh"
 source "$REPO_ROOT/functions/worktree.sh"
 # shellcheck source=functions/commit-message.sh
 source "$REPO_ROOT/functions/commit-message.sh"
+# shellcheck source=functions/binds.sh
+source "$REPO_ROOT/functions/binds.sh"
 
 RUN_DIR="$W/run"
 mkdir -p "$RUN_DIR" || fail_setup "mkdir RUN_DIR"

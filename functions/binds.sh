@@ -4,6 +4,38 @@
 # "~/" against $HOME) into the BINDS array the sandbox backend consumes
 # (functions/apptainer.sh).
 
+# sanitize_agent_display: stdin -> stdout, minus the control bytes a
+# terminal acts on rather than prints.
+#
+# The commit message and the diff body are
+# agent-authored bytes on their way to the human's terminal, and a
+# terminal executes what it is sent: "\e[2J\e[H" clears the screen and
+# homes the cursor, so agent content can end by repainting the display
+# with a short, innocent-looking summary and a counterfeit "[y/N]"
+# prompt -- the human then approves a change they never saw. File content
+# and the commit-message file are the two channels. Filenames are not
+# one: git C-quotes every path holding a control or non-ASCII byte
+# before printing it.
+#
+# `cat -v` would do this too and is deliberately not used: it renders
+# every byte >= 0x80 as "M-" noise, which turns any UTF-8 diff into
+# garbage. A byte-oriented tr (LC_ALL=C) cannot touch a multibyte
+# sequence, because every one of its bytes is >= 0x80 and no range below
+# reaches there. The ranges delete 000-010 and 013-037 plus 177 (DEL), so
+# exactly 011 (tab) and 012 (newline) survive.
+#
+# 015 (CR) is deleted with the rest, which costs nothing and closes a
+# real hole. A lone CR returns the cursor to column 0, so the remainder
+# of the line overprints what was already drawn: a diff body of
+# "+ os.system(...)\r+ # harmless comment" is displayed as the comment
+# alone. Hiding one line is the whole attack -- it does not need to
+# repaint the screen. Nothing is lost on ordinary content either, since
+# this filters the DISPLAY, not the file: a CRLF line still ends at its
+# LF.
+sanitize_agent_display() {
+    LC_ALL=C tr -d '\000-\010\013-\037\177'
+}
+
 # resolve_extra_binds: extra binds default to READ-ONLY. A spec must say
 # ":rw" to opt into read-write; ":ro" is accepted too, redundantly, for
 # clarity. Read-write is something a project opts into per bind, since the
