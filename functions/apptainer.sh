@@ -24,6 +24,8 @@
 #   backend_build_image CONTEXT KEY=VALUE...  builds SANDBOX_IMAGE from CONTEXT/Dockerfile
 #   backend_forward_env VAR VALUE             VAR=VALUE inside the next container,
 #                                             never on a command line
+#   backend_forwarded_env VAR                 is VAR set inside the next container?
+#                                             0 yes (value on stdout), 1 no
 #   backend_gpu_args                          sets GPU_ARGS for the host's GPU stack
 #   backend_launch_argv CWD TMP CMD...        sets BACKEND_ARGV: the agent's launch
 #   backend_generator_argv CWD TMP CMD...     sets BACKEND_ARGV: the commit-message generator
@@ -107,6 +109,18 @@ backend_build_image() {
 # shell -- call it from a subshell to scope it to one exec.
 backend_forward_env() {
     export "APPTAINERENV_$1=$2"
+}
+
+# backend_forwarded_env VAR: whether VAR will be set inside the next
+# container, printing its value if so. Every exec runs with --containall,
+# which includes --cleanenv, so the host's own environment does not cross
+# the boundary: only a variable exported as APPTAINERENV_VAR does -- by
+# backend_forward_env, or by the user. A check about what the agent will
+# see has to ask this, not the host variable of the same name.
+backend_forwarded_env() {
+    local name="APPTAINERENV_$1"
+    [[ -n "${!name+x}" ]] || return 1
+    printf '%s' "${!name}"
 }
 
 # backend_gpu_args: sets GPU_ARGS to the flags matching whatever GPU stack

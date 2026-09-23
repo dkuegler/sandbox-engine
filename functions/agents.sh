@@ -654,6 +654,11 @@ configure_agent() {
             # the project-dir bind above.
             # Source: https://github.com/can1357/oh-my-pi/blob/main/README.md
             # and https://deepwiki.com/can1357/oh-my-pi/13-configuration-reference
+            #
+            # Only the default profile is mounted: a named profile or a
+            # forwarded directory override refuses the run
+            # (functions/omp-home.sh).
+            omp_home_refuse_overrides
             mkdir -p "$HOME/.omp"
             BINDS+=(
                 -B "$HOME/.omp"
@@ -693,11 +698,6 @@ configure_agent() {
             done
             # agent/AGENTS.md is the always-loaded instruction file.
             bind_augmented_instructions "$HOME/.omp/agent/AGENTS.md"
-            for p in "$HOME"/.omp/profiles/*/agent/config.yml \
-                     "$HOME"/.omp/profiles/*/agent/mcp.json \
-                     "$HOME"/.omp/profiles/*/agent/.mcp.json; do
-                bind_ro "$p"
-            done
             RUN_CMD=(omp "${ARGS[@]}")
             ;;
         script)

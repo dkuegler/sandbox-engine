@@ -98,6 +98,8 @@ source "$REPO_ROOT/functions/worktree.sh"
 source "$REPO_ROOT/functions/commit-message.sh"
 # shellcheck source=functions/binds.sh
 source "$REPO_ROOT/functions/binds.sh"
+# shellcheck source=functions/omp-home.sh
+source "$REPO_ROOT/functions/omp-home.sh"
 
 RUN_DIR="$W/run"
 mkdir -p "$RUN_DIR" || fail_setup "mkdir RUN_DIR"
@@ -708,6 +710,35 @@ link_refused || m13=1
 [[ "$m13" -eq 0 ]] \
     && ok M13 "a config path that is a symlink, on disk or in HEAD, refuses the run" \
     || bad M13 "a symlinked config path was bound"
+
+# --- O: omp's ~/.omp (functions/omp-home.sh) -----------------------------
+# o_refuses ARG...: omp_home_refuse_overrides with ARGS=(ARG...), in an
+# environment holding only O_ENV of the variables it reads; true if it
+# refused. The container sees only APPTAINERENV_-forwarded variables, so
+# those are what must refuse -- and a host-only variable must not.
+o_refuses() {
+    (
+        unset OMP_PROFILE PI_PROFILE PI_CODING_AGENT_DIR PI_CONFIG_DIR PI_CODING_AGENT_SESSION_DIR
+        unset APPTAINERENV_OMP_PROFILE APPTAINERENV_PI_PROFILE APPTAINERENV_PI_CODING_AGENT_DIR \
+            APPTAINERENV_PI_CONFIG_DIR APPTAINERENV_PI_CODING_AGENT_SESSION_DIR
+        if [[ -n "${O_ENV:-}" ]]; then export "${O_ENV?}"; fi
+        # shellcheck disable=SC2034  # ARGS and VERBOSE are read by omp_home_refuse_overrides and log_info
+        ARGS=("$@") VERBOSE=0
+        omp_home_refuse_overrides
+    ) >/dev/null 2>&1 && return 1
+    return 0
+}
+o_fail=0
+o_refuses --profile work || o_fail=1
+O_ENV=APPTAINERENV_OMP_PROFILE=work o_refuses || o_fail=1
+O_ENV=APPTAINERENV_PI_CODING_AGENT_DIR=/x o_refuses || o_fail=1
+o_refuses --profile=default && o_fail=1
+O_ENV=APPTAINERENV_OMP_PROFILE=' default ' o_refuses && o_fail=1
+O_ENV=OMP_PROFILE=work o_refuses && o_fail=1
+O_ENV=PI_CODING_AGENT_DIR=/x o_refuses && o_fail=1
+[[ "$o_fail" -eq 0 ]] \
+    && ok O6 "a named profile or directory override that reaches the sandbox refuses; the default profile, and host-only variables, run" \
+    || bad O6 "profile/override refusal is wrong"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

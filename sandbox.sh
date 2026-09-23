@@ -26,6 +26,7 @@
 #   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
 #   git-mask.sh     read-only .git mask
 #   agents.sh       per-agent state binds, RUN_CMD
+#   omp-home.sh     omp's ~/.omp: which profile/directory overrides are refused
 #   cleanup.sh      EXIT trap and the teardown hooks registered against it
 #   run-dir.sh      per-run scratch directory lifecycle (teardown, reap)
 #   worktree.sh     --worktree branch/worktree lifecycle, review, commit
@@ -287,6 +288,8 @@ source "$FUNCTIONS_DIR/project-sandbox-config.sh"
 source "$FUNCTIONS_DIR/environment.sh"
 # shellcheck source=functions/binds.sh
 source "$FUNCTIONS_DIR/binds.sh"
+# shellcheck source=functions/omp-home.sh
+source "$FUNCTIONS_DIR/omp-home.sh"
 # shellcheck source=functions/git-mask.sh
 source "$FUNCTIONS_DIR/git-mask.sh"
 # shellcheck source=functions/agents.sh
