@@ -244,9 +244,11 @@ bind_ro() {
 PROJECT_CONFIG_MASK_FILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/config/mask.yml"
 
 # PROJECT_CONFIG_MASK_KIND / PROJECT_CONFIG_MASK_PATH: the "project:"
-# entries, index-aligned, filled once by project_config_mask_load().
+# entries, index-aligned; PROJECT_CONFIG_MASK_ANYWHERE: the "anywhere:"
+# basenames. Filled once by project_config_mask_load().
 PROJECT_CONFIG_MASK_KIND=()
 PROJECT_CONFIG_MASK_PATH=()
+PROJECT_CONFIG_MASK_ANYWHERE=()
 
 # project_config_mask_refuse DETAIL: the table cannot be trusted as a
 # perimeter, so the run does not start. A mask that silently lost rows to
@@ -257,22 +259,32 @@ project_config_mask_refuse() {
     exit 1
 }
 
-# project_config_mask_load: read the "project:" list of
-# PROJECT_CONFIG_MASK_FILE into the two arrays above, once per run.
+# project_config_mask_load: read PROJECT_CONFIG_MASK_FILE into the arrays
+# above, once per run.
 #
 # The file is YAML, but only the strict subset its header documents is
 # accepted, parsed line by line without a YAML library (none can be
-# assumed on the host). Every line is a comment, blank, the "project:"
-# key, or an entry "  - file: PATH" / "  - dir: PATH" with PATH made only
-# of [A-Za-z0-9._/-] -- a plain YAML string that no quoting, anchor, tag
-# or flow syntax can reinterpret. Anything else refuses, as does a
-# missing, unreadable or empty table, and a PATH that is absolute or has
-# an empty, "." or ".." component: each of those would bind something
-# other than the checkout path the row names. Callers iterate the arrays
-# rather than a "< <(...)" stream, so a refusal here always reaches the
-# real shell.
+# assumed on the host). Every line is a comment, blank, one of the two
+# keys "project:" and "anywhere:" (each at most once -- YAML parsers
+# disagree on which of two duplicate keys wins), or an entry of the
+# section it sits in:
+#
+#   project:   "  - file: PATH" / "  - dir: PATH", PATH made only of
+#              [A-Za-z0-9._/-], relative, with no empty, "." or ".."
+#              component -- anything else would bind something other than
+#              the checkout path the row names;
+#   anywhere:  "  - name: BASENAME", BASENAME made only of [A-Za-z0-9._-]
+#              and neither "." nor "..".
+#
+# Both character sets make every value a plain YAML string that no
+# quoting, anchor, tag or flow syntax can reinterpret. Anything else
+# refuses, as does a missing or unreadable file and a section with no
+# entries: an empty "anywhere:" would silently switch off the tree-wide
+# half of the mask. Callers iterate the arrays rather than a "< <(...)"
+# stream, so a refusal here always reaches the real shell.
 project_config_mask_load() {
-    local line n=0 kind rel in_project=0
+    local line n=0 kind rel section=""
+    declare -A seen_key=()
     [[ ${#PROJECT_CONFIG_MASK_PATH[@]} -gt 0 ]] && return 0
     if [[ ! -f "$PROJECT_CONFIG_MASK_FILE" || ! -r "$PROJECT_CONFIG_MASK_FILE" ]]; then
         project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE is missing or unreadable"
@@ -280,31 +292,46 @@ project_config_mask_load() {
     while IFS= read -r line || [[ -n "$line" ]]; do
         n=$((n + 1))
         [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]] && continue
-        if [[ "$line" == "project:" ]]; then
-            # A second "project:" key is a duplicate mapping key: YAML
-            # parsers disagree on which one wins, so there is no single
-            # table to honour.
-            if [[ "$in_project" -eq 1 ]]; then
-                project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: \"project:\" appears more than once"
+        if [[ "$line" =~ ^(project|anywhere):$ ]]; then
+            section="${BASH_REMATCH[1]}"
+            if [[ -n "${seen_key[$section]+x}" ]]; then
+                project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: \"$section:\" appears more than once"
             fi
-            in_project=1
+            seen_key["$section"]=1
             continue
         fi
-        if [[ "$in_project" -ne 1 || ! "$line" =~ ^\ \ -\ (file|dir):\ ([A-Za-z0-9._/-]+)$ ]]; then
-            project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: not a \"  - file|dir: PATH\" entry under \"project:\""
-        fi
-        kind="${BASH_REMATCH[1]}"
-        rel="${BASH_REMATCH[2]}"
-        case "/$rel/" in
-            *//* | */./* | */../*)
-                project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: $rel is not a plain checkout-relative path"
+        case "$section" in
+            project)
+                if [[ ! "$line" =~ ^\ \ -\ (file|dir):\ ([A-Za-z0-9._/-]+)$ ]]; then
+                    project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: not a \"  - file|dir: PATH\" entry under \"project:\""
+                fi
+                kind="${BASH_REMATCH[1]}"
+                rel="${BASH_REMATCH[2]}"
+                case "/$rel/" in
+                    *//* | */./* | */../*)
+                        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: $rel is not a plain checkout-relative path"
+                        ;;
+                esac
+                PROJECT_CONFIG_MASK_KIND+=("$kind")
+                PROJECT_CONFIG_MASK_PATH+=("$rel")
+                ;;
+            anywhere)
+                if [[ ! "$line" =~ ^\ \ -\ name:\ ([A-Za-z0-9._-]+)$ \
+                      || "${BASH_REMATCH[1]}" == . || "${BASH_REMATCH[1]}" == .. ]]; then
+                    project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: not a \"  - name: BASENAME\" entry under \"anywhere:\""
+                fi
+                PROJECT_CONFIG_MASK_ANYWHERE+=("${BASH_REMATCH[1]}")
+                ;;
+            *)
+                project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: not under \"project:\" or \"anywhere:\""
                 ;;
         esac
-        PROJECT_CONFIG_MASK_KIND+=("$kind")
-        PROJECT_CONFIG_MASK_PATH+=("$rel")
     done <"$PROJECT_CONFIG_MASK_FILE"
     if [[ ${#PROJECT_CONFIG_MASK_PATH[@]} -eq 0 ]]; then
-        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE has no entries"
+        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE: \"project:\" has no entries"
+    fi
+    if [[ ${#PROJECT_CONFIG_MASK_ANYWHERE[@]} -eq 0 ]]; then
+        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE: \"anywhere:\" has no entries"
     fi
 }
 
@@ -458,6 +485,47 @@ config_mask_symlink_refuse() {
     exit 1
 }
 
+# config_deep_instruction_paths DIR OUT: every path in DIR's tree, at any
+# depth, whose basename is on the table's "anywhere:" list (the
+# always-loaded instruction files discovery reaches below the root, and
+# direnv's .envrc) -- tracked or not, including gitignored ones, since an
+# ignore rule must not be a place to hide a plant. Writes NUL-separated
+# checkout-relative paths to OUT; non-zero return means the enumeration
+# failed and the caller must refuse.
+#
+# The matching is done by git, through ":(glob)**/<name>" pathspecs, not
+# by a bash loop over every untracked path. That is the difference between
+# one C-speed tree walk and an O(untracked x patterns) shell loop over a
+# checkout that may hold tens of thousands of ignored files (node_modules,
+# .venv, build output) -- the walk that would otherwise make every startup
+# slower in proportion to tree size.
+#
+# Enumeration uses the INDEX for tracked paths (ls-tree does not accept
+# glob pathspec magic). That is only a candidate list: whether each
+# candidate is trusted is still decided against HEAD by config_path_state,
+# so an index entry that HEAD does not have comes back "uncommitted" and
+# is hidden, exactly as if it had been found as an untracked file.
+config_deep_instruction_paths() {
+    local dir="$1" out="$2" name tracked others
+    local -a specs=()
+    project_config_mask_load
+    for name in "${PROJECT_CONFIG_MASK_ANYWHERE[@]}"; do
+        specs+=(":(glob)**/$name")
+    done
+    ensure_run_dir
+    mkdir -p -- "$RUN_DIR/cfgmask-snap"
+    tracked="$RUN_DIR/cfgmask-snap/deep-cached"
+    others="$RUN_DIR/cfgmask-snap/deep-others"
+    : >"$out" || return 1
+    # Not a checkout: there is no tree to walk and nothing is committed
+    # anywhere. The root-level table still applies; this half is empty.
+    git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    git -C "$dir" ls-files --cached -z -- "${specs[@]}" >"$tracked" 2>/dev/null || return 1
+    git -C "$dir" ls-files --others -z -- "${specs[@]}" >"$others" 2>/dev/null || return 1
+    LC_ALL=C sort -z -u -- "$tracked" "$others" >"$out" || return 1
+    return 0
+}
+
 # config_mask_record STATE ABS DIR: one row of the startup/exit report.
 # The checkout each row came from is recorded alongside it, because
 # worktree mode masks two checkouts and "which one is this uncommitted
@@ -577,14 +645,46 @@ config_mask_one() {
 # most consequential, since that is the one the human keeps using. Both
 # calls' rows survive, and report_config_masking() labels each row with
 # the checkout it came from.
+#
+# Two halves: every table entry first, then every deep instruction file
+# the tree-wide sweep finds (config_deep_instruction_paths), through the
+# same config_mask_one -- so a deep AGENTS.md is decided by exactly the
+# same code as a root-level one.
 mask_project_agent_config() {
-    local dir="$1" i
+    local dir="$1" i rel d under
     project_config_mask_load
     ensure_run_dir
     mkdir -p -- "$RUN_DIR/cfgmask"
+    declare -A seen=()
+    local -a table_dirs=()
     for i in "${!PROJECT_CONFIG_MASK_PATH[@]}"; do
+        seen["${PROJECT_CONFIG_MASK_PATH[i]}"]=1
+        [[ "${PROJECT_CONFIG_MASK_KIND[i]}" == dir ]] && table_dirs+=("${PROJECT_CONFIG_MASK_PATH[i]}")
         config_mask_one "$dir" "${PROJECT_CONFIG_MASK_PATH[i]}"
     done
+    # The tree-wide half: the always-loaded instruction files reach the
+    # session from ANY depth, so masking only the checkout root would
+    # leave sub/AGENTS.md writable and loadable. Root-level paths the
+    # table already covered are skipped rather than bound twice, and so is
+    # anything inside a table directory: that entry already decides its
+    # whole content, and a second bind nested in it could land in an
+    # empty placeholder that has no mount point for it.
+    local deep="$RUN_DIR/cfgmask-snap/deep-paths"
+    if ! config_deep_instruction_paths "$dir" "$deep"; then
+        printf '%s%s\n' "sandbox: cannot enumerate the deep instruction files of $dir -- " \
+            "refusing to resolve the config mask from a partial tree" >&2
+        exit 1
+    fi
+    while IFS= read -r -d '' rel; do
+        [[ -n "${seen["$rel"]+x}" ]] && continue
+        under=0
+        for d in ${table_dirs[@]+"${table_dirs[@]}"}; do
+            [[ "$rel" == "$d"/* ]] && { under=1; break; }
+        done
+        [[ "$under" -eq 1 ]] && continue
+        seen["$rel"]=1
+        config_mask_one "$dir" "$rel"
+    done <"$deep"
 }
 
 # report_config_masking: the startup confirmation -- informational only,

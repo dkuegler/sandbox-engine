@@ -10,11 +10,17 @@
 # and made only of A-Z a-z 0-9 . _ / - (no leading "/", no "." or ".."
 # component), so it is always a plain YAML string.
 #
+# "anywhere:" lists file names matched at EVERY depth of the checkout,
+# gitignored or not, and decided by the same rule as a "project:" row.
+# Each entry is "- name: BASENAME", made only of A-Z a-z 0-9 . _ - (no
+# "/", not "." or "..").
+#
 # This is a strict subset of YAML, parsed without a YAML library: comment
-# lines, blank lines, the "project:" key and entries exactly as above.
-# Anything else -- a different indent, quoting, a trailing comment, an
-# unknown key -- refuses the run rather than being skipped, because a row
-# that silently dropped out would look exactly like a mask that works.
+# lines, blank lines, the two keys (each once) and entries exactly as
+# above. Anything else -- a different indent, quoting, a trailing
+# comment, an unknown key, a key with no entries -- refuses the run
+# rather than being skipped, because a row that silently dropped out
+# would look exactly like a mask that works.
 #
 # The table IS the perimeter of the whole masking convention -- nothing
 # discovers configs -- so every new agent or tool surface lands here by
@@ -32,7 +38,8 @@
 # is always launched with its cwd at the project root (or the worktree
 # root), and none of them walks above its cwd for config. The always-
 # loaded instruction files are the exception discovery can reach at
-# other depths; the rows here are their root-level copies.
+# other depths; "project:" carries their root-level copies, and
+# "anywhere:" the basenames swept at every depth.
 
 project:
   # sandbox.yml decides this sandbox's own binds, environment and base
@@ -144,3 +151,16 @@ project:
   - dir: .agent/rules
   - file: .agents/AGENTS.md
   - dir: .agents/rules
+
+anywhere:
+  # Always-loaded instruction files discovery reaches below the checkout
+  # root: claude injects a subdirectory's copy when it first reads a file
+  # there, omp points the session at it.
+  - name: AGENTS.md
+  - name: CLAUDE.md
+  - name: CLAUDE.local.md
+  - name: .cursorrules
+
+  # direnv executes .envrc, as the human, on cd into any directory
+  # holding one.
+  - name: .envrc

@@ -49,7 +49,7 @@ reviewed the reference, not the referent.
 | **A — pre-container** | `sandbox.yml` | the sandbox itself: `parse_sandbox_yml` (`functions/sandbox_yml.sh`) runs host-side, before `EXEC_ARGV` starts any container | the launching run's own binds, base image and environment | yes |
 | **B — host execution, no agent in the loop** | `.envrc`, `.vscode/tasks.json`, `.vscode/launch.json`, `.devcontainer/devcontainer.json`, `.pre-commit-config.yaml` | direnv on `cd`; VS Code on folder open (`runOptions.runOn: folderOpen`) and on debug (`preLaunchTask`, `postDebugTask`); `initializeCommand` on the **host** before any container is built; the commit path, for pre-commit | a process, run as the human, unprompted | no |
 | **C — host execution at agent-CLI startup** | `mcp.json`, `.mcp.json`, `.claude/mcp.json`, `.claude/.mcp.json`, `.omp/mcp.json`, `.omp/.mcp.json`, `.cursor/mcp.json`, `.windsurf/mcp_config.json`, `.vscode/mcp.json`, `.codex/config.toml`, `.gemini/settings.json`, `opencode.json`, `opencode.jsonc`, `.claude/settings.json`, `.claude/settings.local.json`, `.omp/config.yml`, `.omp/settings.json`, `.claude/hooks`, `.claude/plugins`, `.opencode/plugin`, `.opencode/plugins`, `.opencode/tool`, `.opencode/tools` | the agent CLI, at startup, before the model is consulted | a process (an MCP server `command`, `hooks`, `apiKeyHelper`, `statusLine`, `lsp.*.command`, `formatter.*.command`) or code loaded in-process (plugins, tools) | no |
-| **D — instruction text** | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.claude/agents`, `.claude/commands`, `.claude/skills`, `.claude/rules`, `.claude/output-styles`, `.opencode/agent`, `.opencode/agents`, `.opencode/command`, `.opencode/commands`, `.opencode/mode`, `.opencode/modes`, `.opencode/skill`, `.opencode/skills`, and the sixteen paths under "Instruction surfaces beyond the root files" below | the agent CLI, into the system prompt, at startup | text; it takes effect only if the model acts on it | yes |
+| **D — instruction text** | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.claude/agents`, `.claude/commands`, `.claude/skills`, `.claude/rules`, `.claude/output-styles`, `.opencode/agent`, `.opencode/agents`, `.opencode/command`, `.opencode/commands`, `.opencode/mode`, `.opencode/modes`, `.opencode/skill`, `.opencode/skills`, and the sixteen paths under "Instruction surfaces beyond the root files" below | the agent CLI, into the system prompt: at startup for a path at or above the launch directory, and — under claude — on first read of a file in a subdirectory holding one | text; it takes effect only if the model acts on it | yes |
 
 `D` — every trigger above is from the respective tool's own documentation. None
 of them prompts.
@@ -65,6 +65,51 @@ The ordering is not a severity ranking of individual files. It is the order in
 which the containment loses leverage: class A is decided before any container
 exists, class B never involves the sandbox at all, and classes C and D are the
 only two a mask on this run's own binds can affect.
+
+## Where in the tree each read reaches
+
+The class says who reads a path and when. It does not say **where the path has
+to sit** for that read to happen, and the three supported agent CLIs disagree.
+Every row is `D`, from the respective tool's current documentation.
+
+| reader | project instruction and rule files it loads | where it looks | reaches below the launch directory |
+| --- | --- | --- | --- |
+| claude | `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`; `AGENTS.md` and `.claude/AGENTS.md` only under the conditions below | the launch directory and every directory above it, at launch | **yes** — a subdirectory's `CLAUDE.md`, `CLAUDE.local.md` or `AGENTS.md` is injected when the Read tool opens any file in that subdirectory |
+| claude | `.claude/rules/**/*.md` | recursively under `.claude/rules/` | **yes** — rules without `paths:` frontmatter load at launch, path-scoped rules load when a matching file is read |
+| omp | `AGENTS.md`, `CLAUDE.md`, `.omp/AGENTS.md`, `.claude/CLAUDE.md`, `.gemini/GEMINI.md`, `.github/copilot-instructions.md` | the launch directory and its ancestors to the repository root; one surviving file per depth, highest-priority provider wins that depth | no — a deeper file is not injected, but its **path** is listed in a `<dir-context>` block that tells the session to read it before editing there |
+| omp | `.omp/RULES.md` | the nearest non-empty `.omp/` walking from the launch directory toward the repository root | no — but its body is always-apply: carried in the system prompt on *every* request, not just the first |
+| omp | `.omp/rules/*`, `.cursor/rules/*`, `.windsurf/rules/*`, `.clinerules`, `.agent/rules/*`, `.agents/rules/*`, `.github/instructions/**/*.instructions.md` | config directories of the launch directory; `.clinerules` and `.agent*/` walk up; `.github/instructions/` is read recursively | selection is by `globs`/`applyTo`, not by depth; `applyTo: '**'` makes a rule always-apply |
+| opencode | `AGENTS.md`, else `CLAUDE.md` | the launch directory and its ancestors, **first match wins** | no — unless `opencode.json` `instructions` names deeper files, a field that accepts globs (`packages/*/AGENTS.md`) and remote `https://` URLs fetched at startup |
+
+**Depth is agent-dependent, and under claude it is not optional.** The same
+`sub/AGENTS.md` is inert under opencode, a pointer under omp, and injected
+instruction text under claude as soon as the session reads any file in `sub/` —
+subject to the `AGENTS.md` conditions below, where a `sub/CLAUDE.md` or
+`sub/CLAUDE.local.md` is injected on read unconditionally. Claude Code's
+strictest project-instructions setting, `managed-only`, still loads a
+subdirectory's `CLAUDE.md` and `.claude/rules/` files on read.
+
+**Claude's `AGENTS.md` handling is conditional, and a mask cannot depend on the
+condition.** Reading `AGENTS.md` directly requires Claude Code v2.1.277 or
+later, is implemented as the built-in `agents-md` plugin, and is off in any
+session that cannot fetch feature flags — Amazon Bedrock and other third-party
+providers, telemetry disabled, the first session after an install or upgrade —
+or where `disableAllHooks`, `allowManagedHooksOnly`, or a disabled `agents-md`
+plugin applies. `D`. Where it is off, `AGENTS.md` still reaches the system
+prompt through a `CLAUDE.md` holding `@AGENTS.md` (expanded inline at launch)
+or a `CLAUDE.md` symlinked to it; and omp and opencode read it as their primary
+project instruction file regardless. A perimeter that tracked the condition
+would have to be recomputed per host, per version and per provider, and would
+fail open on every one it guessed wrong.
+
+**None of this is a read the model chose to make.** Each of these paths enters
+the context as system-authored instruction — in the opening system prompt, or
+injected onto a tool result — with no call in the transcript attributable to the
+model's own judgement. That is the property that separates a config path from
+an ordinary readable file such as a `README.md`, which enters as tool output
+the model is free to weigh or ignore, and only when the model asked for it. The
+mask is a perimeter over **automatic instruction injection**, not over what a
+session is able to read.
 
 ### Instruction surfaces beyond the root files
 
@@ -94,6 +139,31 @@ covers every file under it without the table having to enumerate extensions.
 A root `GEMINI.md` is *not* on the table: no supported agent reads it — Gemini
 CLI does, and `.gemini/settings.json` is on the table only because omp's
 cross-tool MCP discovery reads that file.
+
+### The mask reaches the whole tree, not just the root
+
+`D` — `config/mask.yml` is root-relative by design, because every supported
+agent launches with its cwd at the checkout root and none of them walks *above*
+it. But the always-loaded instruction files are read at any depth, so a
+root-only mask would leave `sub/AGENTS.md` writable and loadable. The mask
+therefore runs a second, tree-wide sweep (`config_deep_instruction_paths()`) for
+the basenames on the table's `anywhere:` list — `AGENTS.md`, `CLAUDE.md`,
+`CLAUDE.local.md`, `.cursorrules` and `.envrc` — at every depth, and applies the
+identical committed/clean rule to each match: a committed, clean `sub/AGENTS.md`
+is a read-only copy of its committed content, an uncommitted one is hidden.
+Root-level paths the table already covered are not bound twice, and neither is
+a match inside a table directory (`.claude/agents/AGENTS.md`): that directory's
+entry already decides its whole content.
+
+Gitignored matches are included. An ignore rule is a statement about what git
+tracks, not about what an agent CLI loads, so it must not be a place to hide an
+instruction file. The matching is handed to git as `:(glob)**/<name>`
+pathspecs rather than looped over in shell, so including ignored files costs a
+single tree walk in C rather than a shell loop over every path in
+`node_modules/`.
+
+The startup block is fed from the same pass, so a deep uncommitted instruction
+file is named at launch.
 
 ## The convention: the session sees what the branch commits
 
@@ -175,15 +245,18 @@ row, masked exactly like every other entry.
 
 ## The mask table
 
-`D` — `config/mask.yml` is the perimeter: nothing discovers config paths, so a path
-that is not on the table is not masked. Each entry is `- file: PATH` or
-`- dir: PATH` under the `project:` key, relative to the checkout root; a `dir`
-entry covers everything beneath it. The loader, `project_config_mask_load()`,
-accepts only that strict subset of YAML and refuses the run on anything else —
-a missing or empty file, an unknown key, quoting, a trailing comment, an
-absolute path or a `..` component — because a row that silently dropped out
-would look exactly like a mask that works. The table is located relative to
-`functions/binds.sh`, never through the environment.
+`D` — `config/mask.yml` is the perimeter: nothing discovers config paths, so a
+path that is not on the table is not masked. It has two keys. Under
+`project:`, each entry is `- file: PATH` or `- dir: PATH`, relative to the
+checkout root; a `dir` entry covers everything beneath it. Under `anywhere:`,
+each entry is `- name: BASENAME`, matched at every depth (see "The mask reaches
+the whole tree"). The loader, `project_config_mask_load()`, accepts only that
+strict subset of YAML and refuses the run on anything else — a missing file, a
+key that is absent, repeated or has no entries, an unknown key, quoting, a
+trailing comment, an absolute path, a `..` component, a `/` in a basename —
+because a row that silently dropped out would look exactly like a mask that
+works. The table is located relative to `functions/binds.sh`, never through the
+environment.
 
 ## Where an agent-created config file can go
 

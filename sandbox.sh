@@ -149,6 +149,9 @@
 #   working tree. Only the user commits, so committed config is
 #   user-authored and safe to show; everything else is uncommitted state
 #   and the session is blind to it.
+#   The always-loaded instruction files (AGENTS.md, CLAUDE.md,
+#   CLAUDE.local.md, .cursorrules) and direnv's .envrc are matched at
+#   every depth, gitignored or not, and decided by the same rule.
 #
 #   - committed & clean: a fresh per-run copy of the committed content is
 #     bound READ-ONLY over the path. An agent write here would persist

@@ -575,15 +575,20 @@ rm -rf "$WORKTREE_DIR"
 # below fails on a plausible regression of that rule, and the ones marked
 # so were written against a measured bug.
 MASKREPO="$W/maskrepo"
-mkdir -p "$MASKREPO/.omp"
+mkdir -p "$MASKREPO/sub/deep" "$MASKREPO/vendor/pkg" "$MASKREPO/.omp" "$MASKREPO/.claude/agents"
 git init --quiet "$MASKREPO"
+printf 'vendor/\n' > "$MASKREPO/.gitignore"
 printf 'committed root\n' > "$MASKREPO/AGENTS.md"
+printf 'committed deep\n' > "$MASKREPO/sub/deep/AGENTS.md"
 printf 'committed rules\n' > "$MASKREPO/.omp/RULES.md"
+printf 'committed agent\n' > "$MASKREPO/.claude/agents/AGENTS.md"
 printf 'x\n' > "$MASKREPO/f"
-git -C "$MASKREPO" add AGENTS.md .omp/RULES.md f
+git -C "$MASKREPO" add .gitignore AGENTS.md sub/deep/AGENTS.md .omp/RULES.md .claude/agents/AGENTS.md f
 git -C "$MASKREPO" commit --quiet -m "mask fixture"
 printf 'committed root\nLOCAL DRIFT\n' > "$MASKREPO/AGENTS.md"
 printf 'untracked plant\n' > "$MASKREPO/CLAUDE.md"
+printf 'deep untracked plant\n' > "$MASKREPO/sub/CLAUDE.md"
+printf 'ignored plant\n' > "$MASKREPO/vendor/pkg/AGENTS.md"
 
 BINDS=() RO_MASKED=() CFG_MASK_STATE=() CFG_MASK_PATH=() CFG_MASK_OWNER=()
 mask_project_agent_config "$MASKREPO"
@@ -620,12 +625,26 @@ mask_src_of() {
     && ok M4 "absent config produces no bind and materialises nothing" \
     || bad M4 "an absent config path was bound, or materialised on disk"
 # A committed copy must come from HEAD, never from the dirty working tree.
-[[ "$(cat "$(mask_src_of "$MASKREPO/.omp/RULES.md")" 2>/dev/null)" == "committed rules" ]] \
+[[ "$(cat "$(mask_src_of "$MASKREPO/sub/deep/AGENTS.md")" 2>/dev/null)" == "committed deep" ]] \
     && ok M5 "the bound copy is HEAD's content" \
     || bad M5 "the bound copy did not match HEAD"
 [[ "$(cat "$(mask_src_of "$MASKREPO/AGENTS.md")" 2>/dev/null)" == "committed root" ]] \
     && ok M6 "a dirty path shows HEAD's content, not the working tree's" \
     || bad M6 "local drift was visible through the mask"
+# Tree-wide reach: the same rule at depth, and no hiding behind .gitignore.
+[[ "$(mask_state_of "$MASKREPO/sub/deep/AGENTS.md")" == committed \
+   && "$(mask_state_of "$MASKREPO/sub/CLAUDE.md")" == hidden ]] \
+    && ok M7 "deep instruction files obey the same rule as root-level ones" \
+    || bad M7 "a deep instruction file was masked differently from a root-level one"
+[[ "$(mask_state_of "$MASKREPO/vendor/pkg/AGENTS.md")" == hidden ]] \
+    && ok M8 "a gitignored instruction file is still masked" \
+    || bad M8 "an ignore rule was a place to hide an instruction file"
+# A deep match inside a table directory is decided by that directory's
+# entry, not by a second bind nested in it.
+[[ "$(mask_state_of "$MASKREPO/.claude/agents")" == committed \
+   && "$(mask_state_of "$MASKREPO/.claude/agents/AGENTS.md")" == missing ]] \
+    && ok M14 "a deep match inside a table directory is covered by that entry alone" \
+    || bad M14 "a deep match inside a table directory got its own nested bind"
 # One RO_MASKED element per masked path: a split append corrupts the
 # agent's own limitations file and the read-only bind count.
 [[ "$(printf '%s\n' "${RO_MASKED[@]}" | grep -c '^committed version)')" -eq 0 ]] \
