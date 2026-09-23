@@ -34,6 +34,14 @@
 # --project-dir DIR (accepted anywhere in argv, before or after the agent
 # name). sandbox.yml is looked up at the root of that directory.
 #
+# sandbox.yml trust:
+#   sandbox.yml is gated before a single key is read from it, because the
+#   HOST parses it before any container exists and no container mask can
+#   intercept that read. A sandbox.yml that is not tracked in HEAD and
+#   identical to it is refused outright; committing it is how you accept
+#   it. A symlink at that path is refused too: git would vouch for the
+#   link while the parser reads its target.
+#
 # Execution environment (sandbox.yml / --environment):
 #   The Dockerfile's "base" stage image is resolved from an optional
 #   "environment:" section in <project-dir>/sandbox.yml, and/or from

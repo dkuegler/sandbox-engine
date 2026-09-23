@@ -34,8 +34,14 @@ FIXTURE="$WORK/repo"
 mkdir -p "$FIXTURE"
 git init --quiet "$FIXTURE"
 # Inherit this repo's environment so the probe reuses an already-built
-# image instead of triggering a fresh build for a default ENV_TAG.
-[[ -f "$REPO_ROOT/sandbox.yml" ]] && cp "$REPO_ROOT/sandbox.yml" "$FIXTURE/sandbox.yml"
+# image instead of triggering a fresh build for a default ENV_TAG. It is
+# COMMITTED in the fixture, not just copied in: sandbox.yml configures the
+# run before any container exists, so an uncommitted one is refused
+# outright (functions/sandbox_yml.sh) and the suite would never launch.
+if [[ -f "$REPO_ROOT/sandbox.yml" ]]; then
+    cp "$REPO_ROOT/sandbox.yml" "$FIXTURE/sandbox.yml"
+    git -C "$FIXTURE" add sandbox.yml
+fi
 printf 'probe fixture\n' > "$FIXTURE/README"
 git -C "$FIXTURE" add README
 git -C "$FIXTURE" \

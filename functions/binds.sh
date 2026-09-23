@@ -204,6 +204,72 @@ bind_ro() {
     RO_MASKED+=("$p")
 }
 
+# CFG_PATH_STATE: set by config_path_state() below. A global rather than
+# an echoed result on purpose -- see that function's own note.
+declare CFG_PATH_STATE=""
+
+# config_path_state DIR REL: the ONE predicate behind the git-known
+# convention -- "visible <=> tracked in DIR's HEAD tree AND identical to
+# it in the working tree" -- resolved for a single path. Sets
+# CFG_PATH_STATE to exactly one of:
+#
+#   committed          in HEAD, and the working tree matches it
+#   uncommitted-dirty  in HEAD, but the working tree has drifted
+#   uncommitted        not in HEAD at all (untracked, no commit yet, or
+#                      not a git checkout)
+#
+# The host-side sandbox.yml trust gate (parse_sandbox_yml,
+# functions/sandbox_yml.sh) decides from it whether to honour that file
+# at all. Every other "is this committed" question belongs here too, not
+# in a second implementation: two would be two things to keep in
+# agreement, and the one that drifted would fail open.
+#
+# The answer is returned in a GLOBAL, never echoed for the caller to read
+# through "$(...)". A command substitution is a subshell, and the `exit 1`
+# refusals below would die inside it while the caller saw an empty string
+# and carried on -- an untrusted sandbox.yml honoured because the check
+# could not be completed. The refusal has to be able to reach the real
+# shell.
+#
+# Not being a repository, and having no commit yet, are not failures but
+# states this degrades on: nothing is committed anywhere, so every path
+# is uncommitted -- the fail-closed reading. A git read that fails for
+# any OTHER reason refuses the run instead of guessing, because a state
+# computed from a partial answer cannot be told apart from a real one.
+config_path_state() {
+    local dir="$1" rel="$2" listing rc=0
+    CFG_PATH_STATE=""
+    ensure_run_dir
+    mkdir -p -- "$RUN_DIR/cfgmask-snap"
+    listing="$RUN_DIR/cfgmask-snap/tracked-under"
+    if ! git -C "$dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+        CFG_PATH_STATE="uncommitted"
+        return 0
+    fi
+    # Captured to a file before it is inspected: a failing read must never
+    # be indistinguishable from "HEAD does not have this path".
+    if ! git -C "$dir" ls-tree -r HEAD --name-only -z -- "$rel" >"$listing" 2>/dev/null; then
+        printf '%s%s\n' "sandbox: cannot resolve the tracked state of $rel in $dir -- " \
+            "refusing to guess" >&2
+        exit 1
+    fi
+    if [[ ! -s "$listing" ]]; then
+        CFG_PATH_STATE="uncommitted"
+        return 0
+    fi
+    git -C "$dir" diff HEAD --quiet -- "$rel" 2>/dev/null || rc=$?
+    # shellcheck disable=SC2034  # read by require_trusted_sandbox_yml (functions/sandbox_yml.sh), sourced before this file
+    case "$rc" in
+        0) CFG_PATH_STATE="committed" ;;
+        1) CFG_PATH_STATE="uncommitted-dirty" ;;
+        *)
+            printf '%s%s\n' "sandbox: cannot compare $rel in $dir against HEAD " \
+                "(git exited $rc) -- refusing to guess" >&2
+            exit 1
+            ;;
+    esac
+}
+
 # mask_project_agent_config DIR: bind-mask, read-only, every project-root
 # file/directory a coding-agent CLI treats as executable configuration --
 # MCP server command lines, plugin/hook code, permission overrides -- the
