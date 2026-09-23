@@ -334,9 +334,9 @@ resolve_extra_binds
 # sandbox.yml is an ordinary row on the config-mask table
 # (config/mask.yml): the thing that actually protects it is the
 # tracked-and-clean refusal in parse_sandbox_yml() above, which ran
-# before this run built anything from it. The mask below keeps the
-# session from rewriting either checkout's copy, exactly like every
-# other known-config path.
+# before this run built anything from it. The mask below only keeps the
+# session from reading an uncommitted copy or rewriting a committed one,
+# exactly like every other known-config path.
 
 # Masks every .git in the project tree read-only in BINDS.
 mask_git_readonly

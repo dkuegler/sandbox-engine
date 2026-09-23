@@ -569,5 +569,83 @@ rm -rf "$WORKTREE_DIR"
     && bad W15 "--worktree accepted a project dir whose git dir is outside it" \
     || ok W15 "refuse: --worktree only runs against a main checkout"
 
+# --- M: the project config mask -----------------------------------------
+# The convention's whole contract is one rule -- visible <=> tracked in
+# HEAD and identical to it. Each assertion below fails on a plausible
+# regression of that rule, and the ones marked so were written against a
+# measured bug.
+MASKREPO="$W/maskrepo"
+mkdir -p "$MASKREPO/.omp"
+git init --quiet "$MASKREPO"
+printf 'committed omp\n' > "$MASKREPO/.omp/config.yml"
+printf 'committed opencode\n' > "$MASKREPO/opencode.json"
+printf 'x\n' > "$MASKREPO/f"
+git -C "$MASKREPO" add .omp/config.yml opencode.json f
+git -C "$MASKREPO" commit --quiet -m "mask fixture"
+printf 'committed opencode\nLOCAL DRIFT\n' > "$MASKREPO/opencode.json"
+printf 'untracked plant\n' > "$MASKREPO/mcp.json"
+
+BINDS=() RO_MASKED=()
+mask_project_agent_config "$MASKREPO"
+
+# mask_label_of PATH: the state annotation RO_MASKED carries for PATH.
+mask_label_of() {
+    local want="$1" r
+    for r in "${RO_MASKED[@]}"; do
+        [[ "$r" == "$want ("* ]] && { printf '%s' "${r#"$want "}"; return 0; }
+    done
+    printf 'missing'
+}
+mask_src_of() {
+    local want="$1" b
+    for b in "${BINDS[@]}"; do
+        [[ "$b" == "-B" ]] && continue
+        [[ "$b" == *":$want:ro" ]] && { printf '%s' "${b%%:*}"; return 0; }
+    done
+    printf ''
+}
+
+[[ "$(mask_label_of "$MASKREPO/.omp/config.yml")" == "(committed; read-only copy)" ]] \
+    && ok M1 "committed & clean config is visible (read-only copy)" \
+    || bad M1 "a committed, clean config path was not reported committed"
+[[ "$(mask_label_of "$MASKREPO/mcp.json")" == "(uncommitted; hidden)" ]] \
+    && ok M2 "untracked config is hidden" \
+    || bad M2 "an untracked config path was not hidden"
+[[ "$(mask_label_of "$MASKREPO/opencode.json")" == "(uncommitted changes;"* ]] \
+    && ok M3 "tracked-but-modified config is hidden" \
+    || bad M3 "a locally modified config path was not hidden"
+# A committed copy must come from HEAD, never from the dirty working tree.
+[[ "$(cat "$(mask_src_of "$MASKREPO/.omp/config.yml")" 2>/dev/null)" == "committed omp" ]] \
+    && ok M5 "the bound copy is HEAD's content" \
+    || bad M5 "the bound copy did not match HEAD"
+[[ "$(cat "$(mask_src_of "$MASKREPO/opencode.json")" 2>/dev/null)" == "committed opencode" ]] \
+    && ok M6 "a dirty path shows HEAD's content, not the working tree's" \
+    || bad M6 "local drift was visible through the mask"
+# One RO_MASKED element per masked path: a split append corrupts the
+# agent's own limitations file and the read-only bind count.
+[[ "$(printf '%s\n' "${RO_MASKED[@]}" | grep -c '^committed version)')" -eq 0 ]] \
+    && ok M9 "each masked path is exactly one RO_MASKED element" \
+    || bad M9 "a RO_MASKED entry was split across two array elements"
+# A config path must not be a symlink, neither on disk nor as HEAD records
+# it: the bind would follow the link to some other host file.
+LINKREPO="$W/linkrepo"
+mkdir -p "$LINKREPO/.claude"
+git init --quiet "$LINKREPO"
+printf 'target\n' > "$LINKREPO/real.json"
+ln -s ../real.json "$LINKREPO/.claude/settings.json"
+git -C "$LINKREPO" add -A
+git -C "$LINKREPO" commit --quiet -m "linked config"
+link_refused() { ( BINDS=() RO_MASKED=(); mask_project_agent_config "$LINKREPO" ) >/dev/null 2>&1 && return 1; return 0; }
+m13=0
+link_refused || m13=1
+# The working tree replaced the link with a regular file: HEAD still has
+# the link, and the committed copy would be one.
+rm "$LINKREPO/.claude/settings.json"
+printf 'plain\n' > "$LINKREPO/.claude/settings.json"
+link_refused || m13=1
+[[ "$m13" -eq 0 ]] \
+    && ok M13 "a config path that is a symlink, on disk or in HEAD, refuses the run" \
+    || bad M13 "a symlinked config path was bound"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

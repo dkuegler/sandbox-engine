@@ -24,7 +24,7 @@
 # intercept that read; that read is gated where it happens instead -- the
 # file is refused outright unless it is committed and clean
 # (parse_sandbox_yml, functions/sandbox_yml.sh). The row only keeps the
-# session from rewriting either checkout's copy.
+# session from reading an uncommitted copy or rewriting a committed one.
 #
 # Root-only, deliberately: every supported agent (claude, opencode, omp)
 # is always launched with its cwd at the project root (or the worktree
@@ -36,7 +36,7 @@ project:
   # image. The host parses it before any container exists, so its real
   # gate is the tracked-and-clean refusal in parse_sandbox_yml
   # (functions/sandbox_yml.sh); the row below only keeps the session from
-  # rewriting the copy in this checkout.
+  # reading an uncommitted copy or rewriting a committed one.
   - file: sandbox.yml
 
   # Claude Code: project-scope settings, its own MCP files, and the

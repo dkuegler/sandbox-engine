@@ -10,10 +10,9 @@
 # No container mask can intercept a read that happens outside every
 # container, so masking the file read-only inside the sandbox does
 # nothing for this vector -- an agent that writes one configures the NEXT
-# run's own containment. The gate below applies the git-known rule
-# (config_path_state, functions/binds.sh) to the read itself: honoured
-# only when the file is committed and clean, refused otherwise,
-# unconditionally.
+# run's own containment. The gate below moves the same git-known rule the
+# project mask uses onto the read itself: honoured only when the file is
+# committed and clean, refused otherwise, unconditionally.
 
 # sandbox_yml_effective FILE: FILE with whole-line comments and blank
 # lines removed and trailing whitespace trimmed -- the part of the file

@@ -276,6 +276,70 @@ project_config_mask_load() {
     fi
 }
 
+# config_mask_materialize_head DIR REL DEST: materialize REL as it exists
+# in DIR's HEAD tree into DEST, a fresh RUN_DIR path the caller binds
+# read-only over the checkout's path. The copy rather than a self-bind is
+# the point: `-B p:p:ro` mounts the HOST inode, and a read-only bind on a
+# shared filesystem is defeatable by a hardlink alias -- `ln p alias`
+# needs only write access to the alias's parent directory, and a write
+# through the alias mutates the committed file on the host. A copy is a
+# different inode: every alias the agent can create hits the copy, and
+# the checkout stays untouched.
+#
+# A path HEAD records as a symlink is refused, never materialized: the
+# copy would itself be a link, and the bind would follow it
+# (config_mask_symlink_refuse). A tree is materialized file by file out
+# of the HEAD tree -- a link inside it copied as a link, resolved only
+# inside the container -- so what the session sees is the committed
+# content even when the working tree has it modified or deleted, and
+# neither export-ignore nor working-tree state can shorten it.
+config_mask_materialize_head() {
+    local dir="$1" rel="$2" dest="$3" snap meta m p mode fm fpath target
+    ensure_run_dir
+    snap="$RUN_DIR/cfgmask-snap"
+    mkdir -p -- "$snap"
+    if ! git -C "$dir" ls-tree -z HEAD -- "$rel" >"$snap/head-entry" 2>/dev/null; then
+        printf '%s%s\n' "sandbox: cannot read HEAD:$rel in $dir -- refusing to " \
+            "build a partial config copy" >&2
+        exit 1
+    fi
+    meta=""
+    while IFS=$'\t' read -r -d '' m p; do meta="$m"; done <"$snap/head-entry"
+    mode="${meta%% *}"
+    case "$mode" in
+        120000)
+            config_mask_symlink_refuse "HEAD records $dir/$rel as a symlink" \
+                "Commit the file itself in place of the link, then re-run."
+            ;;
+        100644|100755)
+            git -C "$dir" cat-file blob "HEAD:$rel" >"$dest"
+            ;;
+        *)
+            # A tree (mode 40000), or anything unexpected: materialize the
+            # committed file tree file by file.
+            mkdir -p -- "$dest"
+            if ! git -C "$dir" ls-tree -r -z HEAD -- "$rel" >"$snap/head-tree" 2>/dev/null; then
+                printf '%s%s\n' "sandbox: cannot read the HEAD tree under $rel in $dir -- " \
+                    "refusing to build a partial config copy" >&2
+                exit 1
+            fi
+            while IFS=$'\t' read -r -d '' m fpath; do
+                fm="${m%% *}"
+                target="$dest/${fpath#"$rel"/}"
+                mkdir -p -- "${target%/*}"
+                case "$fm" in
+                    120000)
+                        ln -sfn "$(git -C "$dir" cat-file blob "HEAD:$fpath")" "$target"
+                        ;;
+                    *)
+                        git -C "$dir" cat-file blob "HEAD:$fpath" >"$target"
+                        ;;
+                esac
+            done <"$snap/head-tree"
+            ;;
+    esac
+}
+
 # CFG_PATH_STATE: set by config_path_state() below. A global rather than
 # an echoed result on purpose -- see that function's own note.
 declare CFG_PATH_STATE=""
@@ -290,18 +354,19 @@ declare CFG_PATH_STATE=""
 #   uncommitted        not in HEAD at all (untracked, no commit yet, or
 #                      not a git checkout)
 #
-# The host-side sandbox.yml trust gate (parse_sandbox_yml,
-# functions/sandbox_yml.sh) decides from it whether to honour that file
-# at all. Every other "is this committed" question belongs here too, not
-# in a second implementation: two would be two things to keep in
-# agreement, and the one that drifted would fail open.
+# Shared deliberately by the two consumers that need the same answer:
+# mask_project_agent_config() decides what to bind from it, and the
+# host-side sandbox.yml trust gate (parse_sandbox_yml,
+# functions/sandbox_yml.sh) decides whether to honour that file at all.
+# Two implementations of "is this committed" would be two things to keep
+# in agreement, and the one that drifted would fail open.
 #
 # The answer is returned in a GLOBAL, never echoed for the caller to read
 # through "$(...)". A command substitution is a subshell, and the `exit 1`
 # refusals below would die inside it while the caller saw an empty string
-# and carried on -- an untrusted sandbox.yml honoured because the check
-# could not be completed. The refusal has to be able to reach the real
-# shell.
+# and carried on -- an unmasked path, or an untrusted sandbox.yml honoured
+# because the check could not be completed. The refusal has to be able to
+# reach the real shell.
 #
 # Not being a repository, and having no commit yet, are not failures but
 # states this degrades on: nothing is committed anywhere, so every path
@@ -330,7 +395,6 @@ config_path_state() {
         return 0
     fi
     git -C "$dir" diff HEAD --quiet -- "$rel" 2>/dev/null || rc=$?
-    # shellcheck disable=SC2034  # read by require_trusted_sandbox_yml (functions/sandbox_yml.sh), sourced before this file
     case "$rc" in
         0) CFG_PATH_STATE="committed" ;;
         1) CFG_PATH_STATE="uncommitted-dirty" ;;
@@ -342,12 +406,109 @@ config_path_state() {
     esac
 }
 
-# mask_project_agent_config DIR: bind-mask, read-only, every
-# table path (project_config_mask_load) under the checkout DIR -- MCP server
-# command lines, plugin/hook code, permission overrides, and sandbox.yml
-# -- the same class of surface already masked under each agent's global
-# config dir in configure_agent(), but for the project itself, which is
-# otherwise bound plain read-write so the agent can do its actual job.
+# config_mask_symlink_refuse REASON HINT: a known config path is a symlink
+# -- on disk, or as HEAD records it. Refused, not followed: a bind is
+# resolved to wherever a link points, not to the path it names. As a bind
+# source the link sends the mount to some other host file (a relative
+# target resolves against $RUN_DIR, an absolute one exposes whatever host
+# path it names); as a destination it moves the mask off the path the
+# agent CLI reads. Config paths are regular files or directories, and a
+# link inside a masked directory is unaffected: it is copied from HEAD
+# and only resolved inside the container.
+config_mask_symlink_refuse() {
+    printf '%s\n  %s\n  %s\n  %s\n' \
+        "sandbox: refusing to start -- $1." \
+        "Known config paths must be regular files or directories: a bind over a" \
+        "link is resolved to wherever it points, not to the path it names." \
+        "$2" >&2
+    exit 1
+}
+
+# config_mask_one DIR REL KIND: apply the git-known convention (see
+# mask_project_agent_config below) to ONE path, relative to checkout DIR.
+config_mask_one() {
+    local dir="$1" rel="$2" kind="$3" abs src state
+    abs="$dir/$rel"
+    if [[ ! -e "$abs" && ! -L "$abs" ]]; then
+        # Absent on disk: still masked with an empty placeholder, as
+        # before the convention -- bind_ro's own absent-path handling.
+        bind_ro "$abs" "$kind"
+        return 0
+    fi
+    if [[ -L "$abs" ]]; then
+        config_mask_symlink_refuse "$abs is a symlink" \
+            "Replace the link with the file itself (and commit it), then re-run."
+    fi
+    # Committed-tree membership and cleanliness, per path -- the one
+    # predicate, shared with the host-side sandbox.yml trust gate.
+    config_path_state "$dir" "$rel"
+    state="$CFG_PATH_STATE"
+    src="$RUN_DIR/cfgmask/$(printf '%s' "$abs" | sha256sum | cut -c1-16)"
+    case "$state" in
+        committed|uncommitted-dirty)
+            config_mask_materialize_head "$dir" "$rel" "$src"
+            # A path HEAD knows as a file but the working tree now has as
+            # a directory (or the reverse) would have apptainer mount a
+            # file over a directory, which fails at launch as an opaque
+            # mount error rather than as anything a reader could act on.
+            # Name it here instead.
+            if [[ -d "$abs" && ! -L "$abs" && ! -d "$src" ]] \
+               || { [[ ! -d "$abs" || -L "$abs" ]] && [[ -d "$src" ]]; }; then
+                printf '%s\n  %s\n  %s\n' \
+                    "sandbox: $abs is a different kind of path than HEAD has committed there" \
+                    "(one is a directory and the other is not), so it cannot be masked." \
+                    "Reconcile the working tree with HEAD at that path and re-run." >&2
+                exit 1
+            fi
+            ;;
+        uncommitted)
+            # Empty placeholder; the shape follows the path AS IT IS ON
+            # DISK, not as the table guessed, so the mount always matches
+            # the destination that exists.
+            if [[ -d "$abs" && ! -L "$abs" ]]; then
+                mkdir -p -- "$src"
+            else
+                : >"$src"
+            fi
+            ;;
+    esac
+    BINDS+=(-B "$src:$abs:ro")
+    case "$state" in
+        committed)
+            RO_MASKED+=("$abs (committed; read-only copy)")
+            ;;
+        uncommitted)
+            RO_MASKED+=("$abs (uncommitted; hidden)")
+            ;;
+        uncommitted-dirty)
+            # ONE array element. A line continuation between two quoted
+            # strings appends TWO, and the second one becomes a bogus
+            # bullet in the agent's own limitations file and an inflated
+            # read-only-bind count on the startup line.
+            RO_MASKED+=("$abs (uncommitted changes; hidden, session sees the committed version)")
+            ;;
+    esac
+}
+
+# mask_project_agent_config DIR: apply the git-known convention to every
+# table path (project_config_mask_load) under the checkout DIR, which is
+# otherwise bound plain read-write so the agent can do its actual job:
+#
+#     visible to the session  <=>  tracked in DIR's HEAD tree AND
+#                                  identical to it in the working tree
+#
+# - committed & clean -> a fresh per-run COPY of the committed content,
+#   bound read-only over the path. Read-only, as before: an agent write
+#   here would persist uncommitted on the host and run on the human's
+#   next bare-host session.
+# - uncommitted -> hidden. The session is blind to it: an empty
+#   placeholder for untracked paths, the HEAD copy for tracked paths
+#   whose working-tree content has drifted (so the session sees the
+#   branch's config, and the local deltas or local secrets they may hold
+#   are invisible). Over an existing destination this materializes
+#   nothing on the host.
+# - absent on disk -> an empty read-only placeholder (bind_ro), so the
+#   agent cannot create the path.
 #
 # Unconditional, independent of $AGENT: omp's own MCP discovery reads
 # other tools' project config in addition to its own, so a file written
@@ -359,8 +520,10 @@ config_path_state() {
 mask_project_agent_config() {
     local dir="$1" i
     project_config_mask_load
+    ensure_run_dir
+    mkdir -p -- "$RUN_DIR/cfgmask"
     for i in "${!PROJECT_CONFIG_MASK_PATH[@]}"; do
-        bind_ro "$dir/${PROJECT_CONFIG_MASK_PATH[i]}" "${PROJECT_CONFIG_MASK_KIND[i]}"
+        config_mask_one "$dir" "${PROJECT_CONFIG_MASK_PATH[i]}" "${PROJECT_CONFIG_MASK_KIND[i]}"
     done
 }
 
