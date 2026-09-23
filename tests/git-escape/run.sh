@@ -37,7 +37,8 @@ git init --quiet "$FIXTURE"
 # image instead of triggering a fresh build for a default ENV_TAG. It is
 # COMMITTED in the fixture, not just copied in: sandbox.yml configures the
 # run before any container exists, so an uncommitted one is refused
-# outright (functions/sandbox_yml.sh) and the suite would never launch.
+# outright (functions/project-sandbox-config.sh) and the suite would never
+# launch.
 if [[ -f "$REPO_ROOT/sandbox.yml" ]]; then
     cp "$REPO_ROOT/sandbox.yml" "$FIXTURE/sandbox.yml"
     git -C "$FIXTURE" add sandbox.yml

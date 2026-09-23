@@ -21,7 +21,7 @@
 #   log.sh          -v/-vv verbosity helpers, log_warn and the warning gate
 #   apptainer.sh    the sandbox backend: every runtime-specific flag and call
 #   argv.sh         --project-dir/--environment/--bind/agent argv parsing
-#   sandbox_yml.sh  <project-dir>/sandbox.yml parsing
+#   project-sandbox-config.sh  <project-dir>/sandbox.yml parsing and trust gate
 #   environment.sh  base-image resolution, Dockerfile generation, image build
 #   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
 #   git-mask.sh     read-only .git mask
@@ -256,8 +256,8 @@ source "$FUNCTIONS_DIR/log.sh"
 source "$FUNCTIONS_DIR/apptainer.sh"
 # shellcheck source=functions/argv.sh
 source "$FUNCTIONS_DIR/argv.sh"
-# shellcheck source=functions/sandbox_yml.sh
-source "$FUNCTIONS_DIR/sandbox_yml.sh"
+# shellcheck source=functions/project-sandbox-config.sh
+source "$FUNCTIONS_DIR/project-sandbox-config.sh"
 # shellcheck source=functions/environment.sh
 source "$FUNCTIONS_DIR/environment.sh"
 # shellcheck source=functions/binds.sh
@@ -323,7 +323,7 @@ if [[ -f "$SANDBOX_YML" ]]; then
 else
     log_info "sandbox.yml: not found (using defaults)"
 fi
-parse_sandbox_yml
+parse_project_sandbox_config
 resolve_environment
 log_info "environment: mode=$ENV_MODE base_image=$BASE_IMAGE env_tag=$ENV_TAG"
 
@@ -368,7 +368,7 @@ resolve_extra_binds
 
 # sandbox.yml is an ordinary row on the config-mask table
 # (config/mask.yml): the thing that actually protects it is the
-# tracked-and-clean refusal in parse_sandbox_yml() above, which ran
+# tracked-and-clean refusal in parse_project_sandbox_config() above, which ran
 # before this run built anything from it. The mask below only keeps the
 # session from reading an uncommitted copy or rewriting a committed one,
 # exactly like every other known-config path.

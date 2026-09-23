@@ -31,8 +31,9 @@
 # it on the host before any container exists, and no container mask can
 # intercept that read; that read is gated where it happens instead -- the
 # file is refused outright unless it is committed and clean
-# (parse_sandbox_yml, functions/sandbox_yml.sh). The row only keeps the
-# session from reading an uncommitted copy or rewriting a committed one.
+# (parse_project_sandbox_config, functions/project-sandbox-config.sh).
+# The row only keeps the session from reading an uncommitted copy or
+# rewriting a committed one.
 #
 # Root-level, deliberately: every supported agent (claude, opencode, omp)
 # is always launched with its cwd at the project root (or the worktree
@@ -44,9 +45,9 @@
 project:
   # sandbox.yml decides this sandbox's own binds, environment and base
   # image. The host parses it before any container exists, so its real
-  # gate is the tracked-and-clean refusal in parse_sandbox_yml
-  # (functions/sandbox_yml.sh); the row below only keeps the session from
-  # reading an uncommitted copy or rewriting a committed one.
+  # gate is the tracked-and-clean refusal in parse_project_sandbox_config
+  # (functions/project-sandbox-config.sh); the row below only keeps the
+  # session from reading an uncommitted copy or rewriting a committed one.
   - file: sandbox.yml
 
   # Claude Code: project-scope settings, its own MCP files, and the

@@ -2,7 +2,7 @@
 # Execution-environment resolution (image/dockerfile/preset -> BASE_IMAGE/
 # ENV_TAG/ENV_MODE) and Dockerfile generation from the template.
 # Requires SANDBOX_DIR, PROJECT_DIR, AGENT and the ENV_*/CLI_ENV_* vars set
-# by parse_argv/parse_sandbox_yml.
+# by parse_argv/parse_project_sandbox_config.
 
 sanitize_tag() {
     printf '%s' "$1" | tr -c 'A-Za-z0-9_.' '-' | sed -e 's/-\{2,\}/-/g' -e 's/^-//' -e 's/-$//'

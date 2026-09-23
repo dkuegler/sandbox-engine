@@ -46,7 +46,7 @@ reviewed the reference, not the referent.
 
 | class | entries | reader, and what triggers the read | what the read produces | diff = payload |
 | --- | --- | --- | --- | --- |
-| **A — pre-container** | `sandbox.yml` | the sandbox itself: `parse_sandbox_yml` (`functions/sandbox_yml.sh`) runs host-side, before `EXEC_ARGV` starts any container | the launching run's own binds, base image and environment | yes |
+| **A — pre-container** | `sandbox.yml` | the sandbox itself: `parse_project_sandbox_config` (`functions/project-sandbox-config.sh`) runs host-side, before `EXEC_ARGV` starts any container | the launching run's own binds, base image and environment | yes |
 | **B — host execution, no agent in the loop** | `.envrc`, `.vscode/tasks.json`, `.vscode/launch.json`, `.devcontainer/devcontainer.json`, `.pre-commit-config.yaml` | direnv on `cd`; VS Code on folder open (`runOptions.runOn: folderOpen`) and on debug (`preLaunchTask`, `postDebugTask`); `initializeCommand` on the **host** before any container is built; the commit path, for pre-commit | a process, run as the human, unprompted | no |
 | **C — host execution at agent-CLI startup** | `mcp.json`, `.mcp.json`, `.claude/mcp.json`, `.claude/.mcp.json`, `.omp/mcp.json`, `.omp/.mcp.json`, `.cursor/mcp.json`, `.windsurf/mcp_config.json`, `.vscode/mcp.json`, `.codex/config.toml`, `.gemini/settings.json`, `opencode.json`, `opencode.jsonc`, `.claude/settings.json`, `.claude/settings.local.json`, `.omp/config.yml`, `.omp/settings.json`, `.claude/hooks`, `.claude/plugins`, `.opencode/plugin`, `.opencode/plugins`, `.opencode/tool`, `.opencode/tools` | the agent CLI, at startup, before the model is consulted | a process (an MCP server `command`, `hooks`, `apiKeyHelper`, `statusLine`, `lsp.*.command`, `formatter.*.command`) or code loaded in-process (plugins, tools) | no |
 | **D — instruction text** | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.claude/agents`, `.claude/commands`, `.claude/skills`, `.claude/rules`, `.claude/output-styles`, `.opencode/agent`, `.opencode/agents`, `.opencode/command`, `.opencode/commands`, `.opencode/mode`, `.opencode/modes`, `.opencode/skill`, `.opencode/skills`, and the sixteen paths under "Instruction surfaces beyond the root files" below | the agent CLI, into the system prompt: at startup for a path at or above the launch directory, and — under claude — on first read of a file in a subdirectory holding one | text; it takes effect only if the model acts on it | yes |
@@ -226,22 +226,23 @@ A config path must therefore be a regular file or a directory, in the working
 tree and in HEAD. A link *inside* a masked directory is unaffected — it is
 copied from HEAD and only ever resolved inside the container.
 
-**One exception: `sandbox.yml`** (`D` — `require_trusted_sandbox_yml()`). The
-sandbox parses it on the host before every launch, so an agent-authored copy
-would shape the *next run's own containment* and no container mask can
-intercept that read — the read happens outside every container. The gate
-therefore sits on the read itself, in `parse_sandbox_yml()`
-(`functions/sandbox_yml.sh`), one layer earlier than the rest of the convention:
-a `sandbox.yml` that is not tracked in HEAD and identical to it is **refused
-outright**, before a single key is parsed. The refusal names what the
-uncommitted version would change about the run, setting by setting ("mounts the
-host path X into every sandbox READ-WRITE", "changes the sandbox base image to
-the Y preset") rather than dumping the file, and committing it is how you
-accept it. Comment-only and blank-line-only edits are ignored, so re-flowing a
-comment cannot trip the fence. A symlink at that path is refused too: git
-vouches for the link while the parser reads its target, which is a different
-file and may be untracked. On the table itself `sandbox.yml` is an ordinary
-row, masked exactly like every other entry.
+**One exception: `sandbox.yml`** (`D` —
+`require_trusted_project_sandbox_config()`). The sandbox parses it on the host
+before every launch, so an agent-authored copy would shape the *next run's own
+containment* and no container mask can intercept that read — the read happens
+outside every container. The gate therefore sits on the read itself, in
+`parse_project_sandbox_config()` (`functions/project-sandbox-config.sh`), one
+layer earlier than the rest of the convention: a `sandbox.yml` that is not
+tracked in HEAD and identical to it is **refused outright**, before a single key
+is parsed. The refusal names what the uncommitted version would change about
+the run, setting by setting ("mounts the host path X into every sandbox
+READ-WRITE", "changes the sandbox base image to the Y preset") rather than
+dumping the file, and committing it is how you accept it. Comment-only and
+blank-line-only edits are ignored, so re-flowing a comment cannot trip the
+fence. A symlink at that path is refused too: git vouches for the link while
+the parser reads its target, which is a different file and may be untracked.
+On the table itself `sandbox.yml` is an ordinary row, masked exactly like every
+other entry.
 
 ## The mask table
 

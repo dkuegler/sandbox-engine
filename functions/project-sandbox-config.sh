@@ -15,7 +15,7 @@
 # project mask uses onto the read itself: honoured only when the file is
 # committed and clean, refused otherwise, unconditionally.
 
-# sandbox_yml_effective FILE: FILE with whole-line comments and blank
+# project_sandbox_config_effective FILE: FILE with whole-line comments and blank
 # lines removed and trailing whitespace trimmed -- the part of the file
 # that can actually change a run. Both the trust check and the impact
 # report run on this, so re-flowing a comment can never trip the fence.
@@ -26,16 +26,17 @@
 # disagree with the parser or change what a bind entry means. The cost is
 # that editing a trailing comment counts as a change and refuses; that
 # errs toward refusing, which is the safe direction for this file.
-sandbox_yml_effective() {
+project_sandbox_config_effective() {
     sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*#/d' -e '/^$/d' -- "$1"
 }
 
-# sandbox_yml_impact_of CONTEXT LINE: one plain sentence naming what an
-# effective line would do to THIS run. CONTEXT is the top-level key the
-# line sits under ("environment", "binds", or empty). An unrecognized
-# line still produces a sentence rather than being skipped: the point of
-# the report is that nothing in the file changes the run unnoticed.
-sandbox_yml_impact_of() {
+# project_sandbox_config_impact_of CONTEXT LINE: one plain sentence naming
+# what an effective line would do to THIS run. CONTEXT is the top-level
+# key the line sits under ("environment", "binds", or empty). An
+# unrecognized line still produces a sentence rather than being skipped:
+# the point of the report is that nothing in the file changes the run
+# unnoticed.
+project_sandbox_config_impact_of() {
     local ctx="$1" line="$2" key val trimmed rest opts
     trimmed="${line#"${line%%[![:space:]]*}"}"
     case "$ctx" in
@@ -87,16 +88,16 @@ sandbox_yml_impact_of() {
     printf '%s' "changes sandbox configuration: $trimmed"
 }
 
-# sandbox_yml_report_impact HEAD_EFF WORK_EFF: name, in impact terms, every
-# effective line the working copy has that the committed copy does not --
-# and every one it has dropped. Set membership rather than a positional
-# diff: the question is "what would this file do that the committed one
-# does not", and moving a line changes nothing about that.
+# project_sandbox_config_report_impact HEAD_EFF WORK_EFF: name, in impact
+# terms, every effective line the working copy has that the committed copy
+# does not -- and every one it has dropped. Set membership rather than a
+# positional diff: the question is "what would this file do that the
+# committed one does not", and moving a line changes nothing about that.
 #
 # Prints to stdout, for the caller to pass through sanitize_agent_display
 # (functions/binds.sh): every line quoted here is from a file an earlier
 # sandboxed run may have written, on its way to the human's terminal.
-sandbox_yml_report_impact() {
+project_sandbox_config_report_impact() {
     local head_eff="$1" work_eff="$2" line ctx=""
     declare -A committed_lines=() working_lines=()
     while IFS= read -r line; do committed_lines["$line"]=1; done <"$head_eff"
@@ -112,7 +113,7 @@ sandbox_yml_report_impact() {
         # under it are reported individually just below, and listing the
         # header too would read as a change that is not one.
         case "$line" in environment:|binds:) continue ;; esac
-        printf '    - %s\n' "$(sandbox_yml_impact_of "$ctx" "$line")"
+        printf '    - %s\n' "$(project_sandbox_config_impact_of "$ctx" "$line")"
     done <"$work_eff"
     ctx=""
     while IFS= read -r line; do
@@ -124,17 +125,17 @@ sandbox_yml_report_impact() {
         [[ -n "${working_lines["$line"]+x}" ]] && continue
         case "$line" in environment:|binds:) continue ;; esac
         printf '    - drops a committed setting that %s\n' \
-            "$(sandbox_yml_impact_of "$ctx" "$line")"
+            "$(project_sandbox_config_impact_of "$ctx" "$line")"
     done <"$head_eff"
 }
 
-# sandbox_yml_refuse REASON...: the hard error. No prompt and no TTY
+# project_sandbox_config_refuse REASON...: the hard error. No prompt and no TTY
 # branch, unlike the interactive confirmations elsewhere in this repo:
 # those decide whether to widen an already-contained run, while this one
 # decides whether the containment itself was authored by the human. The
 # recovery is a commit, which is also exactly the act that makes the
 # setting permanent and reviewable.
-sandbox_yml_refuse() {
+project_sandbox_config_refuse() {
     local reason="$1"
     shift
     {
@@ -162,9 +163,10 @@ sandbox_yml_refuse() {
     exit 1
 }
 
-# require_trusted_sandbox_yml: the gate itself. Runs before a single key
-# is parsed, so an untrusted file never reaches the parser at all.
-require_trusted_sandbox_yml() {
+# require_trusted_project_sandbox_config: the gate itself. Runs before a
+# single key is parsed, so an untrusted file never reaches the parser at
+# all.
+require_trusted_project_sandbox_config() {
     local rel head_copy head_eff work_eff
 
     # A symlink is refused before anything else, and is not a corner case:
@@ -174,12 +176,12 @@ require_trusted_sandbox_yml() {
     # unreviewed and agent-writable. There is no legitimate reason for
     # this one file to be an indirection.
     if [[ -L "$SANDBOX_YML" ]]; then
-        sandbox_yml_refuse "$SANDBOX_YML is a symlink" \
+        project_sandbox_config_refuse "$SANDBOX_YML is a symlink" \
             "git would vouch for the link; this parser reads its target, which is" \
             "a different file and may not be committed at all."
     fi
     if [[ ! -f "$SANDBOX_YML" ]]; then
-        sandbox_yml_refuse "$SANDBOX_YML is not a regular file" \
+        project_sandbox_config_refuse "$SANDBOX_YML is not a regular file" \
             "only a regular, committed file can configure this sandbox."
     fi
 
@@ -197,13 +199,14 @@ require_trusted_sandbox_yml() {
     : >"$head_copy"
     if [[ "$CFG_PATH_STATE" == "uncommitted-dirty" ]]; then
         if ! git -C "$PROJECT_DIR" cat-file blob "HEAD:$rel" >"$head_copy" 2>/dev/null; then
-            sandbox_yml_refuse "the committed version of $SANDBOX_YML cannot be read" \
+            project_sandbox_config_refuse \
+                "the committed version of $SANDBOX_YML cannot be read" \
                 "its tracked state says it exists in HEAD, so this is a repository" \
                 "problem, not a configuration one."
         fi
     fi
-    sandbox_yml_effective "$head_copy" >"$head_eff"
-    sandbox_yml_effective "$SANDBOX_YML" >"$work_eff"
+    project_sandbox_config_effective "$head_copy" >"$head_eff"
+    project_sandbox_config_effective "$SANDBOX_YML" >"$work_eff"
     # Comments and blank lines are not configuration; a re-flowed comment
     # block must not stop a run.
     if cmp -s "$head_eff" "$work_eff"; then
@@ -226,7 +229,8 @@ require_trusted_sandbox_yml() {
         echo
         echo "  What the uncommitted version would do to this run:"
     } >&2
-    sandbox_yml_report_impact "$head_eff" "$work_eff" | sanitize_agent_display >&2
+    project_sandbox_config_report_impact "$head_eff" "$work_eff" \
+        | sanitize_agent_display >&2
     {
         echo
         echo "  Comment and blank-line changes are ignored by this check, so every"
@@ -243,17 +247,17 @@ require_trusted_sandbox_yml() {
     exit 1
 }
 
-parse_sandbox_yml() {
+parse_project_sandbox_config() {
     ENV_IMAGE=""
     ENV_DOCKERFILE=""
     ENV_PRESET=""
     ENV_PYTHON_VERSION=""
-    # shellcheck disable=SC2034  # YML_PATCHES is read by resolve_patch_dir (functions/agents.sh) after parse_sandbox_yml returns
+    # shellcheck disable=SC2034  # YML_PATCHES is read by resolve_patch_dir (functions/agents.sh) after parse_project_sandbox_config returns
     YML_PATCHES=""
     YML_BINDS=()
 
     [[ -e "$SANDBOX_YML" || -L "$SANDBOX_YML" ]] || return 0
-    require_trusted_sandbox_yml
+    require_trusted_project_sandbox_config
 
     local in_block=0 in_binds=0 line key val
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -272,7 +276,7 @@ parse_sandbox_yml() {
             val="${BASH_REMATCH[1]}"
             val="${val%%#*}"
             val="$(sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//" <<<"$val")"
-            # shellcheck disable=SC2034  # read by resolve_patch_dir (functions/agents.sh) after parse_sandbox_yml returns
+            # shellcheck disable=SC2034  # read by resolve_patch_dir (functions/agents.sh) after parse_project_sandbox_config returns
             YML_PATCHES="$val"
             in_binds=0
             in_block=0
@@ -292,7 +296,7 @@ parse_sandbox_yml() {
                 val="${BASH_REMATCH[2]}"
                 val="${val%%#*}"
                 val="$(sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//" <<<"$val")"
-                # shellcheck disable=SC2034  # ENV_IMAGE/ENV_DOCKERFILE/ENV_PRESET/ENV_PYTHON_VERSION are read by resolve_environment (functions/environment.sh) after parse_sandbox_yml returns
+                # shellcheck disable=SC2034  # ENV_IMAGE/ENV_DOCKERFILE/ENV_PRESET/ENV_PYTHON_VERSION are read by resolve_environment (functions/environment.sh) after parse_project_sandbox_config returns
                 case "$key" in
                     image) ENV_IMAGE="$val" ;;
                     dockerfile) ENV_DOCKERFILE="$val" ;;

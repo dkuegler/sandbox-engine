@@ -417,8 +417,9 @@ declare CFG_PATH_STATE=""
 #
 # Shared deliberately by the two consumers that need the same answer:
 # mask_project_agent_config() decides what to bind from it, and the
-# host-side sandbox.yml trust gate (parse_sandbox_yml,
-# functions/sandbox_yml.sh) decides whether to honour that file at all.
+# host-side sandbox.yml trust gate (parse_project_sandbox_config,
+# functions/project-sandbox-config.sh) decides whether to honour that
+# file at all.
 # Two implementations of "is this committed" would be two things to keep
 # in agreement, and the one that drifted would fail open.
 #
