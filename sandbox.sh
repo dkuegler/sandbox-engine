@@ -34,16 +34,6 @@
 # --project-dir DIR (accepted anywhere in argv, before or after the agent
 # name). sandbox.yml is looked up at the root of that directory.
 #
-# sandbox.yml trust:
-#   sandbox.yml is gated before a single key is read from it, because the
-#   HOST parses it before any container exists and no container mask can
-#   intercept that read. A sandbox.yml that is not tracked in HEAD and
-#   identical to it is refused outright, naming what the uncommitted
-#   version would change about the run; committing it is how you accept
-#   it. Comment and blank-line edits are ignored by that check. A
-#   symlink at that path is refused too: git would vouch for the link
-#   while the parser reads its target.
-#
 # Execution environment (sandbox.yml / --environment):
 #   The Dockerfile's "base" stage image is resolved from an optional
 #   "environment:" section in <project-dir>/sandbox.yml, and/or from
@@ -149,6 +139,46 @@
 #   with `GIT_OPTIONAL_LOCKS=0`; `fetch --no-write-fetch-head` can sync from
 #   upstream; history-rewriting operations (`commit`, `checkout`, `rebase`,
 #   `gc`, ...) fail at lock creation with `Read-only file system`.
+#
+# Project config masking (the git-known convention):
+#   Every project-root path an agent CLI would execute or auto-load on
+#   the human's NEXT interaction with the checkout is on a fixed table
+#   (config/mask.yml), and the session's view of each path is decided by
+#   one rule: visible <=> tracked in the checkout's HEAD tree AND
+#   identical to it in the working tree. Only the user commits, so
+#   committed config is user-authored and safe to show; everything else
+#   is uncommitted state and the session is blind to it.
+#
+#   - committed & clean: a fresh per-run copy of the committed content is
+#     bound READ-ONLY over the path. An agent write here would persist
+#     uncommitted on the host and run outside the sandbox later.
+#   - uncommitted (untracked, or tracked but locally modified): hidden.
+#     The session sees an empty placeholder -- or, for a tracked path
+#     with local drift, the committed copy -- and can neither read the
+#     local content nor write the path.
+#   - absent on disk: not bound at all. There is nothing to hide, and a
+#     bind would make apptainer materialize an empty placeholder in the
+#     checkout. If the agent creates a file at such a path, it does not
+#     load in this session and is invisible to later sandboxed runs; it
+#     reaches the host only through a human act: reported in full when
+#     the run ends (normal mode, and a main checkout mounted read-write
+#     in worktree mode) or shown in the approval gate's review (worktree
+#     mode).
+#   - a symlink, on disk or as HEAD records it: the run is refused. A
+#     bind follows a link to wherever it points, so config paths must be
+#     regular files or directories.
+#
+#   sandbox.yml is gated one layer earlier than the rest, because the
+#   HOST parses it before any container exists and no container mask can
+#   intercept that read. A sandbox.yml that is not tracked in HEAD and
+#   identical to it is refused outright, naming what the uncommitted
+#   version would change about the run; committing it is how you accept
+#   it. Comment and blank-line edits are ignored by that check. A
+#   symlink at that path is refused too: git would vouch for the link
+#   while the parser reads its target.
+#
+#   report_config_masking states this partition at startup; the exit
+#   report and the gate are where agent-created files surface.
 #
 # Warnings (--ignore-warnings):
 #   Every host-side warning is collected as well as printed. If a run

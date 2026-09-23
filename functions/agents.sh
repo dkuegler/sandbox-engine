@@ -212,8 +212,32 @@ generate_limitations_file() {
             echo "- \`${EXTRA_BIND_SRCS[$j]}\` -- $mode."
         done
         for p in ${RO_MASKED[@]+"${RO_MASKED[@]}"}; do
-            echo "- \`$p\` -- read-only."
+            # "PATH (state)" entries carry their state after the code span.
+            if [[ "$p" == *" ("*")" ]]; then
+                p="${p%)}"
+                echo "- \`${p% (*}\` -- ${p##* (}."
+            else
+                echo "- \`$p\` -- read-only."
+            fi
         done
+        echo
+        echo "## Project config is read-only"
+        echo
+        echo "Config paths under the project root (agent settings, MCP servers,"
+        echo "hooks, plugins, sandbox.yml) run or load on the human's next"
+        echo "bare-host session, so this session may not change them. Their state"
+        echo "this run is in the list above."
+        echo
+        echo "- committed: read-only by design (EROFS). Don't delete and recreate"
+        echo "  it, write it elsewhere, or retry. Describe a wanted change in your"
+        echo "  final summary instead."
+        echo "- uncommitted: hidden -- you see an empty file or the committed"
+        echo "  version. A config path that looks missing may be a hidden local"
+        echo "  file; don't reconstruct it. Other uncommitted files (source, data,"
+        echo "  build output) are unaffected."
+        echo "- not present: you may create it. It does not load this session; the"
+        echo "  human sees it, with its content, after the run. Say in your summary"
+        echo "  what you created and why."
         if [[ -n "${WORKTREE_DIR:-}" ]]; then
             echo
             echo "## Worktree mode"
