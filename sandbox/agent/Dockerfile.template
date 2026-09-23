@@ -72,5 +72,16 @@ RUN export PI_INSTALL_DIR="/usr/local/omp/bin" ; \
 
 ENV PATH="/usr/local/omp/bin:${PATH}"
 
+# omp's native addons, extracted once at build time into the image, so a
+# run can use this read-only copy instead of the host's ~/.omp/natives:
+# omp reuses an extracted addon whenever its file size matches, with no
+# hash check, so a copy the sandbox could write would be native code the
+# next host omp loads. `omp config path` is a cheap command that loads --
+# and so extracts -- them; `omp --version` does not.
+RUN HOME=/tmp/omp-natives-home omp config path >/dev/null \
+    && mv /tmp/omp-natives-home/.omp/natives /usr/local/omp/natives \
+    && rm -rf /tmp/omp-natives-home \
+    && test -n "$(find /usr/local/omp/natives -name '*.node' -print -quit)"
+
 ARG AGENT
 FROM $AGENT AS final
