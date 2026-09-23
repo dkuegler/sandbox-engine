@@ -652,7 +652,7 @@ report_config_masking() {
             case "${WORKTREE_PROJECT_MODE:-ro}" in
                 rw)
                     echo "  (the main checkout is mounted read-write this run: files the agent" \
-                        "creates at its unbound [main] paths are NOT reviewed anywhere)"
+                        "creates at its unbound [main] paths are reported after each round)"
                     ;;
                 deny)
                     echo "  (the main checkout is not mounted this run: nothing can be created" \

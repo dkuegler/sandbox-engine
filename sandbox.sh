@@ -445,6 +445,13 @@ while true; do
     log_argv "$SANDBOX_BACKEND argv" "${EXEC_ARGV[@]}"
     CONTAINER_RC=0
     "${EXEC_ARGV[@]}" || CONTAINER_RC=$?
+    # A main checkout mounted read-write (worktree_confirm_readonly_project)
+    # is outside the approval gate, which only reviews the worktree -- so
+    # config the agent created at its unbound paths gets the normal-mode
+    # exit report, each round, whatever the container's status.
+    if [[ "${WORKTREE_PROJECT_MODE:-ro}" == rw ]]; then
+        report_created_config_paths "$PROJECT_DIR" || true
+    fi
     if [[ "$CONTAINER_RC" -ne 0 ]]; then
         # Never reached the gate: left intact for inspection, never
         # auto-committed and never discarded.
