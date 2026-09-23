@@ -183,7 +183,7 @@ fi
 
 # --- A11: worktree metadata reachable only via the parent .git's blanket
 # mount (worktree checkout directory outside every walked root -- exactly
-# what tasks.md T5 plans: worktrees live under $HOME/.agent/worktrees/...,
+# what --worktree mode does: worktrees live under $HOME/.agent/worktrees/...,
 # never under $PROJECT_DIR). mask_git_readonly() only calls
 # sanitize_gitdir_metadata() on a gitdir it finds directly (named
 # literally ".git") or resolves *from* one; a per-worktree metadata

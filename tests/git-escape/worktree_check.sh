@@ -334,6 +334,7 @@ SANDBOX_IMAGE="$W/agent.sif"
 AGENT=omp
 ARGS=()
 COMMIT_MODEL=""
+# shellcheck disable=SC2034  # read by backend_generator_argv (functions/apptainer.sh)
 AGENT_CONFIG_BINDS=(-B "$HOME/.omp")
 mkdir -p "$HOME/.omp/agent" "$HOME/.config/opencode"
 printf 'modelRoles:\n  commit: anthropic/claude-haiku-4-5:low\n' \
@@ -428,6 +429,7 @@ split_argv "$W/appt-argv"
 has_arg "vendor/tiny-1" ${APPT_POST[@]+"${APPT_POST[@]}"} \
     && ok W10h "--commit-model overrides the agent's own role selection" \
     || bad W10h "--commit-model was ignored"
+# shellcheck disable=SC2034  # read by commit_msg_model_args (functions/commit-message.sh)
 COMMIT_MODEL=""
 
 # Only flags that change WHICH configuration resolves may cross over. The
@@ -446,6 +448,7 @@ if has_arg --profile ${APPT_POST[@]+"${APPT_POST[@]}"} \
 else
     bad W10i "flag propagation is wrong (leaked a capability flag, or dropped profile/config)"
 fi
+# shellcheck disable=SC2034  # read by commit_msg_passthrough (functions/commit-message.sh)
 ARGS=()
 
 # Claude Code: --bare is its documented minimal mode but deliberately keeps
@@ -483,6 +486,7 @@ fi
 printenv APPTAINERENV_OPENCODE_CONFIG_CONTENT >/dev/null 2>&1 \
     && bad W10l "APPTAINERENV_OPENCODE_CONFIG_CONTENT leaked; the next agent run would be crippled" \
     || ok W10l "the tool-denying override does not leak into the calling shell"
+# shellcheck disable=SC2034  # read by the commit_msg_* functions (functions/commit-message.sh)
 AGENT=omp
 
 # --- W11: generator failure still reaches the gate -----------------------
