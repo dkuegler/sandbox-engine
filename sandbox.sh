@@ -331,17 +331,12 @@ EXTRA_BIND_RO=()
 RO_MASKED=()
 resolve_extra_binds
 
-# sandbox.yml decides this sandbox's own binds and base image. An agent
-# that can rewrite it chooses what the NEXT run mounts, so it is bound
-# read-only over the read-write project-dir bind.
-bind_ro "$SANDBOX_YML"
-# The worktree holds its own tracked copy of sandbox.yml, and in worktree
-# mode that copy is in the one read-write tree the agent has. Mask it too,
-# for the same reason the main one is masked: sandbox.yml decides what the
-# NEXT run mounts and builds, and a resumed run parses it.
-if [[ -n "${WORKTREE_DIR:-}" ]]; then
-    bind_ro "$WORKTREE_DIR/sandbox.yml"
-fi
+# sandbox.yml is an ordinary row on the config-mask table
+# (config/mask.yml): the thing that actually protects it is the
+# tracked-and-clean refusal in parse_sandbox_yml() above, which ran
+# before this run built anything from it. The mask below keeps the
+# session from rewriting either checkout's copy, exactly like every
+# other known-config path.
 
 # Masks every .git in the project tree read-only in BINDS.
 mask_git_readonly
@@ -350,10 +345,10 @@ mask_git_readonly
 # config (MCP server command lines, plugins, hooks) read-only, on top of
 # the plain read-write project-dir bind -- functions/binds.sh's
 # mask_project_agent_config(). Both the main checkout and the worktree
-# copy are masked, same reasoning as the sandbox.yml masking above: the
-# worktree holds its own tracked copy, and the main checkout's copy is
-# masked here rather than relying solely on its whole-tree read-only bind
-# in worktree mode, since a non-worktree run leaves it read-write.
+# copy are masked: the worktree holds its own tracked copy of every table
+# path, and the main checkout's copy is masked here rather than relying
+# solely on its whole-tree read-only bind in worktree mode, since a
+# non-worktree run leaves it read-write.
 mask_project_agent_config "$PROJECT_DIR"
 if [[ -n "${WORKTREE_DIR:-}" ]]; then
     mask_project_agent_config "$WORKTREE_DIR"

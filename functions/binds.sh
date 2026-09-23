@@ -204,6 +204,78 @@ bind_ro() {
     RO_MASKED+=("$p")
 }
 
+# PROJECT_CONFIG_MASK_FILE: the table of known executable-config surfaces
+# (its own header explains the format and the perimeter it draws). Located
+# relative to this file, never through the environment or the project's
+# working directory: the table decides what the sandbox masks, so where
+# it is read from is not something a caller gets to choose.
+PROJECT_CONFIG_MASK_FILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/config/mask.yml"
+
+# PROJECT_CONFIG_MASK_KIND / PROJECT_CONFIG_MASK_PATH: the "project:"
+# entries, index-aligned, filled once by project_config_mask_load().
+PROJECT_CONFIG_MASK_KIND=()
+PROJECT_CONFIG_MASK_PATH=()
+
+# project_config_mask_refuse DETAIL: the table cannot be trusted as a
+# perimeter, so the run does not start. A mask that silently lost rows to
+# a typo would look exactly like a mask that works.
+project_config_mask_refuse() {
+    printf '%s\n  %s\n' "sandbox: refusing to start -- the config mask table is unusable:" \
+        "$1" >&2
+    exit 1
+}
+
+# project_config_mask_load: read the "project:" list of
+# PROJECT_CONFIG_MASK_FILE into the two arrays above, once per run.
+#
+# The file is YAML, but only the strict subset its header documents is
+# accepted, parsed line by line without a YAML library (none can be
+# assumed on the host). Every line is a comment, blank, the "project:"
+# key, or an entry "  - file: PATH" / "  - dir: PATH" with PATH made only
+# of [A-Za-z0-9._/-] -- a plain YAML string that no quoting, anchor, tag
+# or flow syntax can reinterpret. Anything else refuses, as does a
+# missing, unreadable or empty table, and a PATH that is absolute or has
+# an empty, "." or ".." component: each of those would bind something
+# other than the checkout path the row names. Callers iterate the arrays
+# rather than a "< <(...)" stream, so a refusal here always reaches the
+# real shell.
+project_config_mask_load() {
+    local line n=0 kind rel in_project=0
+    [[ ${#PROJECT_CONFIG_MASK_PATH[@]} -gt 0 ]] && return 0
+    if [[ ! -f "$PROJECT_CONFIG_MASK_FILE" || ! -r "$PROJECT_CONFIG_MASK_FILE" ]]; then
+        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE is missing or unreadable"
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1))
+        [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]] && continue
+        if [[ "$line" == "project:" ]]; then
+            # A second "project:" key is a duplicate mapping key: YAML
+            # parsers disagree on which one wins, so there is no single
+            # table to honour.
+            if [[ "$in_project" -eq 1 ]]; then
+                project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: \"project:\" appears more than once"
+            fi
+            in_project=1
+            continue
+        fi
+        if [[ "$in_project" -ne 1 || ! "$line" =~ ^\ \ -\ (file|dir):\ ([A-Za-z0-9._/-]+)$ ]]; then
+            project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: not a \"  - file|dir: PATH\" entry under \"project:\""
+        fi
+        kind="${BASH_REMATCH[1]}"
+        rel="${BASH_REMATCH[2]}"
+        case "/$rel/" in
+            *//* | */./* | */../*)
+                project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: $rel is not a plain checkout-relative path"
+                ;;
+        esac
+        PROJECT_CONFIG_MASK_KIND+=("$kind")
+        PROJECT_CONFIG_MASK_PATH+=("$rel")
+    done <"$PROJECT_CONFIG_MASK_FILE"
+    if [[ ${#PROJECT_CONFIG_MASK_PATH[@]} -eq 0 ]]; then
+        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE has no entries"
+    fi
+}
+
 # CFG_PATH_STATE: set by config_path_state() below. A global rather than
 # an echoed result on purpose -- see that function's own note.
 declare CFG_PATH_STATE=""
@@ -270,76 +342,26 @@ config_path_state() {
     esac
 }
 
-# mask_project_agent_config DIR: bind-mask, read-only, every project-root
-# file/directory a coding-agent CLI treats as executable configuration --
-# MCP server command lines, plugin/hook code, permission overrides -- the
-# same class of surface already masked under each agent's global config
-# dir in configure_agent() below, but for the project itself, which is
+# mask_project_agent_config DIR: bind-mask, read-only, every
+# table path (project_config_mask_load) under the checkout DIR -- MCP server
+# command lines, plugin/hook code, permission overrides, and sandbox.yml
+# -- the same class of surface already masked under each agent's global
+# config dir in configure_agent(), but for the project itself, which is
 # otherwise bound plain read-write so the agent can do its actual job.
 #
-# DIR-root only, deliberately: every one of these agents (claude, opencode,
-# omp) is always launched with its cwd at the project root (or the
-# worktree root, which is what DIR is when --worktree is active) --
-# settings.md's own doc for omp states discovery "does not walk ancestor
-# directories looking for the nearest .omp/", and neither of the other two
-# looks above its cwd either. Walking the rest of the tree for nested
-# copies is not this function's job: unlike .git (mask_git_readonly()),
-# these files only take effect at the fixed root the agent's cwd already
-# sits at, so there is nothing below the surface a deeper walk would find
-# that the agent would ever load as its own config.
-#
-# Unconditional, independent of $AGENT: omp's own MCP discovery
-# (docs/mcp-config.md) reads a checkout's .claude/mcp.json,
-# .codex/config.toml, .gemini/settings.json, project-root opencode.json,
-# .cursor/mcp.json, .windsurf/mcp_config.json, and .vscode/mcp.json in
-# addition to its own -- so a file written by *any* agent this run, or
-# left over from a prior run, is a live MCP-server-launch vector for omp
-# specifically, and a hook/plugin-execution vector for its native tool on
-# the human's next bare-host run of whichever CLI that is. Masking every
-# one of these regardless of which agent this run is using is what
-# actually closes that, rather than only closing it for whichever CLI
-# happens to be running today.
+# Unconditional, independent of $AGENT: omp's own MCP discovery reads
+# other tools' project config in addition to its own, so a file written
+# by *any* agent this run, or left over from a prior run, is a live
+# MCP-server-launch vector for omp specifically, and a hook/plugin-
+# execution vector for its native tool on the human's next bare-host run
+# of whichever CLI that is. Masking every table path regardless of which
+# agent this run is using is what actually closes that.
 mask_project_agent_config() {
-    local dir="$1" p
-    # Claude Code: project-scope settings, its own MCP file, and the
-    # subagent/command/skill content directories mirrored from its global
-    # equivalents above.
-    for p in .claude/settings.json .claude/settings.local.json \
-             .claude/mcp.json .claude/.mcp.json; do
-        bind_ro "$dir/$p"
+    local dir="$1" i
+    project_config_mask_load
+    for i in "${!PROJECT_CONFIG_MASK_PATH[@]}"; do
+        bind_ro "$dir/${PROJECT_CONFIG_MASK_PATH[i]}" "${PROJECT_CONFIG_MASK_KIND[i]}"
     done
-    for p in .claude/hooks .claude/plugins .claude/agents .claude/commands \
-             .claude/skills .claude/rules .claude/output-styles; do
-        bind_ro "$dir/$p" dir
-    done
-    # opencode: project-root config file (both spellings) and its own
-    # content directories (both current-plural and back-compat-singular
-    # names, same reasoning as the global opencode mask above).
-    bind_ro "$dir/opencode.json"
-    bind_ro "$dir/opencode.jsonc"
-    for p in .opencode/plugin .opencode/plugins .opencode/agent .opencode/agents \
-             .opencode/command .opencode/commands .opencode/mode .opencode/modes \
-             .opencode/tool .opencode/tools .opencode/skill .opencode/skills \
-             .opencode/theme .opencode/themes; do
-        bind_ro "$dir/$p" dir
-    done
-    # omp: project-local settings/MCP files (docs/settings.md, "Project"
-    # row; docs/mcp-config.md, "Project: .omp/mcp.json").
-    for p in .omp/config.yml .omp/settings.json .omp/mcp.json .omp/.mcp.json; do
-        bind_ro "$dir/$p"
-    done
-    # Root fallback MCP files every one of the three agents' discovery
-    # chains can read (docs/mcp-config.md's "root mcp.json / .mcp.json"
-    # fallback; Claude Code's own top-level .mcp.json).
-    bind_ro "$dir/mcp.json"
-    bind_ro "$dir/.mcp.json"
-    # Other tools' project config omp's cross-tool MCP discovery reads
-    # even when none of the three supported agents is that tool.
-    bind_ro "$dir/.codex/config.toml"
-    bind_ro "$dir/.gemini/settings.json"
-    bind_ro "$dir/.cursor/mcp.json"
-    bind_ro "$dir/.windsurf/mcp_config.json"
-    bind_ro "$dir/.vscode/mcp.json"
 }
 
 # log_resolved_binds: one summary line per run naming every bind actually

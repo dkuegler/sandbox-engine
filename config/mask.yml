@@ -1,0 +1,93 @@
+# Config mask: the known executable-config surfaces the sandbox masks
+# (read by project_config_mask_load, functions/binds.sh).
+#
+# "project:" is the single table of those surfaces inside a checkout,
+# relative to the checkout root the mask is resolved against. Each entry
+# is "- file: PATH" or "- dir: PATH"; the key is the shape used when a
+# path has to be hidden with an empty placeholder. PATH is relative to
+# the checkout root and made only of A-Z a-z 0-9 . _ / - (no leading "/",
+# no "." or ".." component), so it is always a plain YAML string.
+#
+# This is a strict subset of YAML, parsed without a YAML library: comment
+# lines, blank lines, the "project:" key and entries exactly as above.
+# Anything else -- a different indent, quoting, a trailing comment, an
+# unknown key -- refuses the run rather than being skipped, because a row
+# that silently dropped out would look exactly like a mask that works.
+#
+# The table IS the perimeter of the whole masking convention -- nothing
+# discovers configs -- so every new agent or tool surface lands here by
+# hand and the set is audited per agent onboarding. Comment lines carry
+# the vector each group closes.
+#
+# sandbox.yml is an ordinary row on this table. The SANDBOX itself parses
+# it on the host before any container exists, and no container mask can
+# intercept that read; that read is gated where it happens instead -- the
+# file is refused outright unless it is committed and clean
+# (parse_sandbox_yml, functions/sandbox_yml.sh). The row only keeps the
+# session from rewriting either checkout's copy.
+#
+# Root-only, deliberately: every supported agent (claude, opencode, omp)
+# is always launched with its cwd at the project root (or the worktree
+# root), and none of them walks above its cwd for config, so nothing
+# deeper is ever loaded as its own config.
+
+project:
+  # sandbox.yml decides this sandbox's own binds, environment and base
+  # image. The host parses it before any container exists, so its real
+  # gate is the tracked-and-clean refusal in parse_sandbox_yml
+  # (functions/sandbox_yml.sh); the row below only keeps the session from
+  # rewriting the copy in this checkout.
+  - file: sandbox.yml
+
+  # Claude Code: project-scope settings, its own MCP files, and the
+  # subagent/command/skill content directories mirrored from its global
+  # equivalents.
+  - file: .claude/settings.json
+  - file: .claude/settings.local.json
+  - file: .claude/mcp.json
+  - file: .claude/.mcp.json
+  - dir: .claude/hooks
+  - dir: .claude/plugins
+  - dir: .claude/agents
+  - dir: .claude/commands
+  - dir: .claude/skills
+  - dir: .claude/rules
+  - dir: .claude/output-styles
+
+  # opencode: project-root config (both spellings) and its own content
+  # directories, current-plural and back-compat-singular.
+  - file: opencode.json
+  - file: opencode.jsonc
+  - dir: .opencode/plugin
+  - dir: .opencode/plugins
+  - dir: .opencode/agent
+  - dir: .opencode/agents
+  - dir: .opencode/command
+  - dir: .opencode/commands
+  - dir: .opencode/mode
+  - dir: .opencode/modes
+  - dir: .opencode/tool
+  - dir: .opencode/tools
+  - dir: .opencode/skill
+  - dir: .opencode/skills
+  - dir: .opencode/theme
+  - dir: .opencode/themes
+
+  # omp: project-local settings/MCP files (docs/settings.md,
+  # docs/mcp-config.md).
+  - file: .omp/config.yml
+  - file: .omp/settings.json
+  - file: .omp/mcp.json
+  - file: .omp/.mcp.json
+
+  # Root fallback MCP files every discovery chain can read.
+  - file: mcp.json
+  - file: .mcp.json
+
+  # Other tools' project config omp's cross-tool MCP discovery reads
+  # regardless of which agent this run uses.
+  - file: .codex/config.toml
+  - file: .gemini/settings.json
+  - file: .cursor/mcp.json
+  - file: .windsurf/mcp_config.json
+  - file: .vscode/mcp.json
