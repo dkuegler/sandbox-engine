@@ -569,6 +569,14 @@ config_mask_one() {
 # execution vector for its native tool on the human's next bare-host run
 # of whichever CLI that is. Masking every table path regardless of which
 # agent this run is using is what actually closes that.
+#
+# The report accumulators are NOT reset here. Worktree mode calls this
+# once for the main checkout and once for the worktree, and resetting
+# would silently drop the main checkout's partition from the startup
+# report -- exactly the checkout where an uncommitted config plant is
+# most consequential, since that is the one the human keeps using. Both
+# calls' rows survive, and report_config_masking() labels each row with
+# the checkout it came from.
 mask_project_agent_config() {
     local dir="$1" i
     project_config_mask_load
@@ -577,6 +585,89 @@ mask_project_agent_config() {
     for i in "${!PROJECT_CONFIG_MASK_PATH[@]}"; do
         config_mask_one "$dir" "${PROJECT_CONFIG_MASK_PATH[i]}"
     done
+}
+
+# report_config_masking: the startup confirmation -- informational only,
+# no prompt, nothing decided. It states the partition the session runs
+# under in the human's own words, and it doubles as the plant tripwire:
+# a config file that appeared in a checkout uninvited (a plant left by a
+# crashed run) is uncommitted, so it shows up in the hidden section by
+# name, every run, until the human acts on it. Paths are printed %q-quoted,
+# like every other path the agent may have chosen the name of.
+report_config_masking() {
+    local state label row abs owner tag multi=0 first=""
+    # Worktree mode masks two checkouts, and "which checkout is this
+    # uncommitted file in" is the point of the line, so each row carries
+    # its own tag once more than one checkout contributed rows.
+    for row in "${!CFG_MASK_OWNER[@]}"; do
+        owner="${CFG_MASK_OWNER[row]}"
+        if [[ -z "$first" ]]; then
+            first="$owner"
+        elif [[ "$owner" != "$first" ]]; then
+            multi=1
+        fi
+    done
+    {
+        echo
+        echo "sandbox: agent-config masking (the session sees a known config" \
+            "path's committed content only):"
+        for state in committed hidden unbound; do
+            case "$state" in
+                committed) label="read-only, committed (the human authored it at some commit):" ;;
+                hidden)
+                    label="hidden, not committed (the session sees nothing at these paths):"
+                    ;;
+                unbound)
+                    label="not present at launch, not bound (the agent may create files"
+                    label+=" there; anything it creates is surfaced when the run ends):"
+                    ;;
+            esac
+            local -a lines=()
+            for row in "${!CFG_MASK_STATE[@]}"; do
+                if [[ "${CFG_MASK_STATE[row]}" == "$state" ]]; then
+                    abs="$(printf '%q' "${CFG_MASK_PATH[row]}")"
+                    if [[ "$multi" -eq 1 ]]; then
+                        owner="${CFG_MASK_OWNER[row]}"
+                        if [[ -n "${WORKTREE_DIR:-}" && "$owner" == "$WORKTREE_DIR" ]]; then
+                            tag="[worktree]  "
+                        else
+                            tag="[main]      "
+                        fi
+                        lines+=("$tag$abs")
+                    else
+                        lines+=("$abs")
+                    fi
+                fi
+            done
+            if [[ ${#lines[@]} -gt 0 ]]; then
+                echo "  $label"
+                printf '    %s\n' "${lines[@]}"
+            fi
+        done
+        if [[ -n "${WORKTREE_DIR:-}" ]]; then
+            echo "  (worktree mode: files the agent created at the unbound [worktree]" \
+                "paths appear in the approval gate's review)"
+            # The unbound heading says the agent MAY create files there;
+            # for the main checkout that depends on how it is mounted.
+            case "${WORKTREE_PROJECT_MODE:-ro}" in
+                rw)
+                    echo "  (the main checkout is mounted read-write this run: files the agent" \
+                        "creates at its unbound [main] paths are NOT reviewed anywhere)"
+                    ;;
+                deny)
+                    echo "  (the main checkout is not mounted this run: nothing can be created" \
+                        "at its [main] paths)"
+                    ;;
+                *)
+                    echo "  (the main checkout is read-only this run: nothing can be created" \
+                        "at its [main] paths)"
+                    ;;
+            esac
+        else
+            echo "  (normal mode: files the agent created at the unbound paths are" \
+                "reported in full when the run ends)"
+        fi
+    } >&2
 }
 
 # report_created_config_paths DIR: normal mode has no approval gate, so

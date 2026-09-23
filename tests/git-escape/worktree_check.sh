@@ -585,7 +585,7 @@ git -C "$MASKREPO" commit --quiet -m "mask fixture"
 printf 'committed opencode\nLOCAL DRIFT\n' > "$MASKREPO/opencode.json"
 printf 'untracked plant\n' > "$MASKREPO/mcp.json"
 
-BINDS=() RO_MASKED=() CFG_MASK_STATE=() CFG_MASK_PATH=()
+BINDS=() RO_MASKED=() CFG_MASK_STATE=() CFG_MASK_PATH=() CFG_MASK_OWNER=()
 mask_project_agent_config "$MASKREPO"
 
 mask_state_of() {
@@ -631,6 +631,18 @@ mask_src_of() {
 [[ "$(printf '%s\n' "${RO_MASKED[@]}" | grep -c '^committed version)')" -eq 0 ]] \
     && ok M9 "each masked path is exactly one RO_MASKED element" \
     || bad M9 "a RO_MASKED entry was split across two array elements"
+# Worktree mode masks two checkouts; both must survive in the report.
+MASKWT="$W/maskwt"
+cp -a "$MASKREPO" "$MASKWT"
+mask_project_agent_config "$MASKWT"
+main_rows=0 wt_rows=0
+for _i in "${!CFG_MASK_OWNER[@]}"; do
+    [[ "${CFG_MASK_OWNER[_i]}" == "$MASKREPO" ]] && main_rows=$((main_rows+1))
+    [[ "${CFG_MASK_OWNER[_i]}" == "$MASKWT" ]] && wt_rows=$((wt_rows+1))
+done
+[[ "$main_rows" -gt 0 && "$wt_rows" -gt 0 ]] \
+    && ok M10 "masking a second checkout keeps the first one's report rows" \
+    || bad M10 "the second mask pass discarded the first checkout's partition"
 # A config path must not be a symlink, neither on disk nor as HEAD records
 # it: the bind would follow the link to some other host file.
 LINKREPO="$W/linkrepo"

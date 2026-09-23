@@ -353,6 +353,11 @@ mask_project_agent_config "$PROJECT_DIR"
 if [[ -n "${WORKTREE_DIR:-}" ]]; then
     mask_project_agent_config "$WORKTREE_DIR"
 fi
+# The startup confirmation: states the partition each session runs under
+# (informational, no prompt) and names every uncommitted config path, so
+# a plant left by a crashed run is visible by name on every run until
+# the human acts on it.
+report_config_masking
 
 configure_agent
 # The config-only tail of BINDS (see AGENT_CONFIG_BIND_START,
