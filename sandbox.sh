@@ -141,13 +141,14 @@
 #   `gc`, ...) fail at lock creation with `Read-only file system`.
 #
 # Project config masking (the git-known convention):
-#   Every project-root path an agent CLI would execute or auto-load on
-#   the human's NEXT interaction with the checkout is on a fixed table
-#   (config/mask.yml), and the session's view of each path is decided by
-#   one rule: visible <=> tracked in the checkout's HEAD tree AND
-#   identical to it in the working tree. Only the user commits, so
-#   committed config is user-authored and safe to show; everything else
-#   is uncommitted state and the session is blind to it.
+#   Every project-root path an agent CLI, an editor, direnv or a hook
+#   framework would execute or auto-load on the human's NEXT interaction
+#   with the checkout is on a fixed table (config/mask.yml), and the
+#   session's view of each path is decided by one rule: visible <=>
+#   tracked in the checkout's HEAD tree AND identical to it in the
+#   working tree. Only the user commits, so committed config is
+#   user-authored and safe to show; everything else is uncommitted state
+#   and the session is blind to it.
 #
 #   - committed & clean: a fresh per-run copy of the committed content is
 #     bound READ-ONLY over the path. An agent write here would persist

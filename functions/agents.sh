@@ -224,9 +224,10 @@ generate_limitations_file() {
         echo "## Project config is read-only"
         echo
         echo "Config paths under the project root (agent settings, MCP servers,"
-        echo "hooks, plugins, sandbox.yml) run or load on the human's next"
-        echo "bare-host session, so this session may not change them. Their state"
-        echo "this run is in the list above."
+        echo "hooks, plugins, editor tasks, .envrc, pre-commit config,"
+        echo "sandbox.yml) run or load on the human's next bare-host"
+        echo "interaction, so this session may not change them. Their state this"
+        echo "run is in the list above."
         echo
         echo "- committed: read-only by design (EROFS). Don't delete and recreate"
         echo "  it, write it elsewhere, or retry. Describe a wanted change in your"

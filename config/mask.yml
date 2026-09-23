@@ -1,5 +1,7 @@
-# Config mask: the known executable-config surfaces the sandbox masks
-# (read by project_config_mask_load, functions/binds.sh).
+# Config mask: the known executable-config surfaces the sandbox masks --
+# what an agent CLI, an editor, direnv or a hook framework executes or
+# auto-loads from a checkout (read by project_config_mask_load,
+# functions/binds.sh).
 #
 # "project:" is the single table of those surfaces inside a checkout,
 # relative to the checkout root the mask is resolved against. Each entry
@@ -91,3 +93,20 @@ project:
   - file: .cursor/mcp.json
   - file: .windsurf/mcp_config.json
   - file: .vscode/mcp.json
+
+  # Editor task/debug config VS Code runs without being asked:
+  # tasks.json runOptions.runOn=folderOpen on folder open,
+  # launch.json preLaunchTask/postDebugTask on every debug session.
+  - file: .vscode/tasks.json
+  - file: .vscode/launch.json
+
+  # devcontainer.json initializeCommand runs on the HOST before any
+  # container is built.
+  - file: .devcontainer/devcontainer.json
+
+  # direnv executes .envrc, as the human, on cd.
+  - file: .envrc
+
+  # .pre-commit-config.yaml names programs the commit path fetches and
+  # runs.
+  - file: .pre-commit-config.yaml

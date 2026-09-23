@@ -1,10 +1,11 @@
-# Project config masking: what the session sees at each config path
+# Project config masking: what reads each path, and what the session sees
 
 Last verified: 2026-09-23.
 
-Subject: the paths in a checkout that an agent CLI reads as configuration; the
-rule that decides what a sandboxed session sees at each of them
-(`mask_project_agent_config()`, `functions/binds.sh`, over the table in
+Subject: every path a supported agent CLI — or the host tooling that shares the
+checkout with it — reads as configuration; the classification those paths are
+graded against; the rule that decides what a sandboxed session sees at each of
+them (`mask_project_agent_config()`, `functions/binds.sh`, over the table in
 `config/mask.yml`); the host-side gate on `sandbox.yml`; and where a config file
 the agent creates surfaces. `M` = measured, output quoted. `D` = derived from
 source or documentation, not exercised.
@@ -14,12 +15,56 @@ source or documentation, not exercised.
 **Some files in a checkout are not data — they are code that the human's own
 machine runs, unprompted, outside any container, or instructions the next
 session loads before its first prompt.** The sandbox contains what the agent
-does *during* the run. It does not contain what the human's agent CLI does with
-the checkout *after* the run, and every one of those reads configuration out of
-the project without asking.
+does *during* the run. It does not contain what the human's editor, shell or
+agent CLI does with the checkout *after* the run, and every one of those reads
+configuration out of the project without asking.
 
 An agent that can write those files does not need to escape the sandbox. It only
 has to wait.
+
+## Two axes: who reads it, and whether the diff is the payload
+
+**Where the read happens.** A read performed outside the container cannot be
+intercepted by any bind, in either orientation. Four readers exist, in
+decreasing order of what a mask can do about them:
+
+| reader | when | a container mask can intercept it |
+| --- | --- | --- |
+| the sandbox itself | host-side, before any container exists | never |
+| non-agent host tooling (editor, direnv, git) | whenever the human touches the checkout | never |
+| the agent CLI, before the model runs | every CLI startup, host or container | only for the container's own run |
+| the agent CLI, into the model's context | every CLI startup, host or container | only for the container's own run |
+
+**Whether the diff is the payload.** For some config the file's content is
+everything the file does: reading the diff is reading the whole behaviour. For
+the rest the file is a *pointer* — it names a command, a script path, a
+repository and revision, or a URL — and the thing named is not in the diff, and
+is generally not on the mask list at all. A human reviewing such a diff has
+reviewed the reference, not the referent.
+
+## The four classes
+
+| class | entries | reader, and what triggers the read | what the read produces | diff = payload |
+| --- | --- | --- | --- | --- |
+| **A — pre-container** | `sandbox.yml` | the sandbox itself: `parse_sandbox_yml` (`functions/sandbox_yml.sh`) runs host-side, before `EXEC_ARGV` starts any container | the launching run's own binds, base image and environment | yes |
+| **B — host execution, no agent in the loop** | `.envrc`, `.vscode/tasks.json`, `.vscode/launch.json`, `.devcontainer/devcontainer.json`, `.pre-commit-config.yaml` | direnv on `cd`; VS Code on folder open (`runOptions.runOn: folderOpen`) and on debug (`preLaunchTask`, `postDebugTask`); `initializeCommand` on the **host** before any container is built; the commit path, for pre-commit | a process, run as the human, unprompted | no |
+| **C — host execution at agent-CLI startup** | `mcp.json`, `.mcp.json`, `.claude/mcp.json`, `.claude/.mcp.json`, `.omp/mcp.json`, `.omp/.mcp.json`, `.cursor/mcp.json`, `.windsurf/mcp_config.json`, `.vscode/mcp.json`, `.codex/config.toml`, `.gemini/settings.json`, `opencode.json`, `opencode.jsonc`, `.claude/settings.json`, `.claude/settings.local.json`, `.omp/config.yml`, `.omp/settings.json`, `.claude/hooks`, `.claude/plugins`, `.opencode/plugin`, `.opencode/plugins`, `.opencode/tool`, `.opencode/tools` | the agent CLI, at startup, before the model is consulted | a process (an MCP server `command`, `hooks`, `apiKeyHelper`, `statusLine`, `lsp.*.command`, `formatter.*.command`) or code loaded in-process (plugins, tools) | no |
+| **D — instruction text** | `.claude/agents`, `.claude/commands`, `.claude/skills`, `.claude/rules`, `.claude/output-styles`, `.opencode/agent`, `.opencode/agents`, `.opencode/command`, `.opencode/commands`, `.opencode/mode`, `.opencode/modes`, `.opencode/skill`, `.opencode/skills` | the agent CLI, into the system prompt, at startup | text; it takes effect only if the model acts on it | yes |
+
+`D` — every trigger above is from the respective tool's own documentation. None
+of them prompts.
+
+The four classes partition the `config/mask.yml` table exactly, with one
+residual: `.opencode/theme` and `.opencode/themes` are masked for uniformity
+with the rest of `.opencode/`, and are neither executed nor read into the
+context. `M` — the table holds 44 entries; see Reproduction. `D` — the
+assignment of each entry to a class: 1 class A, 5 class B, 23 class C and 13
+class D, plus the 2 residual.
+
+The ordering is not a severity ranking of individual files. It is the order in
+which the containment loses leverage: class A is decided before any container
+exists, class B never involves the sandbox at all, and classes C and D are the
+only two a mask on this run's own binds can affect.
 
 ## The convention: the session sees what the branch commits
 
@@ -174,7 +219,7 @@ project_config_mask_load
 echo "${#PROJECT_CONFIG_MASK_PATH[@]}"'
 ```
 
-`M` — prints `39`.
+`M` — prints `44`.
 
 The masked set itself is produced by calling the real function; nothing about it
 needs a container. `/proj` below is a checkout with one path in each state: a

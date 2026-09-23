@@ -10,7 +10,7 @@ established, and how to re-establish it.
 | [`git-breakout.md`](git-breakout.md) | the git boundary: what the read-only `.git` mask enforces, measured behaviour of git against it, what is not contained, reproduction |
 | [`commit-message-generation.md`](commit-message-generation.md) | the `--worktree` message fallback: why it runs inside the sandbox, which model each agent uses, and which of the run's own flags propagate |
 | [`parallelization.md`](parallelization.md) | how claude-code, omp and opencode handle concurrent sessions, and why opencode's server mode does not survive `--containall` unmodified |
-| [`project-config-masking.md`](project-config-masking.md) | the config paths a supported agent CLI reads from a checkout, and how each path's session view is decided by git state (committed is a read-only copy, uncommitted is hidden, absent is unbound, a symlink refuses the run); the host-side gate on `sandbox.yml`; the `config/mask.yml` table; and where agent-created config files surface (the exit report, the startup block) |
+| [`project-config-masking.md`](project-config-masking.md) | every path a supported agent CLI or the host tooling beside it reads as configuration from a checkout, classified by who reads it and when; how each path's session view is decided by git state (committed is a read-only copy, uncommitted is hidden, absent is unbound, a symlink refuses the run); the host-side gate on `sandbox.yml`; the `config/mask.yml` table; and where agent-created config files surface (the exit report, the startup block) |
 | [`worktree-mode.md`](worktree-mode.md) | `--worktree`: what a writable git worktree shares with the main repository, which paths are masked, and where the commit happens |
 
 ## Convention
