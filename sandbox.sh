@@ -2,7 +2,7 @@
 # --- START OF HELPTEXT ---
 #
 # Unified sandbox entrypoint. Usage:
-#   ./sandbox.sh [--project-dir DIR] [--worktree BRANCH] [--commit-model MODEL] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [-v|--verbose|-vv] [--rebuild] [--no-update-check] [-h|--help] <claude|opencode|omp> [agent-args...]
+#   ./sandbox.sh [--project-dir DIR] [--worktree BRANCH] [--commit-model MODEL] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [--ignore-warnings] [-v|--verbose|-vv] [--rebuild] [--no-update-check] [-h|--help] <claude|opencode|omp> [agent-args...]
 #
 # -h/--help before the agent name prints this header (the comment block
 # you're reading now) and exits; the same flag after the agent name is
@@ -18,7 +18,7 @@
 # --rebuild to force rebuilding the SIF even if it already exists.
 #
 # Implementation is split across functions/*.sh (sourced below):
-#   log.sh          -v/-vv verbosity helpers (log_info/log_debug/log_argv)
+#   log.sh          -v/-vv verbosity helpers, log_warn and the warning gate
 #   apptainer.sh    the sandbox backend: every runtime-specific flag and call
 #   argv.sh         --project-dir/--environment/--bind/agent argv parsing
 #   sandbox_yml.sh  <project-dir>/sandbox.yml parsing
@@ -137,6 +137,16 @@
 #   with `GIT_OPTIONAL_LOCKS=0`; `fetch --no-write-fetch-head` can sync from
 #   upstream; history-rewriting operations (`commit`, `checkout`, `rebase`,
 #   `gc`, ...) fail at lock creation with `Read-only file system`.
+#
+# Warnings (--ignore-warnings):
+#   Every host-side warning is collected as well as printed. If a run
+#   produced any, the agent does not start until a human has seen them:
+#   they are printed again, together, and the run waits for Enter on
+#   /dev/tty -- a full-screen agent would otherwise repaint over them. A
+#   run with no warnings prints nothing extra and does not wait. With no
+#   TTY available (CI, </dev/null) a run that warned refuses to start
+#   unless --ignore-warnings was passed; with a TTY the flag changes
+#   nothing.
 #
 # Worktree mode (--worktree BRANCH):
 #   Runs the agent in a throwaway git worktree checked out on
