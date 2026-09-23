@@ -155,7 +155,9 @@
 #
 #   - committed & clean: a fresh per-run copy of the committed content is
 #     bound READ-ONLY over the path. An agent write here would persist
-#     uncommitted on the host and run outside the sandbox later.
+#     uncommitted on the host and run outside the sandbox later; the
+#     sanctioned way to ask for a change is the patch channel below.
+#     Nothing is applied automatically.
 #   - uncommitted (untracked, or tracked but locally modified): hidden.
 #     The session sees an empty placeholder -- or, for a tracked path
 #     with local drift, the committed copy -- and can neither read the
@@ -184,6 +186,29 @@
 #
 #   report_config_masking states this partition at startup; the exit
 #   report and the gate are where agent-created files surface.
+#
+# Patch channel (sandbox.yml "patches:"):
+#   A read-only mask leaves an agent with no way to say "this file should
+#   change". The patch channel is that way: a gitignored directory inside
+#   the checkout, named by the top-level "patches:" key in sandbox.yml
+#   (default ".agent/patches", resolved against the project directory),
+#   into which the agent writes a unified diff. Each run gets its own
+#   timestamped subdirectory, created on the host before the container
+#   starts; it needs no bind of its own, since it is an ordinary part of
+#   the checkout the agent already has read-write.
+#
+#   Gitignored is required, not preferred: it is what keeps an
+#   agent-authored diff out of your own commit and out of the worktree
+#   approval gate's staged set. A configured path that is not ignored, is
+#   absolute, or resolves outside the checkout turns the channel off for
+#   that run -- no directory, the agent told it has nowhere to drop a
+#   patch, one line on the terminal -- rather than falling back to
+#   somewhere less safe.
+#
+#   After the container exits, every file found there is reported with
+#   the `git apply` command that would apply it. Nothing is applied, and
+#   nothing is copied or deleted: the files are already in your own
+#   project directory and stay there until you deal with them.
 #
 # Warnings (--ignore-warnings):
 #   Every host-side warning is collected as well as printed. If a run

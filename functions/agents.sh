@@ -231,8 +231,7 @@ generate_limitations_file() {
         echo "Their state this run is in the list above."
         echo
         echo "- committed: read-only by design (EROFS). Don't delete and recreate"
-        echo "  it, write it elsewhere, or retry. Describe a wanted change in your"
-        echo "  final summary instead."
+        echo "  it, write it elsewhere, or retry; propose a change instead (below)."
         echo "- uncommitted: hidden -- you see an empty file or the committed"
         echo "  version. A config path that looks missing may be a hidden local"
         echo "  file; don't reconstruct it. Other uncommitted files (source, data,"
@@ -240,6 +239,17 @@ generate_limitations_file() {
         echo "- not present: you may create it. It does not load this session; the"
         echo "  human sees it, with its content, after the run. Say in your summary"
         echo "  what you created and why."
+        echo
+        if [[ -n "${AGENT_PATCH_DIR_REL:-}" ]]; then
+            echo "To propose a change to ANY path this run mounted read-only, config"
+            echo "or not, write a unified diff to \`$AGENT_PATCH_DIR_REL/<name>.patch\`,"
+            echo "relative to your working directory (read-write, gitignored, so it"
+            echo "stays out of the commit). The human sees it after the run and"
+            echo "decides whether to apply it. Say in your summary that you left one."
+        else
+            echo "No patch directory is configured this run: describe a change you"
+            echo "would make to a read-only path, and why, in your final summary."
+        fi
         if [[ -n "${WORKTREE_DIR:-}" ]]; then
             echo
             echo "## Worktree mode"

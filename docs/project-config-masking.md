@@ -361,6 +361,59 @@ both appear in the block, each row tagged `[main]` or `[worktree]`, followed by
 a line stating how the main checkout is mounted this run and so whether
 anything can be created at its paths.
 
+## The patch channel
+
+Masking committed config read-only means a legitimate request — "add this MCP
+server", "record this convention in `AGENTS.md`" — has no way to land. Refusing
+it silently would push the agent toward working around the mask.
+
+`D` — so the agent is given one writable, named, reported channel
+(`resolve_patch_dir()`, `report_agent_patches()`, `functions/agents.sh`): a
+**gitignored directory inside the checkout**, chosen by the top-level `patches:`
+key in `sandbox.yml` and resolved relative to the project directory (default
+`.agent/patches`). Each run gets its own timestamped subdirectory, created on
+the host before the container starts. It needs no bind of its own — it is an
+ordinary part of the checkout the agent already has read-write.
+
+Gitignored is a requirement, not a preference: it is what keeps an
+agent-authored diff out of your own commit and out of the approval gate's
+staged set. If the configured path is not ignored — or the key is absent and
+the default is not ignored either — the channel is simply **off** for that run:
+no directory is created, the agent is told it has nowhere to drop a patch, and
+one line says so. The same holds for an absolute path, and for one that resolves
+outside the checkout through a symlink; that check runs before anything is
+created. Nothing is refused and nothing falls back somewhere less safe; the
+channel is a convenience, not a containment control.
+
+The agent is told, in its limitations file, that a read-only path is read-only
+by design, and that a unified diff written to `<patches-dir>/<stamp>/<name>.patch`
+is how to propose a change to **any** path the run mounted read-only — not only
+committed config.
+
+After the container exits, `report_agent_patches()` scans that exact directory
+and prints, per patch, the command that would apply it:
+
+```
+sandbox: the sandboxed agent left 1 proposed patch(es) for
+  paths this run mounted read-only:
+  /home/you/proj/.agent/patches/20260921-101500-12345/mcp.patch
+    git -C /home/you/proj apply /home/you/proj/.agent/patches/20260921-101500-12345/mcp.patch
+sandbox: those patches were written by the sandboxed agent. Nothing has
+  been applied -- reading each one before applying it is your job.
+```
+
+Nothing is copied and nothing is deleted. The files are already in their final
+location inside your own project directory: a copy-out step would only create a
+second place to look, and deleting from a directory you own after merely
+reporting it is the "the sandbox removed files from my checkout" behaviour this
+design rules out. Old per-run directories are yours to keep or clean up.
+
+Nothing is applied automatically: a patch that the host applies without a human
+reading it is the write access that was just taken away, restored by a longer
+route. Paths are printed through `printf %q`, so a name carrying shell
+metacharacters or terminal escapes is inert in the line the human copies, and
+only regular files are reported — a symlink planted in the directory is not.
+
 ## Reproduction
 
 The number of entries on the table, read through the loader itself (which

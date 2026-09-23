@@ -98,8 +98,9 @@ environment:
 #   -- that is what keeps an agent-authored diff out of your own commit.
 #   If the configured path is not ignored (or the key is absent and the
 #   default `.agent/patches` is not ignored either) the channel is simply
-#   off for that run: no directory is created, and one line says so.
-#   Nothing is refused -- this is a convenience, not a containment control.
+#   off for that run: no directory is created, the agent is told it has
+#   nowhere to drop a patch, and one line says so. Nothing is refused --
+#   this is a convenience, not a containment control.
 #
 #   Old per-run subdirectories are yours to keep or delete; sandbox.sh
 #   never removes anything from your checkout.
