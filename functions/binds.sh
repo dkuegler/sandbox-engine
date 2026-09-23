@@ -830,17 +830,20 @@ report_created_config_paths() {
     } >&2
 }
 
-# config_shaped_untracked DIR OUT: every untracked, not-ignored path under
-# DIR that is config-shaped: a mask-entry path, anything inside a
-# mask-entry directory, or an "anywhere:" basename at any depth. Writes
-# NUL-separated absolute paths to OUT; the worktree approval gate's
-# per-file decisions feed from it. Deliberately over-inclusive: a false
-# positive costs one question the human answers with a keystroke, a false
-# negative is a plant that loads on the human's next bare-host session.
+# config_shaped_untracked DIR OUT: every untracked path under DIR
+# (including gitignored ones) that is config-shaped: a mask-entry path,
+# anything inside a mask-entry directory, or an "anywhere:" basename at
+# any depth. Writes NUL-separated absolute paths to OUT; the worktree
+# approval gate's per-file decisions feed from it. Deliberately
+# over-inclusive: a false positive costs one question the human answers
+# with a keystroke, a false negative is a plant that loads on the human's
+# next bare-host session.
 #
 # Matching is handed to git as pathspecs rather than done in a bash loop
-# over every untracked path, so the gate costs one tree walk in C however
-# many untracked files the worktree holds.
+# over every untracked path. Ignored files stay in scope -- an ignore rule
+# must not be a place to hide a plant -- and that list can hold tens of
+# thousands of entries (node_modules/, .venv/, a build tree), so the loop
+# has to be git's, in C.
 #
 # Results go to a caller-named FILE and the caller checks the exit status,
 # rather than being streamed out of a process substitution. That is not a
@@ -872,7 +875,7 @@ config_shaped_untracked() {
     ensure_run_dir
     mkdir -p -- "$RUN_DIR/cfgmask-snap"
     hits="$RUN_DIR/cfgmask-snap/shaped-untracked"
-    if ! git -C "$dir" ls-files --others --exclude-standard -z -- "${specs[@]}" >"$hits" 2>/dev/null; then
+    if ! git -C "$dir" ls-files --others -z -- "${specs[@]}" >"$hits" 2>/dev/null; then
         return 1
     fi
     while IFS= read -r -d '' rel; do

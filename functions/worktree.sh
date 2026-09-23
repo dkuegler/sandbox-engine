@@ -560,12 +560,26 @@ worktree_build_diff_state() {
     WORKTREE_DIFF_STATE_HASH="$(sha256sum -- "$out" | cut -d' ' -f1)"
 }
 
-# worktree_has_changes: anything at all for a commit to capture, ignoring
-# .gitignore'd content (which never enters the commit).
+# worktree_has_changes: anything at all this round produced that the human
+# should be shown.
+#
+# `git status --porcelain` alone is not that set: it excludes gitignored
+# files, so a round whose only product is a gitignored `.envrc` or
+# `.claude/hooks/x.sh` would report "no changes", skip the approval gate
+# entirely, and therefore skip the per-file config decisions the gate
+# exists to make. Nothing would be committed in that case -- ignored files
+# are not staged -- but the human would never be told the files are there,
+# which is the part that matters for a config plant. So a config-shaped
+# untracked path counts as a change even when git would ignore it, and so
+# does a failure to list them: the gate then runs and refuses on the same
+# failure, loudly, instead of this check quietly skipping it.
 worktree_has_changes() {
-    local st
+    local st cand="${RUN_DIR:-}/has-changes-candidates.z"
     st="$(git -C "$WORKTREE_DIR" status --porcelain 2>/dev/null)" || st=""
-    [[ -n "$st" ]]
+    [[ -n "$st" ]] && return 0
+    [[ -n "${RUN_DIR:-}" ]] || return 0
+    config_shaped_untracked "$WORKTREE_DIR" "$cand" || return 0
+    [[ -s "$cand" ]]
 }
 
 # worktree_generate_message OUT STATE: ask the agent to describe
@@ -702,7 +716,18 @@ worktree_approval_gate() {
     fi
     while IFS= read -r -d '' f; do candidates+=("$f"); done <"$candlist"
     if [[ ${#candidates[@]} -gt 0 ]]; then
-        local f rel reply2 ftype
+        local f rel reply2 ftype stageable
+        local ignf="$RUN_DIR/cfg-candidates-ignored" ign_rc=0
+        printf '%s\0' "${candidates[@]}" \
+            | git -C "$WORKTREE_DIR" check-ignore -z --stdin >"$ignf" 2>/dev/null || ign_rc=$?
+        # check-ignore exits 0 when it ignores something and 1 when it
+        # ignores nothing; only a real failure (above 1) refuses.
+        if [[ "$ign_rc" -gt 1 ]]; then
+            worktree_fail "git check-ignore failed while classifying agent-created config paths" \
+                "the worktree is intact at $WORKTREE_DIR and nothing was committed."
+        fi
+        declare -A is_ignored=()
+        while IFS= read -r -d '' f; do is_ignored["$f"]=1; done <"$ignf"
         {
             echo
             echo "--- agent-created config files: shown individually, committed only on an explicit yes ---"
@@ -724,6 +749,9 @@ worktree_approval_gate() {
             fi
             {
                 printf '  config-shaped untracked path: %q\n' "$rel"
+                if [[ -n "${is_ignored[$f]+x}" ]]; then
+                    echo "  (gitignored: never staged by git add -A either way)"
+                fi
                 if [[ -n "$ftype" ]]; then
                     echo "  type: $ftype"
                     echo "  content: not shown -- only a readable regular file is read here."
@@ -735,10 +763,11 @@ worktree_approval_gate() {
                     fi
                 fi
             } >&2
-            # "add" is offered only for a regular file whose content was
-            # actually displayed above. For anything else the choice is
-            # exclude or delete: committing content nobody could be shown
-            # is the thing this whole block exists to prevent.
+            # "add" is offered only for a regular, not-ignored file whose
+            # content was actually displayed above. For anything else the
+            # choice is exclude or delete: committing content nobody could
+            # be shown is the thing this whole block exists to prevent, and
+            # an ignored file is never staged anyway.
             #
             # "exclude" is RECORDED only for a path `git add -A` can
             # actually stage, because that record becomes a pathspec which
@@ -748,18 +777,24 @@ worktree_approval_gate() {
             # step fail "pathspec did not match", which the commit step
             # reads as "the tree moved under the review" -- turning an
             # agent-created fifo into a refusal of the human's own commit.
-            if [[ -n "$ftype" ]]; then
+            # A gitignored path needs no record either: `git add -A` never
+            # stages one.
+            stageable=0
+            if [[ -z "${is_ignored[$f]+x}" ]] && [[ -f "$f" || -L "$f" ]]; then
+                stageable=1
+            fi
+            if [[ -n "${is_ignored[$f]+x}" || -n "$ftype" ]]; then
                 if printf '  decide: e[x]clude: leave it in the worktree, decide later / [d]elete it [x] ' 2>/dev/null >/dev/tty; then
                     read -r reply2 </dev/tty 2>/dev/null || reply2=""
                     case "$reply2" in
                         [dD]*) WORKTREE_CONFIG_DELETE+=("$f") ;;
                         *)
-                            if [[ -f "$f" || -L "$f" ]]; then
+                            if [[ "$stageable" -eq 1 ]]; then
                                 WORKTREE_CONFIG_EXCLUDE+=("$f")
                             fi
                             ;;
                     esac
-                elif [[ -f "$f" || -L "$f" ]]; then
+                elif [[ "$stageable" -eq 1 ]]; then
                     # No terminal: hold back anything the commit could
                     # otherwise sweep in.
                     WORKTREE_CONFIG_EXCLUDE+=("$f")

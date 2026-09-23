@@ -321,8 +321,17 @@ The gate's candidate sweep (`config_shaped_untracked()`) matches a `project:`
 path exactly, anything inside a `project:` directory, and every `anywhere:`
 basename at any depth. It is deliberately over-inclusive: a false positive costs
 one keystroke; a false negative is a plant that loads on the human's next
-bare-host session. The matching is handed to git as pathspecs rather than looped
-over in shell, so the sweep costs one tree walk in C.
+bare-host session. The sweep lists `git ls-files --others` **without**
+`--exclude-standard`, so an ignore rule cannot hide a plant, and the matching is
+handed to git as pathspecs rather than looped over in shell, so including ignored
+files costs one tree walk in C even on a checkout carrying `node_modules/`.
+
+A gitignored candidate is marked as such and offered only exclude-or-delete:
+`git add -A` never stages it, so there is nothing to add or unstage. A round
+whose only product is gitignored still reaches the gate: `git status
+--porcelain` excludes ignored files, so `worktree_has_changes()` also counts a
+config-shaped untracked path — and a failure to list them — as a change,
+rather than reporting "no changes" and skipping the per-file decisions.
 
 ## The startup block
 
