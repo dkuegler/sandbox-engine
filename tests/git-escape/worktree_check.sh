@@ -571,9 +571,9 @@ rm -rf "$WORKTREE_DIR"
 
 # --- M: the project config mask -----------------------------------------
 # The convention's whole contract is one rule -- visible <=> tracked in
-# HEAD and identical to it. Each assertion below fails on a plausible
-# regression of that rule, and the ones marked so were written against a
-# measured bug.
+# HEAD and identical to it -- plus "absent means unbound". Each assertion
+# below fails on a plausible regression of that rule, and the ones marked
+# so were written against a measured bug.
 MASKREPO="$W/maskrepo"
 mkdir -p "$MASKREPO/.omp"
 git init --quiet "$MASKREPO"
@@ -585,14 +585,13 @@ git -C "$MASKREPO" commit --quiet -m "mask fixture"
 printf 'committed opencode\nLOCAL DRIFT\n' > "$MASKREPO/opencode.json"
 printf 'untracked plant\n' > "$MASKREPO/mcp.json"
 
-BINDS=() RO_MASKED=()
+BINDS=() RO_MASKED=() CFG_MASK_STATE=() CFG_MASK_PATH=()
 mask_project_agent_config "$MASKREPO"
 
-# mask_label_of PATH: the state annotation RO_MASKED carries for PATH.
-mask_label_of() {
-    local want="$1" r
-    for r in "${RO_MASKED[@]}"; do
-        [[ "$r" == "$want ("* ]] && { printf '%s' "${r#"$want "}"; return 0; }
+mask_state_of() {
+    local want="$1" i
+    for i in "${!CFG_MASK_PATH[@]}"; do
+        [[ "${CFG_MASK_PATH[i]}" == "$want" ]] && { printf '%s' "${CFG_MASK_STATE[i]}"; return 0; }
     done
     printf 'missing'
 }
@@ -605,15 +604,21 @@ mask_src_of() {
     printf ''
 }
 
-[[ "$(mask_label_of "$MASKREPO/.omp/config.yml")" == "(committed; read-only copy)" ]] \
+[[ "$(mask_state_of "$MASKREPO/.omp/config.yml")" == committed ]] \
     && ok M1 "committed & clean config is visible (read-only copy)" \
     || bad M1 "a committed, clean config path was not reported committed"
-[[ "$(mask_label_of "$MASKREPO/mcp.json")" == "(uncommitted; hidden)" ]] \
+[[ "$(mask_state_of "$MASKREPO/mcp.json")" == hidden ]] \
     && ok M2 "untracked config is hidden" \
     || bad M2 "an untracked config path was not hidden"
-[[ "$(mask_label_of "$MASKREPO/opencode.json")" == "(uncommitted changes;"* ]] \
+[[ "$(mask_state_of "$MASKREPO/opencode.json")" == hidden ]] \
     && ok M3 "tracked-but-modified config is hidden" \
     || bad M3 "a locally modified config path was not hidden"
+# The regression the convention itself names as the one to watch.
+[[ "$(mask_state_of "$MASKREPO/.claude/settings.json")" == unbound \
+   && -z "$(mask_src_of "$MASKREPO/.claude/settings.json")" \
+   && ! -e "$MASKREPO/.claude/settings.json" ]] \
+    && ok M4 "absent config produces no bind and materialises nothing" \
+    || bad M4 "an absent config path was bound, or materialised on disk"
 # A committed copy must come from HEAD, never from the dirty working tree.
 [[ "$(cat "$(mask_src_of "$MASKREPO/.omp/config.yml")" 2>/dev/null)" == "committed omp" ]] \
     && ok M5 "the bound copy is HEAD's content" \

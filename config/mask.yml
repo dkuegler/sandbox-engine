@@ -3,10 +3,10 @@
 #
 # "project:" is the single table of those surfaces inside a checkout,
 # relative to the checkout root the mask is resolved against. Each entry
-# is "- file: PATH" or "- dir: PATH"; the key is the shape used when a
-# path has to be hidden with an empty placeholder. PATH is relative to
-# the checkout root and made only of A-Z a-z 0-9 . _ / - (no leading "/",
-# no "." or ".." component), so it is always a plain YAML string.
+# is "- file: PATH" or "- dir: PATH": a single file, or a directory whose
+# whole content counts as config. PATH is relative to the checkout root
+# and made only of A-Z a-z 0-9 . _ / - (no leading "/", no "." or ".."
+# component), so it is always a plain YAML string.
 #
 # This is a strict subset of YAML, parsed without a YAML library: comment
 # lines, blank lines, the "project:" key and entries exactly as above.

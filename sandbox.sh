@@ -416,10 +416,17 @@ EXEC_ARGV=("${BACKEND_ARGV[@]}")
 # about each round.
 confirm_warnings
 # Project mode: the agent's own exit status is this script's exit status.
+# Captured rather than left to `set -e`, because the host-side step below
+# has to run whether the agent succeeded or not -- and it must not be
+# able to overwrite the status the agent reported.
 if [[ -z "${WORKTREE_DIR:-}" ]]; then
     log_argv "$SANDBOX_BACKEND argv" "${EXEC_ARGV[@]}"
-    "${EXEC_ARGV[@]}"
-    exit 0
+    AGENT_RC=0
+    "${EXEC_ARGV[@]}" || AGENT_RC=$?
+    # Normal mode has no approval gate: the review of what the agent
+    # created at config paths that were absent at launch happens here.
+    report_created_config_paths "$PROJECT_DIR" || true
+    exit "$AGENT_RC"
 fi
 
 # Worktree mode. Everything below runs on the HOST, after the container has

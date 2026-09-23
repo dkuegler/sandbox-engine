@@ -7,7 +7,7 @@
 # sanitize_agent_display: stdin -> stdout, minus the control bytes a
 # terminal acts on rather than prints.
 #
-# The commit message and the diff body are
+# The commit message, the diff body and the post-run reports are
 # agent-authored bytes on their way to the human's terminal, and a
 # terminal executes what it is sent: "\e[2J\e[H" clears the screen and
 # homes the cursor, so agent content can end by repainting the display
@@ -34,6 +34,38 @@
 # LF.
 sanitize_agent_display() {
     LC_ALL=C tr -d '\000-\010\013-\037\177'
+}
+
+# config_display_type PATH: empty output when PATH is a plain regular file
+# that is safe to read; otherwise a short description of what it actually
+# is. Every place that shows the human an AGENT-CHOSEN path has to ask
+# this first, because the agent picks the file's TYPE as well as its name
+# and both of the obvious reads go wrong on a type nobody checked:
+#
+#   - a fifo blocks the reader forever on open(2), so the review the human
+#     is in the middle of never reaches its own prompt;
+#   - a symlink is displayed as its TARGET's content while git stores the
+#     LINK, so the bytes reviewed and the bytes committed are different
+#     files -- and the target can be any host file the user can read.
+#
+# -L is tested before -f deliberately: -f follows the link and would call
+# a symlink-to-a-regular-file "a regular file", which is the exact case
+# that has to be caught. A link's target string is agent-chosen too, and
+# is printed, so it goes through sanitize_agent_display like any other
+# agent-authored bytes on their way to the terminal.
+config_display_type() {
+    local p="$1" target
+    if [[ -L "$p" ]]; then
+        target="$(readlink -- "$p" 2>/dev/null | sanitize_agent_display)"
+        printf '%s' "symlink -> ${target:-<unreadable>}"
+        return 0
+    fi
+    if [[ -p "$p" ]]; then printf '%s' "named pipe (fifo)"; return 0; fi
+    if [[ -S "$p" ]]; then printf '%s' "socket"; return 0; fi
+    if [[ -b "$p" || -c "$p" ]]; then printf '%s' "device node"; return 0; fi
+    if [[ -d "$p" ]]; then printf '%s' "directory"; return 0; fi
+    if [[ ! -f "$p" ]]; then printf '%s' "not a regular file"; return 0; fi
+    printf ''
 }
 
 # resolve_extra_binds: extra binds default to READ-ONLY. A spec must say
@@ -276,6 +308,8 @@ project_config_mask_load() {
     fi
 }
 
+declare -a CFG_MASK_STATE=() CFG_MASK_PATH=() CFG_MASK_OWNER=()
+
 # config_mask_materialize_head DIR REL DEST: materialize REL as it exists
 # in DIR's HEAD tree into DEST, a fresh RUN_DIR path the caller binds
 # read-only over the checkout's path. The copy rather than a self-bind is
@@ -424,15 +458,23 @@ config_mask_symlink_refuse() {
     exit 1
 }
 
-# config_mask_one DIR REL KIND: apply the git-known convention (see
+# config_mask_record STATE ABS DIR: one row of the startup/exit report.
+# The checkout each row came from is recorded alongside it, because
+# worktree mode masks two checkouts and "which one is this uncommitted
+# file in" is the whole point of the line.
+config_mask_record() {
+    CFG_MASK_STATE+=("$1")
+    CFG_MASK_PATH+=("$2")
+    CFG_MASK_OWNER+=("$3")
+}
+
+# config_mask_one DIR REL: apply the git-known convention (see
 # mask_project_agent_config below) to ONE path, relative to checkout DIR.
 config_mask_one() {
-    local dir="$1" rel="$2" kind="$3" abs src state
+    local dir="$1" rel="$2" abs src state
     abs="$dir/$rel"
     if [[ ! -e "$abs" && ! -L "$abs" ]]; then
-        # Absent on disk: still masked with an empty placeholder, as
-        # before the convention -- bind_ro's own absent-path handling.
-        bind_ro "$abs" "$kind"
+        config_mask_record "unbound" "$abs" "$dir"
         return 0
     fi
     if [[ -L "$abs" ]]; then
@@ -476,9 +518,11 @@ config_mask_one() {
     case "$state" in
         committed)
             RO_MASKED+=("$abs (committed; read-only copy)")
+            config_mask_record "committed" "$abs" "$dir"
             ;;
         uncommitted)
             RO_MASKED+=("$abs (uncommitted; hidden)")
+            config_mask_record "hidden" "$abs" "$dir"
             ;;
         uncommitted-dirty)
             # ONE array element. A line continuation between two quoted
@@ -486,6 +530,7 @@ config_mask_one() {
             # bullet in the agent's own limitations file and an inflated
             # read-only-bind count on the startup line.
             RO_MASKED+=("$abs (uncommitted changes; hidden, session sees the committed version)")
+            config_mask_record "hidden" "$abs" "$dir"
             ;;
     esac
 }
@@ -507,8 +552,15 @@ config_mask_one() {
 #   branch's config, and the local deltas or local secrets they may hold
 #   are invisible). Over an existing destination this materializes
 #   nothing on the host.
-# - absent on disk -> an empty read-only placeholder (bind_ro), so the
-#   agent cannot create the path.
+# - absent on disk -> NOT BOUND, whatever its tracked state. There is
+#   nothing to hide at a path that does not exist, and any bind would
+#   make apptainer materialize a placeholder there -- the git-status
+#   clutter this convention removes. A file the agent creates at such a
+#   path does not load in the current session (config is read at CLI
+#   startup), is invisible to every later sandboxed run (uncommitted ->
+#   hidden), and reaches the host only through a human act: the exit
+#   report (report_created_config_paths) in normal mode, the approval
+#   gate's review in worktree mode.
 #
 # Unconditional, independent of $AGENT: omp's own MCP discovery reads
 # other tools' project config in addition to its own, so a file written
@@ -523,8 +575,68 @@ mask_project_agent_config() {
     ensure_run_dir
     mkdir -p -- "$RUN_DIR/cfgmask"
     for i in "${!PROJECT_CONFIG_MASK_PATH[@]}"; do
-        config_mask_one "$dir" "${PROJECT_CONFIG_MASK_PATH[i]}" "${PROJECT_CONFIG_MASK_KIND[i]}"
+        config_mask_one "$dir" "${PROJECT_CONFIG_MASK_PATH[i]}"
     done
+}
+
+# report_created_config_paths DIR: normal mode has no approval gate, so
+# this is the review of what the agent created at config paths that were
+# absent when it started: every unbound path under DIR that exists now is
+# named, directories listed file by file, file content printed (through
+# sanitize_agent_display -- it is agent-authored bytes on their way to a
+# terminal). Nothing is deleted and nothing is committed: keep it, commit
+# it by hand, or remove it -- the human's call, made after reading it.
+report_created_config_paths() {
+    local dir="$1" i abs n f ftype
+    [[ -n "$dir" ]] || return 0
+    local -a created=()
+    for i in "${!CFG_MASK_STATE[@]}"; do
+        if [[ "${CFG_MASK_STATE[i]}" == "unbound" ]]; then
+            abs="${CFG_MASK_PATH[i]}"
+            if [[ "$abs" == "$dir"/* && ( -e "$abs" || -L "$abs" ) ]]; then
+                created+=("$abs")
+            fi
+        fi
+    done
+    if [[ ${#created[@]} -eq 0 ]]; then
+        return 0
+    fi
+    {
+        echo
+        printf '%s%s\n' "sandbox: the agent created ${#created[@]} path(s) at config" \
+            " locations that were absent when it started:"
+        for abs in ${created[@]+"${created[@]}"}; do
+            printf '    %q\n' "$abs"
+            ftype="$(config_display_type "$abs")"
+            if [[ -d "$abs" && ! -L "$abs" ]]; then
+                printf '%s\n' "      (directory; contents:)"
+                while IFS= read -r -d '' f; do
+                    n="$(stat -c %s "$f" 2>/dev/null || echo '?')"
+                    printf '      %q  (%s bytes)\n' "${f#"$abs"/}" "$n"
+                done < <(find "$abs" -type f -print0 2>/dev/null | sort -z)
+            elif [[ -n "$ftype" ]]; then
+                # Not a regular file: name what it is and read nothing.
+                # Reading it would either block this report forever (fifo)
+                # or print some other file's bytes under this path's name
+                # (symlink) -- see config_display_type().
+                printf '%s\n' "      type: $ftype"
+                printf '%s\n' "      (content not shown: only a regular file is read here)"
+            elif [[ ! -r "$abs" ]]; then
+                # The agent picks the mode too; an unreadable file is
+                # named, not skipped.
+                printf '%s\n' "      (content not shown: the file is not readable)"
+            else
+                printf '%s\n' "      ----"
+                sanitize_agent_display <"$abs" | head -n 60
+                if [[ "$(wc -l <"$abs" 2>/dev/null | tr -d '[:space:]')" -gt 60 ]]; then
+                    printf '%s\n' "      ... (truncated; read the file for the rest)"
+                fi
+                printf '%s\n' "      ----"
+            fi
+        done
+        printf '%s%s\n' "sandbox: nothing here is deleted or committed automatically." \
+            " Keep it, commit it by hand, or remove it."
+    } >&2
 }
 
 # log_resolved_binds: one summary line per run naming every bind actually
