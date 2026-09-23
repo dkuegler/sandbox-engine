@@ -49,7 +49,7 @@ reviewed the reference, not the referent.
 | **A — pre-container** | `sandbox.yml` | the sandbox itself: `parse_sandbox_yml` (`functions/sandbox_yml.sh`) runs host-side, before `EXEC_ARGV` starts any container | the launching run's own binds, base image and environment | yes |
 | **B — host execution, no agent in the loop** | `.envrc`, `.vscode/tasks.json`, `.vscode/launch.json`, `.devcontainer/devcontainer.json`, `.pre-commit-config.yaml` | direnv on `cd`; VS Code on folder open (`runOptions.runOn: folderOpen`) and on debug (`preLaunchTask`, `postDebugTask`); `initializeCommand` on the **host** before any container is built; the commit path, for pre-commit | a process, run as the human, unprompted | no |
 | **C — host execution at agent-CLI startup** | `mcp.json`, `.mcp.json`, `.claude/mcp.json`, `.claude/.mcp.json`, `.omp/mcp.json`, `.omp/.mcp.json`, `.cursor/mcp.json`, `.windsurf/mcp_config.json`, `.vscode/mcp.json`, `.codex/config.toml`, `.gemini/settings.json`, `opencode.json`, `opencode.jsonc`, `.claude/settings.json`, `.claude/settings.local.json`, `.omp/config.yml`, `.omp/settings.json`, `.claude/hooks`, `.claude/plugins`, `.opencode/plugin`, `.opencode/plugins`, `.opencode/tool`, `.opencode/tools` | the agent CLI, at startup, before the model is consulted | a process (an MCP server `command`, `hooks`, `apiKeyHelper`, `statusLine`, `lsp.*.command`, `formatter.*.command`) or code loaded in-process (plugins, tools) | no |
-| **D — instruction text** | `.claude/agents`, `.claude/commands`, `.claude/skills`, `.claude/rules`, `.claude/output-styles`, `.opencode/agent`, `.opencode/agents`, `.opencode/command`, `.opencode/commands`, `.opencode/mode`, `.opencode/modes`, `.opencode/skill`, `.opencode/skills` | the agent CLI, into the system prompt, at startup | text; it takes effect only if the model acts on it | yes |
+| **D — instruction text** | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.claude/agents`, `.claude/commands`, `.claude/skills`, `.claude/rules`, `.claude/output-styles`, `.opencode/agent`, `.opencode/agents`, `.opencode/command`, `.opencode/commands`, `.opencode/mode`, `.opencode/modes`, `.opencode/skill`, `.opencode/skills`, and the sixteen paths under "Instruction surfaces beyond the root files" below | the agent CLI, into the system prompt, at startup | text; it takes effect only if the model acts on it | yes |
 
 `D` — every trigger above is from the respective tool's own documentation. None
 of them prompts.
@@ -57,14 +57,43 @@ of them prompts.
 The four classes partition the `config/mask.yml` table exactly, with one
 residual: `.opencode/theme` and `.opencode/themes` are masked for uniformity
 with the rest of `.opencode/`, and are neither executed nor read into the
-context. `M` — the table holds 44 entries; see Reproduction. `D` — the
-assignment of each entry to a class: 1 class A, 5 class B, 23 class C and 13
+context. `M` — the table holds 64 entries; see Reproduction. `D` — the
+assignment of each entry to a class: 1 class A, 5 class B, 23 class C and 33
 class D, plus the 2 residual.
 
 The ordering is not a severity ranking of individual files. It is the order in
 which the containment loses leverage: class A is decided before any container
 exists, class B never involves the sandbox at all, and classes C and D are the
 only two a mask on this run's own binds can affect.
+
+### Instruction surfaces beyond the root files
+
+`D` — each of these sixteen paths is read into the system prompt by at least one
+supported agent, and each is a table entry; the rows record what reads it and
+why it earns a place, which is what an audit of the perimeter checks against.
+
+| path | read by | why it matters |
+| --- | --- | --- |
+| `.omp/RULES.md` | omp | always-apply — the body rides the system prompt on *every* request, not just the first |
+| `.omp/AGENTS.md` | omp | native provider, priority 100: shadows every other context file at that depth |
+| `.omp/rules/*.{md,mdc}` | omp | project rules; `alwaysApply: true` is injected verbatim |
+| `.claude/CLAUDE.md` | claude, omp | a documented project-instructions location, equal to `./CLAUDE.md` |
+| `.claude/AGENTS.md` | claude | loaded with `AGENTS.md`; distinct from the masked `.claude/agents` directory on a case-sensitive filesystem |
+| `CLAUDE.local.md` | claude | loads at launch alongside `CLAUDE.md` |
+| `.gemini/GEMINI.md` | omp | gemini provider's project context file; the table carries `.gemini/settings.json` too |
+| `.github/instructions/**/*.instructions.md` | omp | read recursively; `applyTo: '**'` makes the rule always-apply |
+| `.cursor/rules/*.{mdc,md}` | omp | the current Cursor convention; the table also carries the legacy `.cursorrules` |
+| `.windsurf/rules/*.md`, `.windsurfrules` | omp | the table also carries `.windsurf/mcp_config.json` |
+| `.clinerules` (file or directory) | omp | the nearest one walking up from the launch directory |
+| `.agent/AGENTS.md`, `.agents/AGENTS.md` | omp | agents provider, walked up to the repository root |
+| `.agent/rules/*`, `.agents/rules/*` | omp | same walk, same always-apply semantics as any other rule source |
+
+A rule directory is carried as a directory entry (`- dir: .omp/rules`), which
+covers every file under it without the table having to enumerate extensions.
+
+A root `GEMINI.md` is *not* on the table: no supported agent reads it — Gemini
+CLI does, and `.gemini/settings.json` is on the table only because omp's
+cross-tool MCP discovery reads that file.
 
 ## The convention: the session sees what the branch commits
 
@@ -219,7 +248,7 @@ project_config_mask_load
 echo "${#PROJECT_CONFIG_MASK_PATH[@]}"'
 ```
 
-`M` — prints `44`.
+`M` — prints `64`.
 
 The masked set itself is produced by calling the real function; nothing about it
 needs a container. `/proj` below is a checkout with one path in each state: a

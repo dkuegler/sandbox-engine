@@ -577,13 +577,13 @@ rm -rf "$WORKTREE_DIR"
 MASKREPO="$W/maskrepo"
 mkdir -p "$MASKREPO/.omp"
 git init --quiet "$MASKREPO"
-printf 'committed omp\n' > "$MASKREPO/.omp/config.yml"
-printf 'committed opencode\n' > "$MASKREPO/opencode.json"
+printf 'committed root\n' > "$MASKREPO/AGENTS.md"
+printf 'committed rules\n' > "$MASKREPO/.omp/RULES.md"
 printf 'x\n' > "$MASKREPO/f"
-git -C "$MASKREPO" add .omp/config.yml opencode.json f
+git -C "$MASKREPO" add AGENTS.md .omp/RULES.md f
 git -C "$MASKREPO" commit --quiet -m "mask fixture"
-printf 'committed opencode\nLOCAL DRIFT\n' > "$MASKREPO/opencode.json"
-printf 'untracked plant\n' > "$MASKREPO/mcp.json"
+printf 'committed root\nLOCAL DRIFT\n' > "$MASKREPO/AGENTS.md"
+printf 'untracked plant\n' > "$MASKREPO/CLAUDE.md"
 
 BINDS=() RO_MASKED=() CFG_MASK_STATE=() CFG_MASK_PATH=() CFG_MASK_OWNER=()
 mask_project_agent_config "$MASKREPO"
@@ -604,13 +604,13 @@ mask_src_of() {
     printf ''
 }
 
-[[ "$(mask_state_of "$MASKREPO/.omp/config.yml")" == committed ]] \
+[[ "$(mask_state_of "$MASKREPO/.omp/RULES.md")" == committed ]] \
     && ok M1 "committed & clean config is visible (read-only copy)" \
     || bad M1 "a committed, clean config path was not reported committed"
-[[ "$(mask_state_of "$MASKREPO/mcp.json")" == hidden ]] \
+[[ "$(mask_state_of "$MASKREPO/CLAUDE.md")" == hidden ]] \
     && ok M2 "untracked config is hidden" \
     || bad M2 "an untracked config path was not hidden"
-[[ "$(mask_state_of "$MASKREPO/opencode.json")" == hidden ]] \
+[[ "$(mask_state_of "$MASKREPO/AGENTS.md")" == hidden ]] \
     && ok M3 "tracked-but-modified config is hidden" \
     || bad M3 "a locally modified config path was not hidden"
 # The regression the convention itself names as the one to watch.
@@ -620,10 +620,10 @@ mask_src_of() {
     && ok M4 "absent config produces no bind and materialises nothing" \
     || bad M4 "an absent config path was bound, or materialised on disk"
 # A committed copy must come from HEAD, never from the dirty working tree.
-[[ "$(cat "$(mask_src_of "$MASKREPO/.omp/config.yml")" 2>/dev/null)" == "committed omp" ]] \
+[[ "$(cat "$(mask_src_of "$MASKREPO/.omp/RULES.md")" 2>/dev/null)" == "committed rules" ]] \
     && ok M5 "the bound copy is HEAD's content" \
     || bad M5 "the bound copy did not match HEAD"
-[[ "$(cat "$(mask_src_of "$MASKREPO/opencode.json")" 2>/dev/null)" == "committed opencode" ]] \
+[[ "$(cat "$(mask_src_of "$MASKREPO/AGENTS.md")" 2>/dev/null)" == "committed root" ]] \
     && ok M6 "a dirty path shows HEAD's content, not the working tree's" \
     || bad M6 "local drift was visible through the mask"
 # One RO_MASKED element per masked path: a split append corrupts the

@@ -28,10 +28,11 @@
 # (parse_sandbox_yml, functions/sandbox_yml.sh). The row only keeps the
 # session from reading an uncommitted copy or rewriting a committed one.
 #
-# Root-only, deliberately: every supported agent (claude, opencode, omp)
+# Root-level, deliberately: every supported agent (claude, opencode, omp)
 # is always launched with its cwd at the project root (or the worktree
-# root), and none of them walks above its cwd for config, so nothing
-# deeper is ever loaded as its own config.
+# root), and none of them walks above its cwd for config. The always-
+# loaded instruction files are the exception discovery can reach at
+# other depths; the rows here are their root-level copies.
 
 project:
   # sandbox.yml decides this sandbox's own binds, environment and base
@@ -110,3 +111,36 @@ project:
   # .pre-commit-config.yaml names programs the commit path fetches and
   # runs.
   - file: .pre-commit-config.yaml
+
+  # Always-loaded instruction files: nothing executes these, but every
+  # agent reads them into its system prompt unprompted.
+  - file: AGENTS.md
+  - file: CLAUDE.md
+  - file: CLAUDE.local.md
+  - file: .cursorrules
+  - file: .github/copilot-instructions.md
+
+  # omp: RULES.md is always-apply -- injected into the system prompt on
+  # every request -- and rules/ is loaded the same way.
+  - file: .omp/RULES.md
+  - file: .omp/AGENTS.md
+  - dir: .omp/rules
+
+  # Claude Code's own project-scope instruction copies.
+  - file: .claude/CLAUDE.md
+  - file: .claude/AGENTS.md
+
+  # Other assistants that auto-load project instructions, read whether or
+  # not this run's agent is the one that wrote them.
+  - file: .gemini/GEMINI.md
+  - dir: .github/instructions
+  - dir: .cursor/rules
+  - dir: .windsurf/rules
+  - file: .windsurfrules
+  - file: .clinerules
+
+  # Tool-neutral agent directories (.agent/, .agents/).
+  - file: .agent/AGENTS.md
+  - dir: .agent/rules
+  - file: .agents/AGENTS.md
+  - dir: .agents/rules
