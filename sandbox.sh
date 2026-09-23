@@ -456,13 +456,14 @@ EXEC_ARGV=("${BACKEND_ARGV[@]}")
 # about each round.
 confirm_warnings
 # Project mode: the agent's own exit status is this script's exit status.
-# Captured rather than left to `set -e`, because the host-side step below
-# has to run whether the agent succeeded or not -- and it must not be
+# Captured rather than left to `set -e`, because the host-side steps below
+# have to run whether the agent succeeded or not -- and they must not be
 # able to overwrite the status the agent reported.
 if [[ -z "${WORKTREE_DIR:-}" ]]; then
     log_argv "$SANDBOX_BACKEND argv" "${EXEC_ARGV[@]}"
     AGENT_RC=0
     "${EXEC_ARGV[@]}" || AGENT_RC=$?
+    report_agent_patches || true
     # Normal mode has no approval gate: the review of what the agent
     # created at config paths that were absent at launch happens here.
     report_created_config_paths "$PROJECT_DIR" || true
@@ -487,6 +488,9 @@ while true; do
     if [[ "${WORKTREE_PROJECT_MODE:-ro}" == rw ]]; then
         report_created_config_paths "$PROJECT_DIR" || true
     fi
+    # Patches the agent dropped for the masked paths are reported here,
+    # while it is still obvious which round produced them.
+    report_agent_patches || true
     if [[ "$CONTAINER_RC" -ne 0 ]]; then
         # Never reached the gate: left intact for inspection, never
         # auto-committed and never discarded.

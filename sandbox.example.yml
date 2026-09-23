@@ -80,7 +80,26 @@ environment:
 #   A source outside the project directory (like /data above) is
 #   attacker-controlled when this file travels with an untrusted
 #   checkout, so sandbox.sh refuses it unless you confirm interactively
-#   (a y/N prompt) or pass --allow-external-binds on the command line;
-#   with no TTY available (CI, </dev/null) it refuses outright and names
-#   the flag. A path that resolves (after symlinks) inside the project
-#   directory needs neither.
+#   (a y/r/N prompt, "r" mounting it read-only) or pass
+#   --allow-external-binds on the command line; with no TTY available
+#   (CI, </dev/null) it refuses outright and names the flag. A path that
+#   resolves (after symlinks) inside the project directory needs neither.
+
+# Patch channel (optional TOP-LEVEL key, NOT under "environment:"):
+#   patches: .agent/patches
+#   Where a sandboxed agent may drop a proposed change to a path the run
+#   mounted read-only -- a committed config file, or anything else it
+#   cannot write directly. The agent writes a unified diff into a per-run
+#   subdirectory; nothing is applied, and every file left there is
+#   reported on the terminal when the session ends, with the `git apply`
+#   command that would apply it.
+#
+#   Resolved relative to the project directory, and it MUST be gitignored
+#   -- that is what keeps an agent-authored diff out of your own commit.
+#   If the configured path is not ignored (or the key is absent and the
+#   default `.agent/patches` is not ignored either) the channel is simply
+#   off for that run: no directory is created, and one line says so.
+#   Nothing is refused -- this is a convenience, not a containment control.
+#
+#   Old per-run subdirectories are yours to keep or delete; sandbox.sh
+#   never removes anything from your checkout.

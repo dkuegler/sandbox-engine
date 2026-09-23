@@ -2,3 +2,6 @@
 environment:
   preset: shell
   python_version: "3.13"
+# Where a sandboxed agent may drop proposed patches for paths this run
+# mounts read-only. Must be gitignored; notes/ already is.
+patches: notes/patches

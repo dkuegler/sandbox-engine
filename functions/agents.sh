@@ -359,9 +359,132 @@ bind_augmented_instructions() {
     BINDS+=(-B "$out:$real:ro")
 }
 
+# --- the patch channel ---------------------------------------------------
+#
+# The agent's one way to propose a change to a path this run mounted
+# read-only. It is an ordinary directory inside the writable checkout --
+# not a separate bind, not $HOME scratch -- chosen by sandbox.yml's
+# `patches:` key and required to be gitignored, which is what makes it
+# safe to put there: a patch dropped in an ignored directory is never
+# swept into the commit the patch is about, and it survives the run
+# because it was never in $RUN_DIR to begin with.
+#
+# AGENT_PATCH_DIR_HOST is the absolute per-run directory, empty when the
+# channel is off. AGENT_PATCH_DIR_REL is the same path relative to the
+# checkout, which is what the agent is told.
+AGENT_PATCH_DIR_HOST=""
+AGENT_PATCH_DIR_REL=""
+
+# resolve_patch_dir DIR: decide the channel for the writable checkout DIR,
+# and create this run's directory when it is available. Gitignored is a
+# requirement, not a preference: an un-ignored patch directory would put
+# agent-authored diffs in front of `git add -A`.
+#
+# Unavailable is not an error. Nothing is refused and no fallback is
+# invented -- the channel is a convenience, and an agent that has nowhere
+# to write a proposal simply says so in its summary instead.
+resolve_patch_dir() {
+    local dir="$1" rel base stamp real_dir real_run rc=0
+    AGENT_PATCH_DIR_HOST=""
+    AGENT_PATCH_DIR_REL=""
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    rel="${YML_PATCHES:-.agent/patches}"
+    # An absolute path would land outside the checkout, where the project
+    # bind does not reach and no gitignore rule applies.
+    if [[ "$rel" == /* ]]; then
+        log_info "patches: '$rel' is absolute; the patch channel is relative to the checkout, so it is off this run"
+        return 0
+    fi
+    git -C "$dir" check-ignore -q -- "$rel" 2>/dev/null || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        log_warn "no patch channel this run -- '$rel' is not gitignored in $dir." \
+            "Set a gitignored 'patches:' directory in sandbox.yml to give the agent one."
+        return 0
+    fi
+    # A same-second collision would need an identical PID as well, which
+    # cannot happen inside one run's lifetime.
+    stamp="$(date +%Y%m%d-%H%M%S)-$$"
+    base="$dir/$rel"
+    # The directory must really be inside the checkout once symlinks are
+    # resolved -- checked BEFORE anything is created: a symlinked
+    # component (".agent" a link out of the tree) would otherwise have the
+    # host create, and later scan, a directory somewhere else entirely.
+    # readlink -m resolves the components that exist and tolerates the
+    # ones that do not yet.
+    real_dir="$(readlink -f -- "$dir")"
+    real_run="$(readlink -m -- "$base/$stamp")"
+    if [[ -z "$real_dir" || "$real_run" != "$real_dir"/* ]]; then
+        log_warn "no patch channel this run -- '$rel' resolves outside $dir."
+        return 0
+    fi
+    if ! mkdir -p "$base/$stamp"; then
+        log_warn "could not create the patch directory $base/$stamp; the patch channel is off this run"
+        return 0
+    fi
+    AGENT_PATCH_DIR_HOST="$base/$stamp"
+    AGENT_PATCH_DIR_REL="$rel/$stamp"
+    log_info "patches: $AGENT_PATCH_DIR_REL (gitignored, inside the checkout)"
+}
+
+# report_agent_patches: after the container exits, surface whatever the
+# agent dropped into the channel.
+#
+# Nothing is copied and nothing is deleted. The files are already in their
+# final, durable location inside the user's own project directory -- a
+# copy-out step would only create a second place to look, and deleting
+# from a directory the user owns after merely reporting it is exactly the
+# "the sandbox removed files from my checkout" behaviour this design rules
+# out. Retention of old per-run directories is the user's, like any other
+# directory they own.
+#
+# `find -type f` is both the selection and the complete answer now that
+# nothing is copied: there is no second enumeration that could disagree
+# with it. It does not follow symlinks, so a link the agent planted there
+# is not reported as a patch.
+#
+# Nothing is applied and nothing is parsed -- a human judgement call.
+# Paths are printed %q-quoted because the agent chose the filename, so it
+# can carry terminal escapes or shell metacharacters, and %q renders both
+# inert while keeping the printed command copy-pasteable.
+report_agent_patches() {
+    local dir="${AGENT_PATCH_DIR_HOST:-}" target f
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    local -a files=()
+    while IFS= read -r -d '' f; do
+        files+=("$f")
+    done < <(find "$dir" -mindepth 1 -type f -print0 2>/dev/null | sort -z)
+    [[ ${#files[@]} -gt 0 ]] || return 0
+    # The worktree is the tree the patch was written against when there is
+    # one; otherwise the agent worked in the project checkout directly.
+    # Both are read with a default: this also runs from teardown paths that
+    # can be reached before either global was resolved, and `set -u`
+    # aborting the report would lose the patches with it.
+    target="${WORKTREE_DIR:-${PROJECT_DIR:-}}"
+    printf '%s\n  %s\n' "sandbox: the sandboxed agent left ${#files[@]} proposed patch(es) for" \
+        "paths this run mounted read-only:" >&2
+    for f in "${files[@]}"; do
+        printf '  %q\n' "$f" >&2
+        if [[ -n "$target" ]]; then
+            printf '    git -C %q apply %q\n' "$target" "$f" >&2
+        else
+            printf '    git apply %q   # run from the checkout this patch is against\n' "$f" >&2
+        fi
+    done
+    printf '%s\n  %s\n' "sandbox: those patches were written by the sandboxed agent. Nothing has" \
+        "been applied -- reading each one before applying it is your job." >&2
+    return 0
+}
+
 configure_agent() {
     if [[ "$AGENT" != "script" ]]; then
         ensure_run_dir
+        # Resolved BEFORE the limitations file is generated, so that file
+        # can tell the agent where the channel is. The writable checkout
+        # is the worktree when there is one -- the patch has to land where
+        # the agent can write it and where the gitignore rule that keeps
+        # it out of the commit actually applies. The channel needs no bind
+        # of its own: it is an ordinary directory inside that checkout.
+        resolve_patch_dir "${WORKTREE_DIR:-${PROJECT_DIR:-}}"
         local limitations_file="$RUN_DIR/sandbox-limitations.md"
         generate_limitations_file "$limitations_file"
         BINDS+=(-B "$limitations_file:$HOME/.sandbox-limitations.md:ro")

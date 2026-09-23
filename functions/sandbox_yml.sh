@@ -1,7 +1,8 @@
 #!/bin/bash
-# sandbox.yml parsing: top-level "environment:" block and "binds:" list.
-# Populates ENV_IMAGE, ENV_DOCKERFILE, ENV_PRESET, ENV_PYTHON_VERSION,
-# YML_BINDS. Requires SANDBOX_YML and PROJECT_DIR to be set by the caller.
+# sandbox.yml parsing: top-level "environment:" block, "binds:" list and
+# "patches:" key. Populates ENV_IMAGE, ENV_DOCKERFILE, ENV_PRESET,
+# ENV_PYTHON_VERSION, YML_BINDS, YML_PATCHES. Requires SANDBOX_YML and
+# PROJECT_DIR to be set by the caller.
 #
 # This file is also where the trust gate for sandbox.yml lives, because
 # this is where the read happens. sandbox.yml is not ordinary project
@@ -247,6 +248,8 @@ parse_sandbox_yml() {
     ENV_DOCKERFILE=""
     ENV_PRESET=""
     ENV_PYTHON_VERSION=""
+    # shellcheck disable=SC2034  # YML_PATCHES is read by resolve_patch_dir (functions/agents.sh) after parse_sandbox_yml returns
+    YML_PATCHES=""
     YML_BINDS=()
 
     [[ -e "$SANDBOX_YML" || -L "$SANDBOX_YML" ]] || return 0
@@ -261,6 +264,18 @@ parse_sandbox_yml() {
         # Optional top-level list (outside any block): additional binds.
         if [[ "$line" =~ ^binds:[[:space:]]*(#.*)?$ ]]; then
             in_binds=1
+            continue
+        fi
+        # Optional top-level scalar: where the agent may drop proposed
+        # patches for paths it cannot write directly.
+        if [[ "$line" =~ ^patches:[[:space:]]*(.*)$ ]]; then
+            val="${BASH_REMATCH[1]}"
+            val="${val%%#*}"
+            val="$(sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//" <<<"$val")"
+            # shellcheck disable=SC2034  # read by resolve_patch_dir (functions/agents.sh) after parse_sandbox_yml returns
+            YML_PATCHES="$val"
+            in_binds=0
+            in_block=0
             continue
         fi
         if [[ $in_binds -eq 1 ]]; then
