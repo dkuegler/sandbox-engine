@@ -99,12 +99,14 @@
 #   Such a bind is refused unless confirmed interactively -- a prompt on
 #   /dev/tty (not stdin, since stdin is the agent's own input stream)
 #   stating the path's size and file count and the mode being requested,
-#   answerable "y" (mount as requested), "o" (mount read-only instead,
+#   answerable "y" (mount as requested), "r" (mount read-only instead,
 #   overriding a requested :rw), or anything else (refuse) -- or allowed
 #   non-interactively with --allow-external-binds. With no TTY available
 #   (CI, </dev/null) the run refuses and names the flag. The check runs
-#   both on the spec as written and again after resolving symlinks, so a
-#   symlink inside the project pointing outside is also caught. Every
+#   once, on the source after resolving symlinks -- the path that is
+#   actually mounted -- so a symlink inside the project pointing outside
+#   is caught, and a path outside that resolves inside the project needs
+#   no confirmation. Every
 #   resolved bind (source, destination, ro/rw) is logged once per run
 #   (`log_resolved_binds`, functions/binds.sh) so an after-the-fact
 #   question about what a run could see has an answer.

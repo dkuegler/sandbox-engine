@@ -52,13 +52,18 @@ resolve_extra_binds() {
             opts="${opts:+$opts,}ro"
         fi
 
-        # Before resolving links: reject a spec that textually leaves the
-        # project dir ("../..", an absolute path elsewhere, "~/.ssh").
+        # Resolve first: the scope a mount actually gets is the resolved
+        # path's scope, so the confirmation is asked about -- and asked
+        # exactly once for -- the directory that is really mounted. A
+        # spec that is textually inside the project but resolves outside
+        # it (a symlink pointing out) is caught by the same single check,
+        # because the resolved path IS what apptainer mounts; a spec that
+        # is textually outside but resolves inside needs no prompt at
+        # all, since mounting a path that resolves inside the project is
+        # no different from mounting the project path itself.
         BIND_SCOPE_FORCE_RO=0
-        bind_scope_check "$src" "$origin" "unresolved" "$is_ro"
         src="$(readlink -f "$src")"
-        # After resolving: catch a symlink inside the project that points out.
-        bind_scope_check "$src" "$origin" "resolved" "$is_ro"
+        bind_scope_check "$src" "$origin" "$is_ro"
         if [[ "$BIND_SCOPE_FORCE_RO" -eq 1 && "$is_ro" -eq 0 ]]; then
             opts="${opts/rw/ro}"
             is_ro=1
@@ -76,38 +81,46 @@ resolve_extra_binds() {
     done
 }
 
-# bind_scope_check PATH ORIGIN STAGE IS_RO: a bind source outside the
-# project directory can expose anything on the host (~/.ssh, /etc), and
-# sandbox.yml travels with an untrusted checkout, so it is
-# attacker-controlled. Allowed only with --allow-external-binds, or after
-# an interactive confirmation. Reports the path's size and file count so
-# "mount it?" is an informed answer, not a blind y/N, and offers
-# downgrading to read-only as a distinct reply -- sets
+# bind_scope_check PATH ORIGIN IS_RO: a bind source outside the project
+# directory can expose anything on the host (~/.ssh, /etc), and sandbox.yml
+# travels with an untrusted checkout, so it is attacker-controlled. Allowed
+# only with --allow-external-binds, or after an interactive confirmation.
+# PATH is the RESOLVED source (the caller resolves links first): it is the
+# directory that is actually mounted, and one check on it covers both a
+# spec that textually leaves the project and one that textually stays
+# inside but resolves out through a symlink. Reports the path's size and
+# file count so "mount it?" is an informed answer, not a blind y/N, and
+# offers downgrading to read-only as a distinct reply -- sets
 # BIND_SCOPE_FORCE_RO=1 for the caller to act on rather than mounting
 # read-write just because that is what was asked for.
 bind_scope_check() {
-    local p="$1" origin="$2" stage="$3" is_ro="$4" reply mode size count
+    local p="$1" origin="$2" is_ro="$3" reply mode size count
     [[ "$p" == "$PROJECT_DIR" || "$p" == "$PROJECT_DIR"/* ]] && return 0
     mode="read-write"
     [[ "$is_ro" -eq 1 ]] && mode="read-only"
     if [[ "$ALLOW_EXTERNAL_BINDS" -eq 1 ]]; then
-        echo "warning: bind ($origin) '$p' is outside the project dir $PROJECT_DIR (allowed by --allow-external-binds, mounted $mode)" >&2
+        echo "warning: bind ($origin) '$p' is outside the project dir $PROJECT_DIR" >&2
+        echo "  (allowed by --allow-external-binds, mounted $mode)" >&2
         return 0
     fi
     # -r alone is not a reliable predictor: /dev/tty exists and is
     # world-readable even with no controlling terminal (a detached/CI
-    # process), where opening it fails with ENXIO. Folding the printf
-    # into the if's condition, not a statement inside its body, is what
+    # process), where opening it fails with ENXIO. Folding the printfs
+    # into the if's condition, not statements inside its body, is what
     # keeps that failure from tripping the caller's `set -e` -- a
     # command's exit status inside an if/&&/|| condition never does.
     if [[ -r /dev/tty ]]; then
         size="$(du -sh "$p" 2>/dev/null | cut -f1)"
         count="$(find "$p" 2>/dev/null | wc -l | tr -d '[:space:]')"
-        if printf 'bind (%s) %s is outside the project dir %s (%s path), mode=%s.\n%s, %s path(s) under it.\nMount it %s into the sandbox? [y/N] (or "o" for read-only) ' \
-            "$origin" "$p" "$PROJECT_DIR" "$stage" "$mode" "${size:-size unknown}" "${count:-?}" "$mode" 2>/dev/null >/dev/tty; then
+        if printf 'bind (%s) %s is outside the project dir %s (resolved), mode=%s.\n' \
+                "$origin" "$p" "$PROJECT_DIR" "$mode" 2>/dev/null >/dev/tty \
+            && printf '%s, %s path(s) under it.\n' "${size:-size unknown}" "${count:-?}" \
+                2>/dev/null >/dev/tty \
+            && printf 'Mount it %s into the sandbox? [y/r/N] (r=read-only) ' "$mode" \
+                2>/dev/null >/dev/tty; then
             read -r reply </dev/tty 2>/dev/null || reply=""
             case "$reply" in
-                [oO]*)
+                [oOrR]*)
                     BIND_SCOPE_FORCE_RO=1
                     return 0
                     ;;
@@ -117,7 +130,8 @@ bind_scope_check() {
             esac
         fi
     fi
-    echo "refusing bind ($origin) '$p': outside the project dir $PROJECT_DIR. Pass --allow-external-binds to allow it." >&2
+    echo "refusing bind ($origin) '$p': outside the project dir $PROJECT_DIR. Pass" >&2
+    echo "  --allow-external-binds to allow it." >&2
     exit 1
 }
 
