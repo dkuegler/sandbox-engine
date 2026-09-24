@@ -119,17 +119,20 @@ refusals cannot tell a working control from a broken fixture.
 **Procedure.** On every change to `sandbox.sh` or `functions/*.sh`: `bash -n` on
 each changed script, then `shellcheck sandbox.sh functions/*.sh` in one
 invocation so `source` targets resolve, and
-`shellcheck -S warning tests/git-escape/*.sh`. Then the suite:
+`shellcheck -S warning tests/git-escape/*.sh tests/config-escape/*.sh`. Then the
+suite:
 
 ```
 ./tests/git-escape/worktree_check.sh
+./tests/config-escape/mask_check.sh
 ./tests/git-escape/run.sh
 ./tests/git-escape/run.sh --negative
 ```
 
-`worktree_check.sh` runs on the host alone; `run.sh` needs `apptainer`.
+`worktree_check.sh` and `mask_check.sh` run on the host alone; `run.sh` needs
+`apptainer`.
 
-**Pass condition.** `worktree_check.sh` reports no failure; `run.sh` and its
+**Pass condition.** `worktree_check.sh` and `mask_check.sh` report no failure; `run.sh` and its
 negative run give the result recorded in [`git-breakout.md`](git-breakout.md),
 "Standing verification". A negative run that stops failing means the suite can
 no longer fail at all.

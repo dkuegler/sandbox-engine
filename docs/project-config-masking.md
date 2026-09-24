@@ -467,7 +467,7 @@ ids:
 The same writer puts `"n"` or `we ird` at column 0 when such a key is
 top-level; the form does not admit that, so the merge refuses such a file.
 
-`M` — the merge-side behaviour, `bash tests/git-escape/worktree_check.sh`: a
+`M` — the merge-side behaviour, `bash tests/config-escape/mask_check.sh`: a
 quoted top-level key or `KEY:VALUE` in the session copy, or a comment in the
 host file, merges nothing; omp's emptied `cycleOrder` merges:
 
@@ -588,7 +588,7 @@ Three properties of that gate are load-bearing:
 - **Excluded paths are unstaged as literal pathspecs.** `--pathspec-file-nul`
   changes the separator; it does not make entries literal, and pathspec
   wildcards stay live — an entry `sub/*.md` unstages every sibling `.md` the
-  pattern matches (`M` — test M12 in `tests/git-escape/worktree_check.sh`).
+  pattern matches (`M` — test M12 in `tests/config-escape/mask_check.sh`).
   Since the agent picks these filenames, a name that is also a glob would
   silently drop reviewed, approved work from the commit. Each path is written
   `:(top,literal)<path>`, and `--ignore-unmatch` is not used: after
@@ -806,5 +806,5 @@ The convention's behaviour is exercised by the permanent suite (the `M`
 assertions):
 
 ```
-./tests/git-escape/worktree_check.sh
+./tests/config-escape/mask_check.sh
 ```
