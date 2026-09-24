@@ -30,6 +30,8 @@
 #   backend_launch_argv CWD TMP CMD...        sets BACKEND_ARGV: the agent's launch
 #   backend_generator_argv CWD TMP CMD...     sets BACKEND_ARGV: the commit-message generator
 #   backend_agent_version AGENT               prints AGENT --version from SANDBOX_IMAGE
+#   backend_image_has_path PATH               does PATH exist in SANDBOX_IMAGE? 0 yes,
+#                                             1 no, 2 the image could not be asked
 
 # shellcheck disable=SC2034  # read by sandbox.sh and functions/*.sh
 SANDBOX_BACKEND=apptainer
@@ -196,4 +198,22 @@ backend_generator_argv() {
 # because the host's working directory is not mounted.
 backend_agent_version() {
     "${APPTAINER_EXEC[@]}" --cwd / "$SANDBOX_IMAGE" "$1" --version
+}
+
+# backend_image_has_path PATH: does PATH exist inside SANDBOX_IMAGE itself?
+# Returns 0 yes, 1 no, 2 the image could not be asked. Contained and
+# unbound like backend_agent_version: the answer has to describe the image,
+# not whatever the host's apptainer.conf would mount into it. "No" gets its
+# own exit status because a container that failed to start is no evidence
+# that PATH is missing.
+backend_image_has_path() {
+    local rc=0
+    # shellcheck disable=SC2016  # "$1" is the inner sh's positional, deliberately not expanded here
+    "${APPTAINER_EXEC[@]}" --cwd / "$SANDBOX_IMAGE" \
+        sh -c 'test -e "$1" || exit 100' _ "$1" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        100) return 1 ;;
+        *) return 2 ;;
+    esac
 }

@@ -3,7 +3,7 @@
 # teardown callback, and reaping any copy leaked by a prior run that was
 # SIGKILLed before that callback could fire. RUN_DIR itself is not
 # git-specific -- functions/agents.sh's ensure_run_dir() creates it on
-# demand for the omp branch's secrets redaction, independent of git, and
+# demand for every agent's per-run copies (omp's per-run home among them), and
 # sandbox.sh's own EXEC_ARGV construction uses it unconditionally (every
 # agent, including `script`) for the /tmp bind that replaces
 # --writable-tmpfs's 64 MiB ceiling.

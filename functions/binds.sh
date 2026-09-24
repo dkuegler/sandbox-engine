@@ -236,6 +236,44 @@ bind_ro() {
     RO_MASKED+=("$p")
 }
 
+# bind_state_rw PATH KIND: bind PATH read-WRITE, creating it on the host
+# first if it is missing (KIND: "file" or "dir"). For the paths an agent
+# genuinely has to write -- session databases, caches, credentials it
+# refreshes itself -- named one at a time.
+#
+# Creating the source host-side is required, not incidental: apptainer
+# refuses a bind whose SOURCE does not exist. It is also the point. Each
+# writable path is a line of its own rather than a consequence of binding
+# a whole tree, and the failure direction inverts with it -- forgetting a
+# path here costs a lost cache the user notices at once, where forgetting
+# one in a subtract-from-the-parent list is a silently writable config
+# file.
+bind_state_rw() {
+    local p="$1" kind="${2:-dir}"
+    if [[ ! -e "$p" && ! -L "$p" ]]; then
+        if [[ "$kind" == dir ]]; then
+            mkdir -p -- "$p" || return 1
+        else
+            mkdir -p -- "${p%/*}" || return 1
+            : >"$p" || return 1
+        fi
+    fi
+    BINDS+=(-B "$p")
+}
+
+# bind_never CREDENTIAL REASON: a path deliberately NOT passed into the
+# container, announced when it exists so its absence in-session is a
+# stated decision rather than a silent hole the user debugs later.
+# Credentials are a different class from configuration: a .env holds live
+# API keys, and mounting one read-only still makes every key in it
+# readable by the sandboxed agent and echoable into a transcript. Keys
+# reach an agent only through the auditable require_host_env path.
+bind_never() {
+    local p="$1" reason="$2"
+    [[ -e "$p" || -L "$p" ]] || return 0
+    log_warn "not passed through to the agent: $p ($reason)"
+}
+
 # PROJECT_CONFIG_MASK_FILE: the table of known executable-config surfaces
 # (its own header explains the format and the perimeter it draws). Located
 # relative to this file, never through the environment or the project's

@@ -26,7 +26,7 @@
 #   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
 #   git-mask.sh     read-only .git mask
 #   agents.sh       per-agent state binds, RUN_CMD
-#   omp-home.sh     omp's ~/.omp: which profile/directory overrides are refused
+#   omp-home.sh     omp's per-run ~/.omp
 #   cleanup.sh      EXIT trap and the teardown hooks registered against it
 #   run-dir.sh      per-run scratch directory lifecycle (teardown, reap)
 #   worktree.sh     --worktree branch/worktree lifecycle, review, commit

@@ -244,6 +244,45 @@ the parser reads its target, which is a different file and may be untracked.
 On the table itself `sandbox.yml` is an ordinary row, masked exactly like every
 other entry.
 
+**omp's `~/.omp` is a per-run directory** (`D` — `functions/omp-home.sh`),
+because omp keeps state and configuration in the same directories.
+`~/.omp/agent` holds its sqlite databases next to `config.yml`, `models.yml`,
+`lsp.json`, `extensions/`, `hooks/`, `rules/`, `SYSTEM.md` and more — omp loads
+code or standing instructions from each of those — and `~/.omp` itself holds
+the extracted native addons (reused when the file size matches, with no hash
+check), the hub broker's socket and collab's bearer tokens (`run/`), logs and
+caches. Any of that bound read-write would reach the next unsandboxed omp, or a
+process running on the host. So the host's `~/.omp` is never bound as a
+directory: the container gets a per-run directory in its place, with the
+host's paths bound into it one by one:
+
+| inside the sandbox | what it is |
+| --- | --- |
+| `~/.omp/natives` | the image's own read-only copy, extracted at build time |
+| `~/.omp/logs` | per project, kept on the host in `~/.agent/omp-logs/` |
+| `~/.omp/run`, `security`, `cache` | empty, per run |
+| `~/.omp/agent/config.yml` | a plain per-run copy; the session's own changes stay in the run |
+| `~/.omp/agent/agent.db` (`-wal`, `-shm`), `blobs/`, `sessions/<this checkout>/` | the host's own, read-write — credentials and this checkout's sessions |
+| `~/.omp/agent/history.db` | a per-project database in `~/.agent/omp-history/` |
+| every other entry of the host's `~/.omp/agent` | read-only, including names a later omp version adds |
+| `.env`, `secret-placeholder.key`, `models.db`, `terminal-sessions/` | not bound: absent, or fresh per run; a host `.env` is announced as withheld |
+
+Secret redaction is forced on by a read-only settings overlay passed through
+`PI_CONFIG_FILES`; omp never writes overlay values into `config.yml`. Anything
+the session creates under a new name is discarded with the run. The residual: a
+host omp that closes its last `agent.db` connection in the moment between
+container start and the sandbox's own open removes the `-wal`/`-shm` files the
+sandbox has just bound, and a host omp opened after that writes a second WAL for
+the same database.
+
+Only omp's default profile is mounted: a run that selects a named profile
+(`--profile`, or `OMP_PROFILE`/`PI_PROFILE` forwarded into the container) or
+forwards a variable that moves omp's directories refuses to start. An omp image
+built before the native addons were extracted at build time has no read-only
+copy for `~/.omp/natives` to point at, and image names do not change with the
+template; the run checks the image once at startup and asks for a single
+`--rebuild` rather than letting omp fail on a dangling link.
+
 ## The mask table
 
 `D` — `config/mask.yml` is the perimeter: nothing discovers config paths, so a

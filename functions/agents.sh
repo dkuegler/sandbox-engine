@@ -5,8 +5,8 @@
 # `.git` mask (functions/git-mask.sh) is the only control, so there is no
 # per-agent MCP server to wire up here.
 
-# ensure_run_dir: create the per-run scratch directory on first use. Used
-# today only by the omp branch's secrets redaction; remove_run_dir()
+# ensure_run_dir: create the per-run scratch directory on first use -- the
+# home of every per-run copy and overlay the sandbox binds; remove_run_dir()
 # (functions/run-dir.sh) removes it unconditionally on exit, as a hook on
 # the EXIT trap (functions/cleanup.sh). Writes this shell's PID into the
 # directory so reap_orphaned_run_dirs() (functions/run-dir.sh) can tell a
@@ -17,50 +17,6 @@ ensure_run_dir() {
         chmod 700 "$RUN_DIR"
         echo "$$" > "$RUN_DIR/.owner_pid"
     fi
-}
-
-# force_omp_secrets_redaction SRC OUT: copy SRC (config.yml) to OUT with
-# "secrets: enabled: true" appended, forcing on omp's built-in secret
-# obfuscator (docs/secrets.md) inside the sandbox regardless of the host's
-# own setting -- disabled by default upstream. This matters independently
-# of *how* a credential reaches the container: measured live, omp's own
-# bash tool does not scrub environment variables (`env`/`printenv` return
-# a forwarded variable's value in full), so without this, a
-# host-supplied credential the agent chooses to print reaches the model
-# verbatim. The obfuscator auto-detects env vars matching
-# KEY/SECRET/TOKEN/PASSWORD/PASS/AUTH/CREDENTIAL/PRIVATE/OAUTH plus
-# built-in GitLab/GitHub/OpenAI/Anthropic/AWS token-shape regexes, and only
-# redacts provider-visible text -- the real value still reaches the actual
-# API call. This is about a secret passed in from outside (a forge
-# token); a secret the agent generates itself during a session is not this
-# task's concern.
-# Refuses to touch a config.yml that already defines a top-level `secrets:`
-# block -- no YAML parser is available to merge into one safely (same
-# constraint as elsewhere in this file: don't assume python3/its libraries) -- and warns
-# instead of silently leaving redaction off.
-force_omp_secrets_redaction() {
-    local src="$1" out="$2"
-    if [[ ! -f "$src" ]]; then
-        printf 'secrets:\n  enabled: true\n' > "$out"
-        chmod 600 "$out"
-        echo "note: $src not found; using a minimal config with secrets.enabled: true for this sandboxed run." >&2
-        return 0
-    fi
-    cp "$src" "$out"
-    chmod 600 "$out"
-    if grep -q '^secrets:' "$src"; then
-        if ! grep -qE '^[[:space:]]*enabled:[[:space:]]*true[[:space:]]*$' "$src"; then
-            echo "warning: $src already defines a top-level 'secrets:' block; not overriding it." >&2
-            echo "         Confirm 'secrets.enabled: true' yourself -- without it, a host-supplied" >&2
-            echo "         credential the agent's own tool output prints (e.g. \`env\`) reaches the" >&2
-            echo "         model in plaintext instead of a redacted placeholder." >&2
-        fi
-        return 0
-    fi
-    printf '\nsecrets:\n  enabled: true\n' >> "$out"
-    echo "note: $src does not set secrets.enabled; enabling omp's secret obfuscation for this" >&2
-    echo "      sandboxed run only -- without it, a host-supplied credential the agent's" >&2
-    echo "      own tool output prints (e.g. \`env\`) reaches the model in plaintext." >&2
 }
 
 # require_host_env VAR CONTEXT: forward the host's VAR into the container
@@ -298,9 +254,8 @@ generate_limitations_file() {
 # bind_augmented_instructions REAL: overlay REAL (a host instruction file
 # such as CLAUDE.md/AGENTS.md -- may not exist yet) with a read-only copy
 # that additionally points at the generated limitations lookup file,
-# unless REAL already carries the same marker. Same "sanitized copy bound
-# over the real path" technique force_omp_secrets_redaction already uses
-# above, so a project's own instruction content survives untouched
+# unless REAL already carries the same marker. A sanitized copy bound over
+# the real path, so the host's own instruction content survives untouched
 # underneath the appended note.
 #
 # Worktree mode appends a second, run-specific block naming the two paths
@@ -648,55 +603,29 @@ configure_agent() {
             RUN_CMD=(opencode "${ARGS[@]}")
             ;;
         omp)
-            # oh-my-pi (can1357/oh-my-pi) keeps all config/auth/state under
-            # ~/.omp (e.g. ~/.omp/agent/config.yml, models.yml). Project-level
-            # session files live under .omp/ in the repo, already covered by
-            # the project-dir bind above.
-            # Source: https://github.com/can1357/oh-my-pi/blob/main/README.md
-            # and https://deepwiki.com/can1357/oh-my-pi/13-configuration-reference
-            #
-            # Only the default profile is mounted: a named profile or a
-            # forwarded directory override refuses the run
-            # (functions/omp-home.sh).
+            # oh-my-pi (can1357/oh-my-pi). Its ~/.omp is a per-run
+            # directory with the host's paths bound into it one at a time;
+            # the layout and the reasons are in functions/omp-home.sh.
+            # Project-level .omp/ config is covered by the project mask like
+            # any other checkout path. Only the default profile is mounted:
+            # a named profile or a forwarded directory override refuses the
+            # run, as does an image without the build-time native addons.
             omp_home_refuse_overrides
-            mkdir -p "$HOME/.omp"
-            BINDS+=(
-                -B "$HOME/.omp"
-            )
-            # agent/config.yml is only rewritten by an explicit `omp config
-            # set`, never on startup, so read-only does not break launch.
-            # extensions/ is likewise safe to mask. natives/ (the
-            # ~180 MB pi_natives addon omp self-extracts on first run of a
-            # given version, into ~/.omp/natives/<version>/) is left
-            # read-write on purpose: masking it read-only breaks startup
-            # with an EROFS mkdir the moment the image's omp is upgraded to
-            # a version whose native addon the host has never extracted
-            # before. agent/AGENTS.md
-            # is the confirmed user-level instruction file (see omp's
-            # context-files doc: "~/.omp/agent/AGENTS.md" -- not
-            # "~/.omp/AGENTS.md", which does not exist). Left read-write:
-            # agent/*.db/-wal/-shm (continuously written),
-            # agent/sessions/, agent/cache/, agent/terminal-sessions/,
-            # agent/last-changelog-version, cache/, logs/, run/,
-            # gpu_cache.json, install-id, natives/.
-            ensure_run_dir
-            local omp_config_copy="$RUN_DIR/omp-config.yml"
-            force_omp_secrets_redaction "$HOME/.omp/agent/config.yml" "$omp_config_copy"
-            BINDS+=(-B "$omp_config_copy:$HOME/.omp/agent/config.yml:ro")
-            for p in agent/models.yml agent/mcp.json agent/.mcp.json \
-                     agent/.env .env agent/agents agent/skills agent/tools agent/hooks \
-                     agent/commands extensions; do
-                case "$p" in
-                    agent/models.yml | agent/mcp.json | agent/.mcp.json | agent/.env | .env)
-                        [[ "$p" == agent/models.yml ]] && scan_omp_api_keys "$HOME/.omp/$p"
-                        bind_ro "$HOME/.omp/$p"
-                        ;;
-                    *)
-                        bind_ro "$HOME/.omp/$p" dir
-                        ;;
-                esac
-            done
-            # agent/AGENTS.md is the always-loaded instruction file.
+            omp_home_require_natives
+            # .env files are credential stores, not configuration, and are
+            # never mounted -- not even read-only. Mounting one would make
+            # every key in it readable by the sandboxed agent and echoable
+            # into a transcript. Model credentials reach the agent only
+            # through require_host_env, which is auditable per variable.
+            bind_never "$HOME/.omp/.env" "a .env is a credential store, not configuration"
+            bind_never "$HOME/.omp/agent/.env" "a .env is a credential store, not configuration"
+            if ! omp_home_prepare; then
+                echo "error: could not build omp's per-run home in $RUN_DIR" >&2
+                exit 1
+            fi
+            # agent/AGENTS.md is the always-loaded instruction file. Its
+            # destination is inside the per-run home, so the notice is bound
+            # even when the host has no such file.
             bind_augmented_instructions "$HOME/.omp/agent/AGENTS.md"
             RUN_CMD=(omp "${ARGS[@]}")
             ;;

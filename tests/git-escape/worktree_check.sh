@@ -562,7 +562,7 @@ rm -rf "$WORKTREE_DIR"
 # A linked worktree's <main>/.git lives outside the project dir, so its
 # history could not be masked from inside the container.
 (
-    # shellcheck disable=SC2034  # both are read by worktree_preflight (functions/worktree.sh)
+    # shellcheck disable=SC2030,SC2034  # both are read by worktree_preflight (functions/worktree.sh); subshell-local on purpose
     PROJECT_DIR="$MAIN_WT_DIR"
     # shellcheck disable=SC2034
     WORKTREE_BRANCH="nested"
@@ -711,7 +711,97 @@ link_refused || m13=1
     && ok M13 "a config path that is a symlink, on disk or in HEAD, refuses the run" \
     || bad M13 "a symlinked config path was bound"
 
-# --- O: omp's ~/.omp (functions/omp-home.sh) -----------------------------
+# --- O: omp's per-run ~/.omp (functions/omp-home.sh) ---------------------
+# The host's ~/.omp holds code omp loads (native addons, extensions/,
+# settings naming modules) and sockets to host-side processes (run/). What
+# is asserted: none of that is bound writable, config is a plain per-run
+# copy, and only the state that must persist is shared.
+OMP="$HOME/.omp"
+mkdir -p "$OMP/agent/extensions" "$OMP/agent/sessions/-elsewhere" "$OMP/agent/terminal-sessions" \
+    "$OMP/natives/9.9.9" "$OMP/run/daemons/x" "$HOME/projects/p"
+printf 'addon\n' >"$OMP/natives/9.9.9/pi_natives.node"
+printf 'setupVersion: 1\nmodelRoles:\n  default: vendor/big\n  smol: vendor/small\ntheme:\n  dark: night\ncycleOrder:\n  - vendor/big\n  - vendor/small\n' \
+    >"$OMP/agent/config.yml"
+printf 'rule\n' >"$OMP/agent/RULES.md"
+for f in .env secret-placeholder.key history.db models.db agent.db; do : >"$OMP/agent/$f"; done
+BINDS=() RO_MASKED=()
+omp_home_prepare || fail_setup "omp_home_prepare"
+unset APPTAINERENV_PI_CONFIG_FILES
+omp_bound() { local b; for b in "${BINDS[@]}"; do [[ "$b" == "$1" ]] && return 0; done; return 1; }
+# A host path bound from: PATH (or anything below it) is some bind's source.
+omp_bound_src_under() { local b; for b in "${BINDS[@]}"; do [[ "$b" == "$1"* ]] && return 0; done; return 1; }
+# Matches PATH as a bind's source or its destination, or anything below it.
+omp_bound_under() {
+    local b dst
+    for b in "${BINDS[@]}"; do
+        dst="${b#*:}"; dst="${dst%%:*}"
+        [[ "$b" == "$1"* || "$dst" == "$1"* ]] && return 0
+    done
+    return 1
+}
+# shellcheck disable=SC2031  # W15 changed PROJECT_DIR only inside its own subshell
+O_BUCKET="$(omp_session_bucket "${WORKTREE_DIR:-$PROJECT_DIR}")"
+O_KEY="$(omp_home_project_key)"
+
+if omp_bound "$RUN_DIR/omp:$OMP" && [[ "$(readlink "$OMP_HOME_DIR/natives")" == /usr/local/omp/natives ]] \
+    && ! omp_bound_src_under "$OMP/natives" && ! omp_bound_src_under "$OMP/run" \
+    && ! omp_bound_src_under "$OMP/logs" && ! omp_bound_src_under "$OMP:"; then
+    ok O1 "per-run ~/.omp: the host's natives, run/ and logs are not bound"
+else
+    bad O1 "a host ~/.omp path holding code or sockets is bound into the sandbox"
+fi
+if [[ -f "$OMP_HOME_DIR/agent/config.yml" && ! -L "$OMP_HOME_DIR/agent/config.yml" ]] \
+    && cmp -s "$OMP_HOME_DIR/agent/config.yml" "$OMP/agent/config.yml" \
+    && ! omp_bound_under "$OMP/agent/config.yml"; then
+    ok O2 "config.yml is a plain per-run copy, so omp's rename-based save cannot hit EBUSY"
+else
+    bad O2 "config.yml is a bind (EBUSY on save) or not the host's content"
+fi
+if omp_bound "$OMP/agent/extensions:$OMP/agent/extensions:ro" && omp_bound "$OMP/agent/RULES.md:$OMP/agent/RULES.md:ro" \
+    && omp_bound "$OMP/agent/agent.db" && omp_bound "$OMP/agent/sessions/$O_BUCKET" \
+    && ! omp_bound_under "$OMP/agent/sessions/-elsewhere" && ! omp_bound_under "$OMP/agent/.env" \
+    && ! omp_bound_under "$OMP/agent/secret-placeholder.key" && ! omp_bound_under "$OMP/agent/history.db" \
+    && ! omp_bound_under "$OMP/agent/models.db" && ! omp_bound_under "$OMP/agent/terminal-sessions"; then
+    ok O3 "host config read-only; agent.db and this checkout's sessions shared; .env, key, other state not bound"
+else
+    bad O3 "the agent directory's binds do not match the allowlist"
+fi
+if [[ "$(readlink "$OMP_HOME_DIR/agent/history.db")" == .sandbox-history/history.db ]] \
+    && omp_bound "$HOME/.agent/omp-history/$O_KEY:$OMP/agent/.sandbox-history"; then
+    ok O4 "history.db is this project's own database, not the host's"
+else
+    bad O4 "history.db does not resolve to the per-project database"
+fi
+if [[ "$(omp_session_bucket "$HOME/projects/p")" == -projects-p \
+    && "$(omp_session_bucket /usr/share)" == --usr-share-- \
+    && "$(omp_session_bucket "$W")" == "-tmp-${W#"$(readlink -f "${TMPDIR:-/tmp}")"/}" ]]; then
+    ok O5 "session folders are named the way omp names them"
+else
+    bad O5 "omp_session_bucket disagrees with omp's scheme"
+fi
+OMP_HOME_DIR=""
+# The image-natives check: the stand-in apptainer runs the probe's own
+# command on the host, which plays the image, so OMP_IMAGE_NATIVES decides
+# whether the "image" has the directory.
+cat > "$W/bin/apptainer" <<STUB
+#!/bin/sh
+while [ "\$#" -gt 0 ] && [ "\$1" != "$SANDBOX_IMAGE" ]; do shift; done
+[ "\$#" -gt 0 ] || exit 255
+shift
+exec "\$@"
+STUB
+chmod +x "$W/bin/apptainer"
+o11=0
+# shellcheck disable=SC2034  # OMP_IMAGE_NATIVES is read by omp_home_require_natives (functions/omp-home.sh)
+( OMP_IMAGE_NATIVES="$W/no-such-natives"; omp_home_require_natives ) >/dev/null 2>&1 && o11=1
+( OMP_IMAGE_NATIVES="$W"; omp_home_require_natives ) >/dev/null 2>&1 || o11=1
+printf '#!/bin/sh\nexit 255\n' > "$W/bin/apptainer"
+# shellcheck disable=SC2034  # see above
+( OMP_IMAGE_NATIVES="$W/no-such-natives"; omp_home_require_natives ) >/dev/null 2>&1 || o11=1
+[[ "$o11" -eq 0 ]] \
+    && ok O11 "an image without the build-time native addons refuses; one that has them, or cannot be asked, does not" \
+    || bad O11 "the image-natives check refused wrongly, or let an old image through"
+
 # o_refuses ARG...: omp_home_refuse_overrides with ARGS=(ARG...), in an
 # environment holding only O_ENV of the variables it reads; true if it
 # refused. The container sees only APPTAINERENV_-forwarded variables, so
