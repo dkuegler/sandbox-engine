@@ -63,18 +63,36 @@ syntax.
 agent's writable state under `$HOME` path by path (`bind_state_rw()`), its
 config read-only where the host has it (`bind_ro()`), and nothing else; omp's
 `~/.omp` is a per-run directory whose unlisted entries are bound read-only
-(`functions/omp-home.sh`). A path upstream adds is therefore unbound by default,
-which fails safe for containment but not for function: a new state file the CLI
-must persist is silently lost. The silent containment risk is inside the paths
-that ARE bound read-write from the host as whole directories — claude's
-`~/.claude/projects`, `shell-snapshots`, `todos`, `statsig`, `file-history`
-and `ide` — where a new config file, executable or server
+(`functions/omp-home.sh`), and a claude run's whole `$HOME` is a per-run
+directory with the host's `~/.claude` paths bound in by name
+(`functions/claude-home.sh`). A path upstream adds is therefore unbound by
+default, which fails safe for containment but not for function: a new state
+file the CLI must persist is silently lost. The silent containment risk is
+inside the paths that ARE bound read-write from the host as whole directories —
+claude's `~/.claude/projects`, `shell-snapshots`, `todos`, `statsig`,
+`file-history` and `ide` — where a new config file, executable or server
 registry the CLI starts keeping there is writable by every run and read by the
-next unsandboxed one. The sandbox-owned per-project directories under
-`~/.agent/` (`omp-history`, `omp-logs`, `opencode-share`, `opencode-cache`) are
-read by no host CLI, so they do not carry that risk. The per-agent comment
-blocks in `configure_agent()` are the enumeration to keep current, each
-writable path with its reason.
+next unsandboxed one. Inside claude's per-run `$HOME`, a new config name is the
+opposite risk: creatable in the session, where claude may load it, until it
+gets a read-only bind or placeholder. The sandbox-owned per-project directories
+under `~/.agent/` (`omp-history`, `omp-logs`, `opencode-share`,
+`opencode-cache`) are read by no host CLI, so they do not carry that risk. The
+per-agent comment blocks in `configure_agent()` and the layout headers of
+`functions/omp-home.sh` and `functions/claude-home.sh` are the enumeration to
+keep current, each writable path with its reason.
+
+claude has three more properties the layout depends on, each checked in its
+shipped bundle (`project-config-masking.md`, `apptainer.md`):
+
+- it still saves by creating a lock directory and a temporary file beside the
+  target and renaming. A save that moves elsewhere can make the per-run
+  `$HOME` insufficient, and the login stops persisting again;
+- `theme`, `hasCompletedOnboarding` and `lastOnboardingVersion` still have the
+  shapes `claude_json_mergeable()` (`functions/claude-json.sh`) accepts. If a
+  shape changes, the key stops merging and is reported, never merged wrongly;
+- `CLAUDE_CODE_SANDBOXED` still means a trusted workspace and nothing more. If
+  it is removed, the trust dialog simply returns; if it comes to switch off
+  more, re-decide whether to set it.
 
 **Procedure.** For each supported agent, list the paths the new version reads
 and writes under `$HOME`, and reconcile against that agent's branch: new config
@@ -87,7 +105,8 @@ unbound.
 **Pass condition.** Every path the CLI reads as configuration or loads as
 instructions under `$HOME` is named in the branch; every writable path is named
 in its comment with a reason; nothing inside a read-write directory is loaded
-as configuration, executed, or used to reach a host process.
+as configuration, executed, or used to reach a host process; and, for claude,
+the three properties above hold in the new version.
 
 ## Agent image installers
 

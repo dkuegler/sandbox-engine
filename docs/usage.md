@@ -115,8 +115,11 @@ that run. Details: `project-config-masking.md`, "The patch channel".
   hidden. A file the agent creates at such a path is reported at exit. See
   `project-config-masking.md`.
 - **The agent's global config**, read-only. Writable state is bound path by
-  path, omp gets a per-run `~/.omp`, and claude a per-run `~/.claude.json`.
-  `.env` files are never mounted. See `project-config-masking.md`.
+  path. omp gets a per-run `~/.omp`; claude a per-run `$HOME`, where its
+  login is your own `~/.claude/.credentials.json` and of its `~/.claude.json`
+  only theme and onboarding state merge back at exit. claude runs with its
+  own `CLAUDE_CODE_SANDBOXED` flag, so it never asks whether to trust the
+  checkout. `.env` files are never mounted. See `project-config-masking.md`.
 - `/tmp`: a per-run host directory. `/` is the image, read-only. See
   `apptainer.md`.
 - **The network** is not restricted.

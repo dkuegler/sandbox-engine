@@ -54,6 +54,8 @@ source "$FUNCTIONS_DIR/binds.sh"
 source "$FUNCTIONS_DIR/omp-home.sh"
 # shellcheck source=functions/claude-json.sh
 source "$FUNCTIONS_DIR/claude-json.sh"
+# shellcheck source=functions/claude-home.sh
+source "$FUNCTIONS_DIR/claude-home.sh"
 # shellcheck source=functions/git-mask.sh
 source "$FUNCTIONS_DIR/git-mask.sh"
 # shellcheck source=functions/agents.sh
@@ -202,8 +204,8 @@ if [[ -z "${WORKTREE_DIR:-}" ]]; then
     "${EXEC_ARGV[@]}" || AGENT_RC=$?
     # omp: merge modelRoles/cycleOrder back, name what was discarded.
     omp_home_finish || true
-    # claude: name what the session changed in its ~/.claude.json copy.
-    claude_json_report || true
+    # claude: merge theme/onboarding back into ~/.claude.json, name the rest.
+    claude_json_finish || true
     report_agent_patches || true
     # No approval gate here: agent-created config paths are reported instead.
     report_created_config_paths "$PROJECT_DIR" || true
@@ -221,7 +223,7 @@ while true; do
     "${EXEC_ARGV[@]}" || CONTAINER_RC=$?
     # Per round, whatever the container's status.
     omp_home_finish || true
-    claude_json_report || true
+    claude_json_finish || true
     # A read-write main checkout is outside the approval gate: report
     # config the agent created there, as in normal mode.
     if [[ "${WORKTREE_PROJECT_MODE:-ro}" == rw ]]; then

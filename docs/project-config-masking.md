@@ -1,6 +1,6 @@
 # Project config masking: what reads each path, and what the session sees
 
-Last verified: 2026-09-23 (the `config.yml` form: 2026-09-24).
+Last verified: 2026-09-23 (the `config.yml` form and claude's `$HOME`: 2026-09-24).
 
 Subject: every path a supported agent CLI — or the host tooling that shares the
 checkout with it — reads as configuration; the classification those paths are
@@ -224,8 +224,9 @@ sandboxed run. `D`:
 
 MCP credentials: opencode's `~/.local/share/opencode/mcp-auth.json` and claude's
 `~/.claude/.credentials.json` are bound read-write, so what the agent stores
-there survives the run. claude's `~/.claude.json` is a per-run copy that is
-never written back (below), so nothing claude keeps in that file persists.
+there survives the run. claude's `~/.claude.json` is a per-run copy of which
+only `theme`, `hasCompletedOnboarding` and `lastOnboardingVersion` merge back
+(below), so no server definition claude keeps in that file persists.
 
 Current handling of on-disk MCP config by the three agent branches in
 `configure_agent()` (`functions/agents.sh`), `D`:
@@ -241,7 +242,7 @@ Each source has its own gate, which is why no CLI-level switch is forced:
 | source | gate |
 | --- | --- |
 | project-scope files (`.mcp.json`, `mcp.json`, `.claude/settings.json`, `opencode.json`, `.omp/mcp.json`, …) | the convention below: visible only when committed and clean, as a read-only copy — a change lands only through a commit, i.e. a human review pass |
-| claude's user- and local-scope servers (`~/.claude.json`) | the per-run copy: loaded from the host's file, and nothing the session writes there reaches a later run |
+| claude's user- and local-scope servers (`~/.claude.json`) | the per-run copy: loaded from the host's file; `mcpServers` and `projects` never merge back, so nothing the session writes there reaches a later run |
 | the other global definitions (`~/.claude/settings.json`, `~/.claude/mcp.json`/`.mcp.json`, `~/.omp/agent/mcp.json`/`.mcp.json`, `~/.config/opencode/opencode.json`) | read-only, human-authored outside any repo the agent can reach |
 | opencode's remote config (`D` — opencode's documented config precedence: fetched from a provider's `.well-known/opencode` endpoint when authenticated against a provider that offers one, ranked ahead of the global and project files, and able to define `mcp` servers) | none: it arrives over the network inside the container, where no bind reaches it and egress is open |
 
@@ -338,8 +339,9 @@ different anchor** (`D` — `configure_agent()`, `functions/agents.sh`;
 committed-vs-uncommitted cannot be evaluated against it; the anchor is that the
 human put it in their own `$HOME`, outside any repo the agent can reach. So
 global config is mounted read-only and readable, and nothing else of the
-agent's directory is bound — with one exception, opencode's `~/.config/opencode`
-(below), forced by a write opencode itself requires there:
+agent's directory is bound — with two exceptions, opencode's
+`~/.config/opencode` and claude's `$HOME` (below), each forced by a write the
+CLI itself requires there:
 
 | global path | session sees |
 | --- | --- |
@@ -350,31 +352,65 @@ agent's directory is bound — with one exception, opencode's `~/.config/opencod
 | opencode's `~/.local/share/opencode` (every project's session database, `storage/`, `log/`, the `bin/` tools it executes) | a sandbox-owned per-project directory, `~/.agent/opencode-share/<basename>-<8 hex>` (shared by every run and worktree of the project), never the host's; only `auth.json` and `mcp-auth.json` are the host's, bound in by name |
 | opencode's `~/.local/state/opencode` and `~/.config/opencode/service.json` (its server registry, both copies: pid, port, password) | a fresh per-run directory each — `service.json` has no bind of its own, it just lives inside the fresh `~/.config/opencode` above; neither is ever the host's real file, which would hand the session a host server's password (`docs/parallelization.md`) |
 | writable state (session databases, caches, credentials the agent refreshes) | read-write, one path at a time; a missing JSON state file is created as `{}` |
+| claude's `$HOME` | a fresh, empty, per-run directory, with the host's `~/.claude` paths layered back in by name (below). Forced by claude's saves, which need the directory beside each file writable (`apptainer.md`) |
+| claude config the host lacks (`~/.claude/settings.json`, `hooks/`, …, `~/.config/claude`) | an empty read-only placeholder (`{}` for a file), so the session cannot create it inside the per-run `$HOME` |
 | `.env` | never mounted, not even read-only — announced on the terminal instead |
 
 The launch line (`--containall --no-mount home,…`, `functions/apptainer.sh`)
 leaves `$HOME` absent inside the container except where a bind scaffolds it,
 so a path nothing binds cannot reach the host (`M`, `apptainer.md`): bound
 read-write lands on the host, bound read-only is `EROFS`, unbound beside a bind
-is `EROFS`, unbound with nothing scaffolding it is `ENOENT`.
+is `EROFS`, unbound with nothing scaffolding it is `ENOENT`. For claude, `$HOME`
+is the per-run directory instead, and a path nothing binds there is writable
+scratch that goes with the run.
 
-**claude's `~/.claude.json` is a per-run copy that is never written back**
-(`D` — `claude_json_prepare()`, `claude_json_report()`,
-`functions/claude-json.sh`). The file mixes state claude rewrites constantly
-with what a later unsandboxed `claude` spawns and trusts. `D` — per Claude
-Code's MCP documentation (`code.claude.com/docs/en/mcp`): user-scope MCP
-servers are its top-level `mcpServers`; a local-scope server is stored "in
-`~/.claude.json` under that project's path"; `projects["<path>"].hasTrustDialogAccepted`
-set to `true` trusts a folder without a dialog; and the per-project
-enabled/disabled server lists are recorded there too. Any merge-back would
-let a session plant a command line or a trust decision for the next bare-host
-run, so there is none: the session works on its copy, and when it exits the
-report names the top-level keys it changed and keeps its version at
-`~/.agent/claude.json.last-session` (mode 0600, one file, overwritten by the
-next run that changes it; a symlink there is not followed), outside every
-checkout, with the `diff` command to compare it. Cost: nothing the session
-changes in that file — an accepted trust dialog, onboarding and tip counters —
-carries over to the next run.
+**claude's `$HOME` is a per-run directory, and its `~/.claude.json` a per-run
+copy of which three keys merge back** (`D` — `functions/claude-home.sh`,
+`functions/claude-json.sh`). claude saves a file by creating a lock directory
+`<file>.lock` beside it, writing `<file>.tmp.<suffix>` beside it and renaming
+that over the file, so the directory has to be writable, not just the file
+(`apptainer.md`). The container therefore gets a per-run directory as `$HOME`,
+with the host's paths bound into it one by one:
+
+| inside the sandbox | what it is |
+| --- | --- |
+| `~/.claude.json` | a plain per-run copy of the host's file (`{}` when there is none); at exit `theme`, `hasCompletedOnboarding` and `lastOnboardingVersion` merge back, and every other change is reported |
+| `~/.claude/.credentials.json`, `history.jsonl`, `projects/`, `shell-snapshots/`, `todos/`, `statsig/`, `file-history/`, `ide/` | the host's own, read-write: the login (shared with the host's claude), sessions, history |
+| `~/.claude/settings.json`, `settings.local.json`, `mcp.json`, `.mcp.json`, `hooks/`, `plugins/`, `agents/`, `commands/`, `skills/`, `rules/`, `output-styles/`, `~/.config/claude/` | the host's, read-only; an empty read-only placeholder where the host has none |
+| `~/.claude/CLAUDE.md` | the instruction overlay |
+| everything else under `$HOME` | per-run scratch, discarded with the run |
+
+`~/.claude.json` mixes state claude rewrites constantly with what a later
+unsandboxed `claude` spawns and trusts. `D` — per Claude Code's MCP
+documentation (`code.claude.com/docs/en/mcp`): user-scope MCP servers are its
+top-level `mcpServers`; a local-scope server is stored "in `~/.claude.json`
+under that project's path"; `projects["<path>"].hasTrustDialogAccepted` set to
+`true` trusts a folder without a dialog; the per-project enabled/disabled
+server lists are recorded there too. `D` — claude 2.1.281's own list of
+user-editable global keys includes `apiKeyHelper`, a command, and `env`. A
+merge-back of any of these would let a session plant a command line or a
+trust decision for the next bare-host run. So the merge takes only `theme`,
+`hasCompletedOnboarding` and `lastOnboardingVersion`
+(`CLAUDE_JSON_MERGE_KEYS`), and one of them only when the session changed it,
+the new value has the shape claude writes (a theme name, a boolean, a version
+string), and the host file still holds its launch value — a change made on
+the host during the run wins and is reported. The host file is rewritten
+under claude's own lock (`~/.claude.json.lock`), only when the rewrite differs
+from it in exactly the merged keys, and never when it is a symlink or not one
+well-formed object; with no host file, one is created holding only the merged
+keys. Every other changed key is named at exit, and the session's version is
+kept at `~/.agent/claude.json.last-session` (mode 0600, one file, overwritten
+by the next run that changes it; a symlink there is not followed), outside
+every checkout, with the `diff` command to compare it.
+
+**Workspace trust is not recorded at all.** `CLAUDE_CODE_SANDBOXED=1` is
+forwarded into the container, and `D` — claude 2.1.281's workspace-trust check
+returns "trusted" when it is set, before it consults
+`projects["<path>"].hasTrustDialogAccepted` — so there is no trust dialog and
+nothing is written for it. Committed project permission rules and
+`additionalDirectories` then apply in the session, as in a trusted folder on
+the host. A forwarded `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`
+refuses the run: either one moves claude's files outside this layout.
 
 **omp's `~/.omp` is a per-run directory** (`D` — `functions/omp-home.sh`),
 because omp keeps state and configuration in the same directories.

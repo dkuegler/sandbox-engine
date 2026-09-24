@@ -111,6 +111,45 @@ That is why omp's `config.yml` is a plain file inside a per-run directory
 (`functions/omp-home.sh`) instead of a bind. The same holds for every
 by-name bind of a file the CLI saves through a rename.
 
+## A file saved beside itself needs a writable directory
+
+`D` — claude 2.1.281 (its bundled source) never writes `~/.claude.json` or
+`~/.claude/.credentials.json` in place. Each save creates a lock directory
+beside the file (`~/.claude.json.lock`; for the credentials,
+`~/.claude/.storage-write.lock`, retried ten times), writes
+`<file>.tmp.<suffix>` beside it, and renames that over the file. When the
+rename fails with `EBUSY` (or `EXDEV`, `EPERM`, `EEXIST`) it rewrites the target
+in place, so a bind-mounted target is fine, but only once the temporary file
+exists. A temporary file that cannot be created is not retried in place, and
+the save fails.
+
+`M` — with both files bound by name, their directories are the bind's
+read-only scaffolding (above), and every save failed. A login completed, and
+`~/.claude/.credentials.json` still held the `{}` the sandbox had created:
+
+```
+$ ./sandbox.sh claude --debug-file "$PWD/claude-debug.log"    # log in, reach the prompt, /exit
+$ grep -nE 'EROFS|Failed to save|storage-write|Config fallback' claude-debug.log | head -20
+19:2026-09-24T19:07:55.258Z [ERROR] Failed to save config with lock: Error: EROFS: read-only file system, mkdir '/home/kueglerd/.claude.json.lock'
+22:2026-09-24T19:07:55.263Z [ERROR] Failed to write file atomically: Error: EROFS: read-only file system, open '/home/kueglerd/.claude.json.tmp.14.c7147590b422'
+24:2026-09-24T19:07:55.263Z [ERROR] Config fallback write also failed; continuing without persisting: Error: EROFS: read-only file system, open '/home/kueglerd/.claude.json.tmp.14.c7147590b422'
+$ wc -c ~/.claude/.credentials.json
+2 /home/kueglerd/.claude/.credentials.json
+```
+
+That is why a claude run's `$HOME` is a per-run directory
+(`functions/claude-home.sh`): lock and temporary files land there, and the
+rename onto the bound `.credentials.json` falls back to the in-place write.
+
+`D` — apptainer's source (`internal/pkg/util/fs/mount/mount_linux.go`,
+`internal/pkg/util/fs/layout/manager.go`) supports that layering. User binds
+are mounted shallowest destination first, whatever their order on the
+command line. A missing destination under a user bind of a host directory is
+created inside that host directory ("force the creation of the destination
+directory in the right parent directory (nested binds)"). A per-run `$HOME`
+therefore gets the checkout's and every other nested bind's mount points in
+`$RUN_DIR`, never in the host's `$HOME`.
+
 ## No gVisor through apptainer
 
 `D` — [apptainer's OCI runtime support](https://apptainer.org/docs/user/main/oci_runtime.html):

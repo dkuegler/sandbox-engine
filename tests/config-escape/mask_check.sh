@@ -25,9 +25,17 @@
 #   - the ~/.claude.json key scanner (functions/claude-json.sh): the
 #     top-level value survives decoys (the key inside a string, the same
 #     key nested, non-ASCII before it), a duplicated or escaped top-level
-#     key refuses instead of picking one, a truncated/unterminated file is
-#     not well-formed, and the real file is never bound or written -- only
-#     a per-run copy is, with changed keys named in the exit report;
+#     key refuses instead of picking one, a truncated/unterminated file or
+#     anything but one object is not well-formed; the per-run copy is a
+#     plain file, and only theme/hasCompletedOnboarding/
+#     lastOnboardingVersion merge back -- in claude's own shape, never over
+#     a host-side change, never through a symlink -- with every other
+#     changed key named in the exit report;
+#   - claude's per-run $HOME (functions/claude-home.sh): the login is the
+#     host's, read-write; config is the host's, read-only, with a
+#     read-only placeholder where the host has none; the host's ~/.claude
+#     is never bound as a directory; a forwarded directory override
+#     refuses the run;
 #   - omp's per-run ~/.omp (functions/omp-home.sh): the host's natives,
 #     run/ and logs are never bound; config.yml is a plain per-run copy;
 #     only modelRoles/cycleOrder merge back, only in the exact form omp
@@ -85,6 +93,8 @@ source "$REPO_ROOT/functions/binds.sh"
 source "$REPO_ROOT/functions/omp-home.sh"
 # shellcheck source=functions/claude-json.sh
 source "$REPO_ROOT/functions/claude-json.sh"
+# shellcheck source=functions/claude-home.sh
+source "$REPO_ROOT/functions/claude-home.sh"
 
 RUN_DIR="$W/run"
 mkdir -p "$RUN_DIR" || fail_setup "mkdir RUN_DIR"
@@ -371,36 +381,127 @@ printf '%s' '{"a":1,"mcpServers":{"s":{"command":"x"' >"$J/trunc.json"
 claude_json_wellformed "$J/trunc.json" && j3=1
 printf '%s' '{"a":"unterminated}' >"$J/str.json"
 claude_json_wellformed "$J/str.json" && j3=1
+# A second top-level value is where a splice would land unseen.
+printf '%s' '{"theme":"dark"}{"mcpServers":{"s":{"command":"x"}}}' >"$J/two.json"
+claude_json_wellformed "$J/two.json" && j3=1
+printf '%s' '[{"mcpServers":{}}]' >"$J/array.json"
+claude_json_wellformed "$J/array.json" && j3=1
 claude_json_wellformed "$J/ok.json" || j3=1
 [[ "$j3" -eq 0 ]] \
-    && ok J3 "a truncated file or an unterminated string is not well-formed; a sound one is" \
-    || bad J3 "the well-formedness check passed a half-written file or refused a sound one"
+    && ok J3 "a truncated file, an unterminated string, or anything but one object is not well-formed; a sound one is" \
+    || bad J3 "the well-formedness check passed a half-written or multi-value file, or refused a sound one"
 [[ "$(claude_json_keys "$J/ok.json" | tr '\n' ' ')" == "a mcpServers p path z " ]] \
     && ok J4 "the top-level key list holds exactly the top-level keys, not the nested or quoted decoys" \
     || bad J4 "the top-level key list missed a key or listed a nested one"
-# The per-run copy: the real file is never bound and never written; what
-# the session changed is named, its version kept outside any checkout.
+# j_has ENTRY: ENTRY is one of BINDS' elements, verbatim.
+j_has() { local b; for b in "${BINDS[@]}"; do [[ "$b" == "$1" ]] && return 0; done; return 1; }
+# j_fresh HOSTJSON: a new per-run claude home over a host ~/.claude.json
+# holding HOSTJSON.
+j_fresh() {
+    rm -rf "$RUN_DIR/claude-home"
+    BINDS=() RO_MASKED=() CLAUDE_HOME_DIR="" CLAUDE_JSON_COPY=""
+    printf '%s\n' "$1" >"$HOME/.claude.json"
+    claude_home_prepare && claude_json_prepare
+}
+CLAUDE_JSON_LAST="$HOME/.agent/claude.json.last-session"
+# The per-run copy: a plain file in the per-run home, never a bind, so
+# claude's lock, temporary file and rename work; what the session changes
+# outside the allowlist never reaches the real file, and is named.
 j5=0
-printf '%s\n' '{"numStartups":1,"projects":{}}' >"$HOME/.claude.json"
+j_fresh '{"numStartups":1,"projects":{}}' || j5=1
 cp "$HOME/.claude.json" "$J/real.before"
-BINDS=() CLAUDE_JSON_LAST="$HOME/.agent/claude.json.last-session"
-claude_json_prepare || j5=1
-[[ " ${BINDS[*]} " == *" $RUN_DIR/claude.json:$HOME/.claude.json "* ]] || j5=1
-printf '%s\n' '{"numStartups":1,"projects":{"/x":{"mcpServers":{"e":{"command":"sh"}},"hasTrustDialogAccepted":true}}}' >"$CLAUDE_JSON_COPY"
-claude_json_report 2>"$J/report.err"
+[[ "$CLAUDE_JSON_COPY" == "$RUN_DIR/claude-home/.claude.json" && -f "$CLAUDE_JSON_COPY" ]] || j5=1
+cmp -s "$CLAUDE_JSON_COPY" "$HOME/.claude.json" || j5=1
+b_bound "$HOME/.claude.json" && j5=1
+printf '%s\n' '{"numStartups":1,"apiKeyHelper":"sh -c x","env":{"NODE_OPTIONS":"--require /x"},"mcpServers":{"e":{"command":"sh"}},"projects":{"/x":{"mcpServers":{"e":{"command":"sh"}},"hasTrustDialogAccepted":true}}}' >"$CLAUDE_JSON_COPY"
+claude_json_finish 2>"$J/report.err"
 cmp -s "$HOME/.claude.json" "$J/real.before" || j5=1
-grep -q 'Changed top-level keys: projects$' "$J/report.err" || j5=1
+grep -qx '  apiKeyHelper env mcpServers projects' "$J/report.err" || j5=1
 cmp -s "$CLAUDE_JSON_LAST" "$CLAUDE_JSON_COPY" || j5=1
 [[ "$(stat -c %a "$CLAUDE_JSON_LAST")" == 600 ]] || j5=1
 # A symlink at the keep path is not followed, not even to an existing file.
 rm -f "$CLAUDE_JSON_LAST"; printf 'mine\n' >"$J/elsewhere"; ln -s "$J/elsewhere" "$CLAUDE_JSON_LAST"
-claude_json_report 2>/dev/null
+claude_json_finish 2>/dev/null
 [[ "$(cat "$J/elsewhere")" == mine ]] || j5=1
 rm -f "$CLAUDE_JSON_LAST"
 [[ "$j5" -eq 0 ]] \
-    && ok J5 "claude.json is a per-run copy: the real file stays untouched, the changed keys are named, a keep-path symlink is not followed" \
-    || bad J5 "the session's claude.json reached the real file, or the report was wrong"
-BINDS=() CLAUDE_JSON_COPY=""
+    && ok J5 "claude.json is a plain per-run copy: spawn/trust keys never reach the real file, the changed keys are named, a keep-path symlink is not followed" \
+    || bad J5 "the session's claude.json was bound, reached the real file, or the report was wrong"
+# The allowlist merge: theme and the onboarding marker reach the real file,
+# and every other byte of it -- including the keys the session also
+# changed -- stays the host's.
+j6=0
+j_fresh '{"numStartups":1,"theme":"light","mcpServers":{"h":{"command":"hostcmd"}},"projects":{"/x":{"hasTrustDialogAccepted":false}}}' || j6=1
+cp "$HOME/.claude.json" "$J/real.before"
+printf '%s\n' '{"numStartups":2,"theme":"dark","hasCompletedOnboarding":true,"lastOnboardingVersion":"2.1.281","apiKeyHelper":"sh -c x","mcpServers":{"h":{"command":"hostcmd"},"e":{"command":"sh"}},"projects":{"/x":{"hasTrustDialogAccepted":true}}}' >"$CLAUDE_JSON_COPY"
+claude_json_finish 2>/dev/null
+claude_json_wellformed "$HOME/.claude.json" || j6=1
+[[ "$(claude_json_value "$HOME/.claude.json" theme)" == '"dark"' \
+   && "$(claude_json_value "$HOME/.claude.json" hasCompletedOnboarding)" == true \
+   && "$(claude_json_value "$HOME/.claude.json" lastOnboardingVersion)" == '"2.1.281"' ]] || j6=1
+[[ "$(claude_json_keys "$HOME/.claude.json" | tr '\n' ' ')" == "hasCompletedOnboarding lastOnboardingVersion mcpServers numStartups projects theme " ]] || j6=1
+for k in numStartups mcpServers projects; do
+    [[ "$(claude_json_value "$HOME/.claude.json" "$k")" == "$(claude_json_value "$J/real.before" "$k")" ]] || j6=1
+done
+[[ ! -e "$HOME/.claude.json.lock" ]] || j6=1
+[[ "$j6" -eq 0 ]] \
+    && ok J6 "only theme/hasCompletedOnboarding/lastOnboardingVersion merge back; every other key of the real file stays byte-identical" \
+    || bad J6 "the merge wrote a non-allowlisted key, lost an allowlisted one, or left the real file malformed"
+# What the merge refuses: a host-side change made during the run wins, a
+# value in a shape claude never writes is dropped, and a symlinked real
+# file is not written through.
+j7=0
+j_fresh '{"theme":"light"}' || j7=1
+printf '%s\n' '{"theme":"dark"}' >"$CLAUDE_JSON_COPY"
+printf '%s\n' '{"theme":"light-ansi"}' >"$HOME/.claude.json"
+claude_json_finish 2>/dev/null
+[[ "$(cat "$HOME/.claude.json")" == '{"theme":"light-ansi"}' ]] || j7=1
+j_fresh '{}' || j7=1
+printf '%s\n' '{"theme":{"x":1},"hasCompletedOnboarding":"yes","lastOnboardingVersion":"$(id)"}' >"$CLAUDE_JSON_COPY"
+claude_json_finish 2>/dev/null
+[[ "$(cat "$HOME/.claude.json")" == '{}' ]] || j7=1
+j_fresh '{}' || j7=1
+printf '%s\n' '{}' >"$J/target.json"; rm -f "$HOME/.claude.json"; ln -s "$J/target.json" "$HOME/.claude.json"
+printf '%s\n' '{"theme":"dark"}' >"$CLAUDE_JSON_COPY"
+claude_json_finish 2>/dev/null
+[[ -L "$HOME/.claude.json" && "$(cat "$J/target.json")" == '{}' ]] || j7=1
+rm -f "$HOME/.claude.json" "$CLAUDE_JSON_LAST"
+[[ "$j7" -eq 0 ]] \
+    && ok J7 "the merge never overwrites a host-side change, a foreign value shape, or a symlinked real file" \
+    || bad J7 "the merge wrote over a host change, merged a foreign shape, or wrote through a symlink"
+# The per-run home itself: the login is the host's, read-write; config is
+# the host's, read-only, and where the host has none a read-only
+# placeholder keeps the session from creating it; the host's ~/.claude is
+# never bound as a directory.
+j8=0
+mkdir -p "$HOME/.claude/agents"; printf '{}\n' >"$HOME/.claude/settings.json"
+j_fresh '{}' || j8=1
+j_has "$RUN_DIR/claude-home:$HOME" || j8=1
+j_has "$HOME/.claude/.credentials.json" && [[ -f "$HOME/.claude/.credentials.json" ]] || j8=1
+j_has "$HOME/.claude/settings.json:$HOME/.claude/settings.json:ro" || j8=1
+j_has "$HOME/.claude/agents:$HOME/.claude/agents:ro" || j8=1
+j_has "$RUN_DIR/claude-home/.claude/hooks:$HOME/.claude/hooks:ro" && [[ -d "$RUN_DIR/claude-home/.claude/hooks" ]] || j8=1
+j_has "$RUN_DIR/claude-home/.claude/mcp.json:$HOME/.claude/mcp.json:ro" || j8=1
+[[ ! -e "$HOME/.claude/hooks" && ! -e "$HOME/.claude/mcp.json" ]] || j8=1
+for b in "${BINDS[@]}"; do
+    [[ "$b" == "$HOME/.claude" || "$b" == "$HOME/.claude:"* ]] && j8=1
+done
+[[ "$j8" -eq 0 ]] \
+    && ok J8 "per-run claude home: the login read-write, host config read-only, absent config a read-only placeholder, ~/.claude never bound whole" \
+    || bad J8 "claude's per-run home exposes the host's ~/.claude, leaves config creatable, or does not share the login"
+j9=0
+( APPTAINERENV_CLAUDE_CONFIG_DIR="$W/elsewhere"; export APPTAINERENV_CLAUDE_CONFIG_DIR
+  claude_home_refuse_overrides ) >/dev/null 2>&1 && j9=1
+( APPTAINERENV_CLAUDE_SECURESTORAGE_CONFIG_DIR=""; export APPTAINERENV_CLAUDE_SECURESTORAGE_CONFIG_DIR
+  claude_home_refuse_overrides ) >/dev/null 2>&1 && j9=1
+( unset APPTAINERENV_CLAUDE_CONFIG_DIR APPTAINERENV_CLAUDE_SECURESTORAGE_CONFIG_DIR
+  claude_home_refuse_overrides ) >/dev/null 2>&1 || j9=1
+[[ "$j9" -eq 0 ]] \
+    && ok J9 "a forwarded CLAUDE_CONFIG_DIR or CLAUDE_SECURESTORAGE_CONFIG_DIR refuses the run; none forwarded starts" \
+    || bad J9 "a claude directory override reached the container, or the check refused a clean run"
+rm -rf "$HOME/.claude" "$HOME/.claude.json" "$RUN_DIR/claude-home"
+# shellcheck disable=SC2034  # CLAUDE_HOME_DIR is read by claude_json_prepare (functions/claude-json.sh)
+BINDS=() RO_MASKED=() CLAUDE_HOME_DIR="" CLAUDE_JSON_COPY=""
 
 # --- O: omp's per-run ~/.omp (functions/omp-home.sh) ---------------------
 # The host's ~/.omp holds code omp loads (native addons, extensions/,

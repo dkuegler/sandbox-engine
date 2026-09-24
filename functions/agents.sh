@@ -185,6 +185,11 @@ generate_limitations_file() {
                 echo "- \`$p\` -- read-only."
             fi
         done
+        # claude's $HOME is a per-run directory (functions/claude-home.sh).
+        if [[ "${AGENT:-}" == claude ]]; then
+            echo "- Anything else you create under \`\$HOME\` is per-run scratch: it works"
+            echo "  for this session and is discarded when it ends."
+        fi
         echo
         echo "## Project config and instruction files are read-only"
         echo
@@ -593,50 +598,27 @@ configure_agent() {
 
     case "$AGENT" in
         claude)
-            # Inverted polarity: ~/.claude is NOT bound as a tree. Only the
-            # paths claude writes are bound read-write, by name, and its
-            # config read-only. $HOME exists inside the container only
-            # where a bind scaffolds it (--no-mount home,
-            # functions/apptainer.sh), so a path bound neither way cannot
-            # reach the host.
-            #
-            # Writable, and why: .credentials.json is the OAuth material
-            # claude refreshes itself (note the leading dot); the rest is
-            # session, history and telemetry state.
-            bind_state_rw "$HOME/.claude/.credentials.json" file '{}'
-            # ~/.claude.json is NOT bound: it holds what an unsandboxed
-            # claude spawns and trusts (mcpServers, projects.<path>) next
-            # to state claude rewrites constantly. A per-run copy is bound
-            # in its place and never written back; the exit report names
-            # what the session changed (functions/claude-json.sh).
-            claude_json_prepare
-            bind_state_rw "$HOME/.claude/history.jsonl" file
-            for p in projects shell-snapshots todos statsig file-history ide; do
-                bind_state_rw "$HOME/.claude/$p" dir
-            done
-            # Read-only, and why: settings.json/settings.local.json carry
-            # hooks (shell commands run on tool events), apiKeyHelper (a
-            # shell command run on credential expiry), statusLine (a shell
-            # command run per render) and mcpServers (spawned command
-            # lines); hooks/ and plugins/ hold executed code; agents/,
-            # commands/, skills/, rules/ and output-styles/ are prompt
-            # content that would persist into the human's next bare-host
-            # run. The human authored all of it outside any repo the agent
-            # can reach, so the session may READ it but never write it.
-            # ~/.config/claude is the alternate settings location.
-            bind_ro "$HOME/.config/claude" dir
-            for p in settings.json settings.local.json mcp.json .mcp.json \
-                     hooks plugins agents commands skills rules output-styles; do
-                case "$p" in
-                    settings.json | settings.local.json | mcp.json | .mcp.json)
-                        bind_ro "$HOME/.claude/$p" ;;
-                    *)  bind_ro "$HOME/.claude/$p" dir ;;
-                esac
-            done
+            # claude's $HOME is a per-run directory with the host's paths
+            # bound into it one at a time -- login and session state
+            # read-write, config read-only, a read-only placeholder for
+            # config the host lacks; the layout and the reasons are in
+            # functions/claude-home.sh. ~/.claude.json is a plain per-run
+            # copy in there, of which only an allowlist of keys merges back
+            # at exit (functions/claude-json.sh).
+            claude_home_refuse_overrides
+            if ! claude_home_prepare || ! claude_json_prepare; then
+                echo "error: could not build claude's per-run home in $RUN_DIR" >&2
+                exit 1
+            fi
             # CLAUDE.md is the always-loaded instruction file: overlaid
             # with a copy of itself plus a pointer at the generated
             # limitations lookup file, rather than a plain read-only bind.
             bind_augmented_instructions "$HOME/.claude/CLAUDE.md"
+            # claude's own flag for running inside a sandbox: the workspace
+            # counts as trusted, so there is no trust dialog and nothing is
+            # recorded for it. Committed project permission rules then
+            # apply in the session, as in a trusted folder on the host.
+            backend_forward_env CLAUDE_CODE_SANDBOXED 1
             # No --strict-mcp-config, and no interception of the user's own
             # --mcp-config: ARGS passes through untouched, exactly as it
             # does for opencode and omp. The MCP definitions claude reads
@@ -647,8 +629,9 @@ configure_agent() {
             #     mask: committed and clean is a read-only copy,
             #     uncommitted is hidden;
             #   ~/.claude.json (user- and local-scope servers) -- the
-            #     per-run copy, never written back, so nothing a session
-            #     writes there reaches a later run;
+            #     per-run copy; its mcpServers and projects never merge
+            #     back, so nothing a session writes there reaches a later
+            #     run;
             #   ~/.claude/settings.json, mcp.json and the rest of the
             #     global surface -- read-only, human-authored outside any
             #     repo the agent can reach.

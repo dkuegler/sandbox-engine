@@ -67,10 +67,16 @@ verified and the recorded "Standing verification" result, and
   `bind_augmented_instructions`) — an absent path is never created or
   bound unless a read-write parent covers it, and per-agent state
   directories (opencode's) are per-run or per-project, never the
-  host's; the `~/.claude.json` key scanner
-  (`functions/claude-json.sh`) — the top-level value survives decoys
-  and a duplicated/escaped key refuses rather than guessing, and the
-  real file is never bound or written, only a per-run copy; and omp's
+  host's; the `~/.claude.json` key scanner and merge
+  (`functions/claude-json.sh`) — the top-level value survives decoys,
+  a duplicated/escaped key or anything but one object refuses rather
+  than guessing, the per-run copy is a plain file, and only `theme`,
+  `hasCompletedOnboarding` and `lastOnboardingVersion` merge back, in
+  claude's own shape, never over a host-side change or through a
+  symlink; claude's per-run `$HOME` (`functions/claude-home.sh`) — the
+  login is the host's, config is read-only with a read-only placeholder
+  where the host has none, `~/.claude` is never bound whole, and a
+  directory override refuses the run; and omp's
   per-run `~/.omp` (`functions/omp-home.sh`) — the host's natives,
   `run/` and logs are never bound, `config.yml` is a plain per-run
   copy, only `modelRoles`/`cycleOrder` merge back in the exact form
