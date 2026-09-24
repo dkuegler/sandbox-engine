@@ -144,7 +144,7 @@
 # Project config masking (the git-known convention):
 #   Every project-root path an agent CLI, an editor, direnv or a hook
 #   framework would execute or auto-load on the human's NEXT interaction
-#   with the checkout is on a fixed table (config/mask.yml), and the
+#   with the checkout is on a fixed table (config/mask.toml), and the
 #   session's view of each path is decided by one rule: visible <=>
 #   tracked in the checkout's HEAD tree AND identical to it in the
 #   working tree. Only the user commits, so committed config is
@@ -395,7 +395,7 @@ RO_MASKED=()
 resolve_extra_binds
 
 # sandbox.yml is an ordinary row on the config-mask table
-# (config/mask.yml): the thing that actually protects it is the
+# (config/mask.toml): the thing that actually protects it is the
 # tracked-and-clean refusal in parse_project_sandbox_config() above, which ran
 # before this run built anything from it. The mask below only keeps the
 # session from reading an uncommitted copy or rewriting a committed one,

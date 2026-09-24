@@ -279,7 +279,7 @@ bind_never() {
 # relative to this file, never through the environment or the project's
 # working directory: the table decides what the sandbox masks, so where
 # it is read from is not something a caller gets to choose.
-PROJECT_CONFIG_MASK_FILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/config/mask.yml"
+PROJECT_CONFIG_MASK_FILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/config/mask.toml"
 
 # PROJECT_CONFIG_MASK_KIND / PROJECT_CONFIG_MASK_PATH: the "project:"
 # entries, index-aligned; PROJECT_CONFIG_MASK_ANYWHERE: the "anywhere:"

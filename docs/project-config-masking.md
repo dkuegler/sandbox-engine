@@ -6,7 +6,7 @@ Subject: every path a supported agent CLI — or the host tooling that shares th
 checkout with it — reads as configuration; the classification those paths are
 graded against; the rule that decides what a sandboxed session sees at each of
 them (`mask_project_agent_config()`, `functions/binds.sh`, over the table in
-`config/mask.yml`); the host-side gate on `sandbox.yml`; and where a config file
+`config/mask.toml`); the host-side gate on `sandbox.yml`; and where a config file
 the agent creates surfaces. `M` = measured, output quoted. `D` = derived from
 source or documentation, not exercised.
 
@@ -54,7 +54,7 @@ reviewed the reference, not the referent.
 `D` — every trigger above is from the respective tool's own documentation. None
 of them prompts.
 
-The four classes partition the `config/mask.yml` table exactly, with one
+The four classes partition the `config/mask.toml` table exactly, with one
 residual: `.opencode/theme` and `.opencode/themes` are masked for uniformity
 with the rest of `.opencode/`, and are neither executed nor read into the
 context. `M` — the table holds 64 entries; see Reproduction. `D` — the
@@ -142,7 +142,7 @@ cross-tool MCP discovery reads that file.
 
 ### The mask reaches the whole tree, not just the root
 
-`D` — `config/mask.yml` is root-relative by design, because every supported
+`D` — `config/mask.toml` is root-relative by design, because every supported
 agent launches with its cwd at the checkout root and none of them walks *above*
 it. But the always-loaded instruction files are read at any depth, so a
 root-only mask would leave `sub/AGENTS.md` writable and loadable. The mask
@@ -354,7 +354,7 @@ template; the run checks the image once at startup and asks for a single
 
 ## The mask table
 
-`D` — `config/mask.yml` is the perimeter: nothing discovers config paths, so a
+`D` — `config/mask.toml` is the perimeter: nothing discovers config paths, so a
 path that is not on the table is not masked. It has two keys. Under
 `project:`, each entry is `- file: PATH` or `- dir: PATH`, relative to the
 checkout root; a `dir` entry covers everything beneath it. Under `anywhere:`,
