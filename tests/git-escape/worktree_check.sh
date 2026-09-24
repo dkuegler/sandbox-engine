@@ -755,6 +755,44 @@ else
     printf 'skip %-6s %s\n' M16 "no python3 with tomllib (>= 3.11)"
 fi
 
+# --- B: the global surface's read-only binds (functions/binds.sh) --------
+# An absent global config path must never become creatable on the host:
+# unbound when nothing read-write covers it, created and bound read-only
+# when something does.
+G="$W/global"
+mkdir -p "$G/rwparent"
+# b_bound PATH: some bind in BINDS has PATH as its container destination.
+b_bound() {
+    local b dst
+    for b in "${BINDS[@]}"; do
+        [[ "$b" == -B ]] && continue
+        dst="$b"
+        [[ "$b" == *:* ]] && { dst="${b#*:}"; dst="${dst%%:*}"; }
+        [[ "$dst" == "$1" ]] && return 0
+    done
+    return 1
+}
+BINDS=() RO_MASKED=()
+bind_ro "$G/absent/settings.json"
+[[ ${#BINDS[@]} -eq 0 && ! -e "$G/absent" ]] \
+    && ok B1 "an absent config path with no read-write parent is not bound, and nothing is created" \
+    || bad B1 "an absent config path was bound or materialized on the host"
+BINDS=(-B "$G/rwparent") RO_MASKED=()
+bind_ro "$G/rwparent/bin" dir
+[[ -d "$G/rwparent/bin" && " ${BINDS[*]} " == *" $G/rwparent/bin:$G/rwparent/bin:ro "* ]] \
+    && ok B2 "an absent path under a read-write bind is created on the host and bound read-only" \
+    || bad B2 "an absent path under a read-write bind was left creatable"
+ln -s "$G/nowhere" "$G/rwparent/link"
+( BINDS=(-B "$G/rwparent"); bind_ro "$G/rwparent/link" ) >/dev/null 2>&1 \
+    && bad B3 "a dangling symlink under a read-write bind was accepted" \
+    || ok B3 "a dangling symlink under a read-write bind refuses the run"
+BINDS=(-B "$G/rwparent") RO_MASKED=()
+bind_augmented_instructions "$G/rwparent/AGENTS.md" 2>/dev/null
+[[ ! -e "$G/rwparent/AGENTS.md" ]] && ! b_bound "$G/rwparent/AGENTS.md" \
+    && ok B4 "the instruction overlay is skipped where a read-write bind covers an absent destination" \
+    || bad B4 "the instruction overlay would materialize a file inside a read-write bind"
+BINDS=() RO_MASKED=()
+
 # --- O: omp's per-run ~/.omp (functions/omp-home.sh) ---------------------
 # The host's ~/.omp holds code omp loads (native addons, extensions/,
 # settings naming modules) and sockets to host-side processes (run/). What

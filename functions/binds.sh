@@ -201,39 +201,67 @@ bind_scope_check() {
 
 # bind_ro PATH [KIND]: bind PATH read-only over itself, so a read-write
 # bind of an ancestor cannot be written through at PATH. Records the path
-# in RO_MASKED for --verbose reporting.
+# in RO_MASKED for --verbose reporting. Used for the agents' GLOBAL config
+# surfaces (configure_agent); the PROJECT surface routes through
+# mask_project_agent_config instead.
 #
-# When PATH does not exist on the host, an empty RUN_DIR placeholder is
-# bound read-only over it instead of skipping the mask (KIND selects
-# "file" (default) or "dir"). This closes a real gap: startup only
-# pre-creates the top-level per-agent directories (~/.claude,
-# ~/.config/opencode, ~/.omp, ...), not the specific children this
-# function masks (settings.json, plugins/, ...). For every one of those
-# a given host happens not to have yet, the parent is bound read-write
-# and the specific child was previously left unbound entirely -- so the
-# agent could create it inside the container, and it would exist,
-# unmasked, on the host the moment the container exits, ready to execute
-# on the human's next bare-host run of that agent. The RUN_DIR-source
-# pattern (bind something ensure_run_dir() creates over a destination
-# that may not exist on the host) is the same one
-# bind_augmented_instructions() already relies on. No write ever touches
-# the real (missing) path or its parent on the host.
+# An ABSENT path is not bound at all. Under --containall with --no-mount
+# home (functions/apptainer.sh), $HOME exists inside the container only
+# where a bind scaffolds it, so a path nothing binds cannot reach the
+# host: the session cannot create it there. A bind over it would instead
+# make apptainer materialise the missing destination, and under a
+# read-write parent that happens on the REAL filesystem.
+#
+# The one exception is exactly that: an absent PATH under a read-write
+# bind this run already resolved (bind_rw_covers). Left unbound it would
+# be creatable, on the host, through the parent -- e.g. opencode's bin/
+# inside its writable state directory, which the host opencode executes
+# from. So it is created empty on the host (KIND: "file", the default, or
+# "dir") and then bound read-only. A dangling symlink there cannot be
+# replaced safely by either route, so the run refuses.
 bind_ro() {
-    local p="$1" kind="${2:-file}" placeholder
+    local p="$1" kind="${2:-file}"
     if [[ ! -e "$p" ]]; then
-        ensure_run_dir
-        placeholder="$RUN_DIR/ro-mask-$(printf '%s' "$p" | sha256sum | cut -c1-16)"
-        if [[ "$kind" == dir ]]; then
-            mkdir -p "$placeholder"
-        else
-            : > "$placeholder"
+        bind_rw_covers "$p" || return 0
+        if [[ -L "$p" ]]; then
+            echo "sandbox: refusing to start -- $p is a dangling symlink inside a read-write" >&2
+            echo "  bind, so the session could replace it. Remove it or point it at a real path." >&2
+            exit 1
         fi
-        BINDS+=(-B "$placeholder:$p:ro")
-        RO_MASKED+=("$p (absent on host; masked empty)")
-        return 0
+        if [[ "$kind" == dir ]]; then
+            mkdir -p -- "$p" || return 1
+        else
+            mkdir -p -- "${p%/*}" && : >"$p" || return 1
+        fi
     fi
     BINDS+=(-B "$p:$p:ro")
     RO_MASKED+=("$p")
+}
+
+# bind_rw_covers PATH: true when a read-WRITE bind this run already
+# resolved contains PATH -- the condition under which apptainer would
+# have to materialise a missing PATH on the REAL host filesystem, and
+# under which the session itself could create it there. A bind whose
+# source is this run's scratch directory does not count: anything
+# materialised in there lands in $RUN_DIR and goes with it.
+bind_rw_covers() {
+    local p="$1" entry src dst opts
+    for entry in ${BINDS[@]+"${BINDS[@]}"}; do
+        [[ "$entry" == "-B" ]] && continue
+        src="${entry%%:*}"
+        dst="$src"
+        opts=""
+        case "$entry" in
+            *:*:*) dst="${entry#*:}"; dst="${dst%%:*}"; opts="${entry##*:}" ;;
+            *:*)   dst="${entry#*:}" ;;
+        esac
+        [[ "$opts" == "ro" ]] && continue
+        if [[ -n "${RUN_DIR:-}" && ( "$src" == "$RUN_DIR" || "$src" == "$RUN_DIR"/* ) ]]; then
+            continue
+        fi
+        [[ "$p" == "$dst"/* ]] && return 0
+    done
+    return 1
 }
 
 # bind_state_rw PATH KIND [INITIAL]: bind PATH read-WRITE, creating it on

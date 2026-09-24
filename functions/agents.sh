@@ -277,6 +277,18 @@ generate_limitations_file() {
 # instead of re-trimming it here.
 bind_augmented_instructions() {
     local real="$1" out
+    # An instruction file the host does not have is bound anyway -- the
+    # notice is worth more than the absent file -- but only where that
+    # bind cannot reach the host: where a read-write bind of a host
+    # directory covers the destination, apptainer would have to create the
+    # missing file in that real directory to mount over it. There the
+    # overlay is skipped and the limitations file is still mounted at
+    # $HOME/.sandbox-limitations.md; only the pointer to it is lost.
+    if [[ ! -e "$real" && ! -L "$real" ]] && bind_rw_covers "$real"; then
+        log_warn "not creating $real just to add the sandbox notice;" \
+            "the agent's limitations are still at \$HOME/.sandbox-limitations.md"
+        return 0
+    fi
     ensure_run_dir
     out="$RUN_DIR/instructions-$(basename "$real")-$(echo -n "$real" | cksum | cut -d' ' -f1)"
     if [[ -f "$real" ]]; then
@@ -591,7 +603,9 @@ configure_agent() {
             # human then executes on the bare host.
             bind_ro "$HOME/.opencode" dir
             # Same reason, one level down: bin/ inside the writable state
-            # directory above is the one path there that is executed.
+            # directory above is the one path there that is executed. A
+            # host without one gets it created empty first (bind_ro, under
+            # a read-write parent), so the session cannot create it.
             bind_ro "$HOME/.local/share/opencode/bin" dir
             # opencode.json/opencode.jsonc define mcp.<name>.command arrays,
             # plugin paths, lsp.*.command, formatter.*.command and

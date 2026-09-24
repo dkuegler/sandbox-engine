@@ -244,6 +244,35 @@ the parser reads its target, which is a different file and may be untracked.
 On the table itself `sandbox.yml` is an ordinary row, masked exactly like every
 other entry.
 
+**The agents' global config under `$HOME` follows the same shape, with a
+different anchor** (`D` — `configure_agent()`, `functions/agents.sh`;
+`bind_ro()`, `bind_state_rw()`, `functions/binds.sh`). It has no repository, so
+committed-vs-uncommitted cannot be evaluated against it; the anchor is that the
+human put it in their own `$HOME`, outside any repo the agent can reach. So
+global config is mounted read-only and readable, and nothing else of the
+agent's directory is bound:
+
+| global path | session sees |
+| --- | --- |
+| present config | the real content, read-only |
+| absent config | nothing bound at all |
+| absent config inside a read-write state directory (opencode's `~/.local/share/opencode/bin`) | created empty on the host, then read-only — left unbound it would be creatable through the parent; a dangling symlink there refuses the run |
+| writable state (session databases, caches, credentials the agent refreshes) | read-write, one path at a time; a missing JSON state file is created as `{}` |
+| `.env` | never mounted, not even read-only — announced on the terminal instead |
+
+`D` — the launch line (`--containall --no-mount home,…`, `functions/apptainer.sh`)
+leaves `$HOME` absent inside the container except where a bind scaffolds it,
+so a path nothing binds cannot reach the host. Per apptainer's documented
+behaviour, a write in-session lands as follows; not measured with this launch
+line:
+
+| path under `$HOME` | in-container write |
+| --- | --- |
+| bound read-write | lands, persists on the host — the deliberate set |
+| bound read-only | refused, `EROFS` |
+| unbound, beside a bind (scaffolded) | not on the host: refused, or lost with the container |
+| unbound, nothing scaffolds it | refused, `ENOENT` |
+
 **omp's `~/.omp` is a per-run directory** (`D` — `functions/omp-home.sh`),
 because omp keeps state and configuration in the same directories.
 `~/.omp/agent` holds its sqlite databases next to `config.yml`, `models.yml`,
