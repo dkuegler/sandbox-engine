@@ -122,11 +122,23 @@ if [[ "$NEGATIVE" -eq 1 ]]; then
 fi
 
 echo "=== git-escape suite, project dir $FIXTURE"
-# --ignore-warnings is deliberate, not incidental. This harness drives
-# sandbox.sh through `script` mode with no TTY, so the warning gate has
-# nobody to confirm with and would refuse the run outright. The suite must
-# stay unattended, and a warning here is not a reason to skip the mask
-# assertions -- the warning text still prints, and the assertions are what
-# decide pass or fail.
-"$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" --bind "$WORK/wt:rw" --ignore-warnings script \
+# --ignore-warnings and --allow-external-binds are both deliberate, not
+# incidental, and for the same reason: this harness drives sandbox.sh
+# through `script` mode meant to run unattended (CI, or a human invoking
+# it directly at a terminal that still has a controlling tty either way),
+# and each gate would otherwise stop to ask a question nothing here can
+# answer -- the warning gate has nobody to confirm with, and
+# bind_scope_check's "mount it read-only?" prompt for $EXTRA/$WORK/wt
+# (both deliberately outside $FIXTURE, functions/binds.sh) blocks on
+# /dev/tty whenever one happens to be attached, which it is for a human
+# running this directly, not only in CI. Neither flag is a reason to skip
+# the mask assertions -- the warning text and the external-bind notice
+# still print, and the assertions are what decide pass or fail.
+# --allow-external-binds also keeps both binds read-write as requested
+# (":rw"), not silently downgraded to read-only the way an interactive
+# "r" reply would -- part of what this suite proves is that the `.git`
+# mask holds even under a read-write extra bind (see the worktree bind's
+# own comment above), so downgrading it here would weaken that assertion.
+"$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" --bind "$WORK/wt:rw" \
+    --ignore-warnings --allow-external-binds script \
     --project-dir "$FIXTURE" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA" "$WORK/wt"

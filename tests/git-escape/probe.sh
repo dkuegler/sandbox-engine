@@ -105,10 +105,21 @@ if ! "$GIT" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 # --- A1: every write into .git is refused by the kernel -------------------
+# A ".git" match is a DIRECTORY for the top-level repo and a submodule's
+# real gitdir, but a FILE (a "gitdir: <path>" pointer) for a submodule's
+# or worktree's own checkout -- `find -name .git` matches both. Writing
+# INTO a file as if it were a directory ("$gd/ESCAPE_PROBE") always fails
+# with ENOTDIR ("Not a directory"), never EROFS, regardless of any mask,
+# so that check would prove nothing for a file-type match; it has to
+# attempt writing the file itself instead.
 a1_fail=0
 while read -r gd; do
     [[ -n "$gd" ]] || continue
-    err="$(touch "$gd/ESCAPE_PROBE" 2>&1)"; rc=$?
+    if [[ -d "$gd" ]]; then
+        err="$(touch "$gd/ESCAPE_PROBE" 2>&1)"; rc=$?
+    else
+        err="$( { : >> "$gd"; } 2>&1 )"; rc=$?
+    fi
     [[ $rc -ne 0 && "$err" == *"Read-only file system"* ]] || { a1_fail=1; echo "  ..$gd rc=$rc err=$err"; }
 done < <(find . -name .git -maxdepth 4 -printf '%p\n' 2>/dev/null)
 chk A1 "writes into every .git refused (EROFS)" "$a1_fail" 0

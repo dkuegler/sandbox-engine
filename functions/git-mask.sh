@@ -188,6 +188,16 @@ git_dir_visible() {
 mask_git_readonly() {
     local entry real root start_ts end_ts elapsed j
     local -a masked=()
+    # A real gitdir can be reached through two different roots at once --
+    # e.g. a worktree's own checkout root resolves its ".git" file to
+    # <main>/.git/worktrees/<name>/, which the main checkout's root ALSO
+    # reaches by recursing into it from <main>/.git directly
+    # (sanitize_gitdir_metadata's own worktrees/ walk). Without this set,
+    # both paths independently mask-and-sanitize the identical directory:
+    # harmless (both binds are read-only over the same destination, and
+    # apptainer keeps the first and warns "destination is already in the
+    # mount point list" on the second), but wasted work and log noise.
+    declare -A seen=()
     local -a roots=("$PROJECT_DIR")
     local -a extra_srcs=(${EXTRA_BIND_SRCS[@]+"${EXTRA_BIND_SRCS[@]}"})
     local -a extra_ro=(${EXTRA_BIND_RO[@]+"${EXTRA_BIND_RO[@]}"})
@@ -215,27 +225,37 @@ mask_git_readonly() {
         start_ts="$(date +%s.%N)"
         while IFS= read -r entry; do
             [[ -n "$entry" ]] || continue
-            BINDS+=(-B "$entry:$entry:ro")
-            masked+=("$entry")
-            # entry is itself the gitdir (ordinary/nested repo case) --
-            # sanitize it directly. A worktree/submodule .git is a file,
-            # not a gitdir, so there is nothing under it to sanitize; its
-            # target (real, below) is the actual gitdir in that case.
-            [[ -d "$entry" ]] && sanitize_gitdir_metadata "$entry"
+            if [[ -z "${seen[$entry]+x}" ]]; then
+                seen[$entry]=1
+                BINDS+=(-B "$entry:$entry:ro")
+                masked+=("$entry")
+                # entry is itself the gitdir (ordinary/nested repo case) --
+                # sanitize it directly. A worktree/submodule .git is a
+                # file, not a gitdir, so there is nothing under it to
+                # sanitize; its target (real, below) is the actual gitdir
+                # in that case.
+                [[ -d "$entry" ]] && sanitize_gitdir_metadata "$entry"
+            fi
             real="$(resolve_git_dir "$entry")"
             # A gitdir outside every bound tree is not covered by any
             # read-write bind, so only mask it when it is actually
             # visible in the container -- or explicitly opted into.
             if [[ -n "$real" && "$real" != "$entry" ]] && git_dir_visible "$real" "${roots[@]}"; then
-                BINDS+=(-B "$real:$real:ro")
-                masked+=("$real")
-                sanitize_gitdir_metadata "$real"
-            elif [[ -n "$real" && "$real" != "$entry" ]]; then
-                if [[ "${ALLOW_EXTERNAL_GITDIR:-0}" -eq 1 ]]; then
+                if [[ -z "${seen[$real]+x}" ]]; then
+                    seen[$real]=1
                     BINDS+=(-B "$real:$real:ro")
                     masked+=("$real")
                     sanitize_gitdir_metadata "$real"
-                    echo "note: mounting external git dir $real read-only (--allow-external-gitdir)" >&2
+                fi
+            elif [[ -n "$real" && "$real" != "$entry" ]]; then
+                if [[ "${ALLOW_EXTERNAL_GITDIR:-0}" -eq 1 ]]; then
+                    if [[ -z "${seen[$real]+x}" ]]; then
+                        seen[$real]=1
+                        BINDS+=(-B "$real:$real:ro")
+                        masked+=("$real")
+                        sanitize_gitdir_metadata "$real"
+                        echo "note: mounting external git dir $real read-only (--allow-external-gitdir)" >&2
+                    fi
                 else
                     echo "note: git dir $real lies outside the bound trees and is not mounted into the sandbox; pass --allow-external-gitdir to mount it read-only" >&2
                 fi

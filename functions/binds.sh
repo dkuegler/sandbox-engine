@@ -74,7 +74,7 @@ config_display_type() {
 # common case never needs to write to a mounted path and read-write turns
 # disclosure of a mounted dataset into destruction of it too.
 resolve_extra_binds() {
-    local spec src rest dst opts origin
+    local spec src rest dst opts origin arrow
     local n_yml=${#YML_BINDS[@]}
     local i=0
     for spec in ${YML_BINDS[@]+"${YML_BINDS[@]}"} ${CLI_BINDS[@]+"${CLI_BINDS[@]}"}; do
@@ -99,8 +99,17 @@ resolve_extra_binds() {
             if [[ "$rest" == *:* ]]; then
                 dst="${rest%%:*}"
                 opts="${rest#*:}"
-            else
+            elif [[ "$rest" == /* ]]; then
                 dst="$rest"
+            else
+                # SRC:rw / SRC:ro -- the documented opt-in-to-read-write
+                # shorthand above, not a destination: a real destination is
+                # always an absolute path (apptainer itself requires one),
+                # and "rw"/"ro" never is. Without this, "$EXTRA:rw" parsed
+                # dst="rw" and produced the malformed bind "SRC:rw:ro"
+                # (three fields: src, dst="rw", opts="ro"), which apptainer
+                # refused with "destination must be an absolute path".
+                opts="$rest"
             fi
         fi
         if [[ ! -e "$src" ]]; then
@@ -133,13 +142,23 @@ resolve_extra_binds() {
             is_ro=1
         fi
 
-        if [[ -n "$dst" ]]; then
-            dst="${dst/#\~/$HOME}"
-            BINDS+=(-B "$src:$dst:$opts")
-        else
-            BINDS+=(-B "$src:$opts")
-        fi
-        echo "bind ($origin): $src${dst:+ -> $dst} [$opts]" >&2
+        # apptainer's own -B syntax is strictly positional
+        # (src[:dest[:opts]]) with no "src:opts"-only shorthand: a
+        # 2-field spec is ALWAYS src:dest to apptainer, never src:opts.
+        # So when this run's own spec gave no destination (dst still
+        # empty here -- the "SRC:rw"/"SRC:ro" case above, or a bare
+        # "SRC" with no colon at all), dest defaults to src, same as
+        # apptainer's own documented default, and the bind is always
+        # built as the full 3-field form. Building "src:opts" instead
+        # (a prior version of this function did) makes apptainer treat
+        # the option word itself as the destination and refuse with
+        # "destination must be an absolute path".
+        [[ -n "$dst" ]] || dst="$src"
+        dst="${dst/#\~/$HOME}"
+        BINDS+=(-B "$src:$dst:$opts")
+        arrow=""
+        [[ "$dst" != "$src" ]] && arrow=" -> $dst"
+        echo "bind ($origin): $src$arrow [$opts]" >&2
         EXTRA_BIND_SRCS+=("$src")
         EXTRA_BIND_RO+=("$is_ro")
     done
