@@ -133,8 +133,8 @@ why it earns a place, which is what an audit of the perimeter checks against.
 | `.agent/AGENTS.md`, `.agents/AGENTS.md` | omp | agents provider, walked up to the repository root |
 | `.agent/rules/*`, `.agents/rules/*` | omp | same walk, same always-apply semantics as any other rule source |
 
-A rule directory is carried as a directory entry (`- dir: .omp/rules`), which
-covers every file under it without the table having to enumerate extensions.
+A rule directory is carried as a `dirs` entry (`".omp/rules"`), which covers
+every file under it without the table having to enumerate extensions.
 
 A root `GEMINI.md` is *not* on the table: no supported agent reads it — Gemini
 CLI does, and `.gemini/settings.json` is on the table only because omp's
@@ -682,6 +682,46 @@ reading it is the write access that was just taken away, restored by a longer
 route. Paths are printed through `printf %q`, so a name carrying shell
 metacharacters or terminal escapes is inert in the line the human copies, and
 only regular files are reported — a symlink planted in the directory is not.
+
+## Maintenance
+
+Every claim on this page about *what a tool loads* is derived from that tool's
+own documentation at the date in the header, and each of the three supported
+CLIs ships continuously. The mask table is hand-maintained and discovers
+nothing, so an upstream addition does not appear as a failure anywhere: the
+sandbox keeps starting and the new path is simply unmasked. The recurring review
+is therefore part of the convention, not an optional tidy-up.
+
+Triggered by any agent CLI upgrade in `sandbox/agent/Dockerfile.template`, by
+onboarding a new agent, and on a fixed interval otherwise:
+
+1. **Refresh what each CLI loads.** For claude, omp and opencode, re-read the
+   upstream documentation for instruction-file and rule discovery: which
+   filenames, in which directories, walking which direction, at launch or on
+   some other trigger. Update the four-class table, "Where in the tree each read
+   reaches", and the MCP tables in "What crosses the container barrier" to
+   match, and move the header date.
+2. **Review the table against what the tools consider.** Print the table
+   through its loader (Reproduction; the `tomllib` check in "The mask table"
+   lists every row) and take the set difference against the paths this page
+   enumerates, in both directions. A path the tools read and the table lacks is
+   an unmasked surface. A table entry no tool reads any more is dead weight that
+   still costs a bind.
+3. **Resolve every difference explicitly.** Each one either becomes an entry in
+   `config/mask.toml` with a class assigned here, or gets a recorded reason on
+   this page for staying off the table (the root `GEMINI.md` under "Instruction
+   surfaces beyond the root files" is the pattern). An empty difference is the
+   pass condition.
+4. **Re-check the depth assumptions.** `[project.*]` rows are root-relative;
+   only the `[anywhere]` names are matched at every depth, by the tree-wide
+   mask sweep (`config_deep_instruction_paths()`) and by the approval gate's
+   candidate sweep (`config_shaped_untracked()`). If a CLI starts loading a
+   file from a subdirectory, confirm its basename is on `[anywhere]`, or that
+   its directory is a `dirs` entry.
+
+The other recurring checks that share these triggers — the credential-syntax
+scans, the `$HOME` agent surfaces, and the image installers — are listed in
+[`maintenance.md`](maintenance.md).
 
 ## Reproduction
 
