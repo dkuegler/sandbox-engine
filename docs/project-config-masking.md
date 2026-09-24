@@ -274,6 +274,24 @@ line:
 | unbound, beside a bind (scaffolded) | not on the host: refused, or lost with the container |
 | unbound, nothing scaffolds it | refused, `ENOENT` |
 
+**claude's `~/.claude.json` is a per-run copy that is never written back**
+(`D` — `claude_json_prepare()`, `claude_json_report()`,
+`functions/claude-json.sh`). The file mixes state claude rewrites constantly
+with what a later unsandboxed `claude` spawns and trusts. `D` — per Claude
+Code's MCP documentation (`code.claude.com/docs/en/mcp`): user-scope MCP
+servers are its top-level `mcpServers`; a local-scope server is stored "in
+`~/.claude.json` under that project's path"; `projects["<path>"].hasTrustDialogAccepted`
+set to `true` trusts a folder without a dialog; and the per-project
+enabled/disabled server lists are recorded there too. Any merge-back would
+let a session plant a command line or a trust decision for the next bare-host
+run, so there is none: the session works on its copy, and when it exits the
+report names the top-level keys it changed and keeps its version at
+`~/.agent/claude.json.last-session` (mode 0600, one file, overwritten by the
+next run that changes it; a symlink there is not followed), outside every
+checkout, with the `diff` command to compare it. Cost: nothing the session
+changes in that file — an accepted trust dialog, onboarding and tip counters —
+carries over to the next run.
+
 **omp's `~/.omp` is a per-run directory** (`D` — `functions/omp-home.sh`),
 because omp keeps state and configuration in the same directories.
 `~/.omp/agent` holds its sqlite databases next to `config.yml`, `models.yml`,

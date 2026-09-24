@@ -503,13 +503,15 @@ configure_agent() {
             # reach the host.
             #
             # Writable, and why: .credentials.json is the OAuth material
-            # claude refreshes itself (note the leading dot); ~/.claude.json
-            # is rewritten constantly with session state, per-project trust
-            # and MCP OAuth tokens (its mcpServers do not load:
-            # --strict-mcp-config below); the rest is session, history and
-            # telemetry state.
+            # claude refreshes itself (note the leading dot); the rest is
+            # session, history and telemetry state.
             bind_state_rw "$HOME/.claude/.credentials.json" file '{}'
-            bind_state_rw "$HOME/.claude.json" file '{}'
+            # ~/.claude.json is NOT bound: it holds what an unsandboxed
+            # claude spawns and trusts (mcpServers, projects.<path>) next
+            # to state claude rewrites constantly. A per-run copy is bound
+            # in its place and never written back; the exit report names
+            # what the session changed (functions/claude-json.sh).
+            claude_json_prepare
             bind_state_rw "$HOME/.claude/history.jsonl" file
             for p in projects shell-snapshots todos statsig file-history ide; do
                 bind_state_rw "$HOME/.claude/$p" dir

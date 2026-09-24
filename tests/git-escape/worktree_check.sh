@@ -840,16 +840,32 @@ claude_json_wellformed "$J/ok.json" || j3=1
 [[ "$j3" -eq 0 ]] \
     && ok J3 "a truncated file or an unterminated string is not well-formed; a sound one is" \
     || bad J3 "the well-formedness check passed a half-written file or refused a sound one"
-j4=0
-printf '%s' '{}' >"$J/repl"
-claude_json_splice "$J/ok.json" mcpServers "$J/repl" "$J/out.json" || j4=1
-[[ "$(cat "$J/out.json")" == '{"path":"/home/ü/p","a":"x \"mcpServers\": {\"evil\":1}","p":{"mcpServers":{"n":1}},"mcpServers":{},"z":[1,{"q":2}]}' ]] || j4=1
-printf '%s' '{"unclosed":' >"$J/badrepl"
-claude_json_splice "$J/ok.json" mcpServers "$J/badrepl" "$J/bad.json" && j4=1
-claude_json_splice "$J/ok.json" absent "$J/repl" "$J/abs.json" && j4=1
-[[ "$j4" -eq 0 ]] \
-    && ok J4 "a splice replaces exactly the value's bytes; a malformed replacement or an absent key fails" \
-    || bad J4 "the splice changed other bytes, or produced a file it should have refused"
+[[ "$(claude_json_keys "$J/ok.json" | tr '\n' ' ')" == "a mcpServers p path z " ]] \
+    && ok J4 "the top-level key list holds exactly the top-level keys, not the nested or quoted decoys" \
+    || bad J4 "the top-level key list missed a key or listed a nested one"
+# The per-run copy: the real file is never bound and never written; what
+# the session changed is named, its version kept outside any checkout.
+j5=0
+printf '%s\n' '{"numStartups":1,"projects":{}}' >"$HOME/.claude.json"
+cp "$HOME/.claude.json" "$J/real.before"
+BINDS=() CLAUDE_JSON_LAST="$HOME/.agent/claude.json.last-session"
+claude_json_prepare || j5=1
+[[ " ${BINDS[*]} " == *" $RUN_DIR/claude.json:$HOME/.claude.json "* ]] || j5=1
+printf '%s\n' '{"numStartups":1,"projects":{"/x":{"mcpServers":{"e":{"command":"sh"}},"hasTrustDialogAccepted":true}}}' >"$CLAUDE_JSON_COPY"
+claude_json_report 2>"$J/report.err"
+cmp -s "$HOME/.claude.json" "$J/real.before" || j5=1
+grep -q 'Changed top-level keys: projects$' "$J/report.err" || j5=1
+cmp -s "$CLAUDE_JSON_LAST" "$CLAUDE_JSON_COPY" || j5=1
+[[ "$(stat -c %a "$CLAUDE_JSON_LAST")" == 600 ]] || j5=1
+# A symlink at the keep path is not followed, not even to an existing file.
+rm -f "$CLAUDE_JSON_LAST"; printf 'mine\n' >"$J/elsewhere"; ln -s "$J/elsewhere" "$CLAUDE_JSON_LAST"
+claude_json_report 2>/dev/null
+[[ "$(cat "$J/elsewhere")" == mine ]] || j5=1
+rm -f "$CLAUDE_JSON_LAST"
+[[ "$j5" -eq 0 ]] \
+    && ok J5 "claude.json is a per-run copy: the real file stays untouched, the changed keys are named, a keep-path symlink is not followed" \
+    || bad J5 "the session's claude.json reached the real file, or the report was wrong"
+BINDS=() CLAUDE_JSON_COPY=""
 
 # --- O: omp's per-run ~/.omp (functions/omp-home.sh) ---------------------
 # The host's ~/.omp holds code omp loads (native addons, extensions/,

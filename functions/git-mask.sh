@@ -82,7 +82,7 @@ redact_urls() {
 # of every file known to carry a remote URL or credential reference into
 # RUN_DIR, and append a read-only bind overriding the real path with the
 # sanitized copy -- same trick bind_augmented_instructions
-# (functions/agents.sh) already uses. No
+# (functions/agents.sh) and claude_json_prepare already use. No
 # ordering requirement on the BINDS array itself: apptainer sorts mounts by
 # destination depth (mask_git_readonly's own comment below), and
 # "$REALDIR/config" is always deeper than the "$REALDIR" mask this

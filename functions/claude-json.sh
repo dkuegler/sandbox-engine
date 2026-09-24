@@ -1,31 +1,36 @@
 #!/bin/bash
-# ~/.claude.json key access: read one TOP-LEVEL key's value, or put a
-# different value in its place, without touching any other byte.
+# ~/.claude.json: a per-run copy bound in place of the real file, which a
+# sandboxed run never writes back, and the key-level scanner the exit
+# report reads it with.
 #
-# ~/.claude.json keeps state claude must carry between runs -- session
-# records, per-project trust decisions, MCP OAuth tokens -- in the SAME
-# file as `mcpServers`, a list of command lines a later bare-host `claude`
-# will spawn. Handling that file key by key needs exactly two operations:
-# the value of one top-level key, and the file with that value replaced.
+# ~/.claude.json keeps state claude rewrites constantly -- session
+# records, per-project trust decisions -- in the SAME file as what a later
+# bare-host `claude` spawns and trusts: top-level `mcpServers` (user
+# scope), and under `projects.<path>` the local-scope `mcpServers`,
+# `hasTrustDialogAccepted` (workspace trust without a dialog) and the
+# enabled/disabled server lists (Claude Code's MCP docs). A merge that
+# let any of it back would hand the session the next unsandboxed run's
+# spawn list and trust decisions, so nothing is merged: the session works
+# on its copy, and what it changed is reported at exit.
 #
 # No jq and no python3. Neither can be assumed present, so the key
 # extraction below is a small explicit JSON scanner in awk: it tracks
 # string and escape state, counts nesting, and reports the byte span of
-# one TOP-LEVEL key's value. Byte spans rather than re-serialised JSON is
-# deliberate -- nothing here may reformat, reorder or re-encode a file
-# claude owns, and splicing a span leaves every other byte exactly as the
-# agent left it.
+# one TOP-LEVEL key's value, so two versions of a key compare byte for
+# byte.
 #
 # Every awk run is LC_ALL=C: in a UTF-8 locale gawk's length() and
 # substr() count characters, not bytes, and the spans are cut by byte
 # offset -- one non-ASCII character before a key (a project path, say)
 # would shift every offset after it.
 
-# CLAUDE_JSON_SCANNER: awk program, shared by the three operations below.
+# CLAUDE_JSON_SCANNER: awk program, shared by the operations below.
 # MODE=validate  -> exit status only (0 structurally sound, 1 not)
 # MODE=span      -> prints "START LENGTH" (1-based byte offset) for KEY's
 #                   value, one line per occurrence at depth 1, or nothing
 #                   when the key is absent
+# MODE=keys      -> prints every top-level key, one per line, in file
+#                   order, repeats included
 #
 # RS='\0' makes the whole file one record: a NUL cannot occur in JSON text,
 # so this reads the exact bytes without awk appending a newline the file
@@ -90,6 +95,8 @@ function fail(msg) { bad = 1; exit 1 }
             ve = i - 1
             # Trim trailing whitespace from the value span.
             while (ve > vs && substr(s, ve, 1) ~ /[ \t\r\n]/) ve--
+            nkeys++
+            keylist[nkeys] = pending
             if (pending == key) {
                 nmatch++
                 spanlist[nmatch] = vs " " (ve - vs + 1)
@@ -111,6 +118,9 @@ function fail(msg) { bad = 1; exit 1 }
         # refuse rather than pick one.
         for (m = 1; m <= nmatch; m++) print spanlist[m]
     }
+    if (mode == "keys") {
+        for (m = 1; m <= nkeys; m++) print keylist[m]
+    }
 }
 END { if (bad) exit 1 }
 AWK
@@ -123,9 +133,8 @@ claude_json_scan() {
 # claude_json_wellformed FILE: structurally sound JSON-ish -- balanced
 # braces and brackets, every string terminated, no top-level key written
 # with a backslash escape. Not a full validator, and it does not pretend
-# to be: it catches the failure a key-by-key merge actually has to
-# survive, which is a truncated or half-written file, and anything it
-# passes is spliced by byte offset rather than re-encoded.
+# to be: it catches a truncated or half-written file, and a key spelled so
+# that a byte comparison and a JSON parser would disagree about it.
 claude_json_wellformed() {
     local f="$1"
     [[ -s "$f" ]] || return 1
@@ -155,22 +164,70 @@ claude_json_value() {
     tail -c +"${span%% *}" -- "$f" | head -c "${span##* }"
 }
 
-# claude_json_splice FILE KEY REPLFILE OUT: write FILE to OUT with the
-# value of top-level KEY replaced by REPLFILE's exact bytes; every other
-# byte of FILE is copied unchanged. Non-zero -- and OUT not to be used --
-# when KEY is absent or ambiguous (claude_json_span), or when the result
-# is not well-formed (claude_json_wellformed), so a bad replacement can
-# never produce a file the caller installs.
-claude_json_splice() {
-    local f="$1" key="$2" repl="$3" out="$4" span start len
-    span="$(claude_json_span "$f" "$key")" || return 1
-    [[ -n "$span" ]] || return 1
-    start="${span%% *}"
-    len="${span##* }"
+# claude_json_keys FILE: FILE's top-level keys, sorted, each once.
+claude_json_keys() {
+    claude_json_scan keys "" "$1" 2>/dev/null | LC_ALL=C sort -u
+}
+
+# CLAUDE_JSON_COPY: the per-run file bound at ~/.claude.json, empty when
+# this run is not a claude run; CLAUDE_JSON_ORIG: its launch state, which
+# the exit report compares against.
+CLAUDE_JSON_COPY=""
+CLAUDE_JSON_ORIG=""
+
+# CLAUDE_JSON_LAST: where the session's last version of the file is kept
+# on the host for the human to inspect -- one file, overwritten by each
+# run that changed it, outside every checkout.
+CLAUDE_JSON_LAST="$HOME/.agent/claude.json.last-session"
+
+# claude_json_prepare: bind a per-run COPY of ~/.claude.json in place of
+# the real file (an empty object when the host has none). The real file is
+# never bound and never written by the run.
+claude_json_prepare() {
+    local real="$HOME/.claude.json"
+    ensure_run_dir
+    CLAUDE_JSON_COPY="$RUN_DIR/claude.json"
+    CLAUDE_JSON_ORIG="$RUN_DIR/claude.json.orig"
+    if [[ -f "$real" ]]; then
+        cp -- "$real" "$CLAUDE_JSON_COPY" || return 1
+    else
+        printf '%s\n' '{}' >"$CLAUDE_JSON_COPY" || return 1
+    fi
+    cp -- "$CLAUDE_JSON_COPY" "$CLAUDE_JSON_ORIG" || return 1
+    chmod 600 -- "$CLAUDE_JSON_COPY" "$CLAUDE_JSON_ORIG"
+    BINDS+=(-B "$CLAUDE_JSON_COPY:$real")
+}
+
+# claude_json_report: after every container exit, on the host. Names the
+# top-level keys the session changed in its copy, keeps its version at
+# CLAUDE_JSON_LAST and says how to compare it; the real file is not
+# touched. Key names come from the session, so the output is sanitized.
+claude_json_report() {
+    local key a b keep="$CLAUDE_JSON_LAST"
+    local -a changed=()
+    [[ -n "${CLAUDE_JSON_COPY:-}" && -f "$CLAUDE_JSON_COPY" && ! -L "$CLAUDE_JSON_COPY" ]] || return 0
+    cmp -s -- "$CLAUDE_JSON_ORIG" "$CLAUDE_JSON_COPY" && return 0
+    if ! claude_json_wellformed "$CLAUDE_JSON_COPY"; then
+        changed=("(the file is truncated, or a top-level key is written with a backslash escape)")
+    else
+        while IFS= read -r key; do
+            a="$(claude_json_value "$CLAUDE_JSON_ORIG" "$key")" || a=$'\001ambiguous'
+            b="$(claude_json_value "$CLAUDE_JSON_COPY" "$key")" || b=$'\002ambiguous'
+            [[ "$a" == "$b" ]] || changed+=("$key")
+        done < <({ claude_json_keys "$CLAUDE_JSON_ORIG"; claude_json_keys "$CLAUDE_JSON_COPY"; } | LC_ALL=C sort -u)
+    fi
+    if [[ -L "$keep" ]] || ! { mkdir -p -- "${keep%/*}" && cp -- "$CLAUDE_JSON_COPY" "$keep" && chmod 600 -- "$keep"; }; then
+        keep=""
+    fi
     {
-        head -c "$((start - 1))" -- "$f"
-        cat -- "$repl"
-        tail -c +"$((start + len))" -- "$f"
-    } >"$out" || return 1
-    claude_json_wellformed "$out"
+        printf '%s\n' "sandbox: the session changed its copy of ~/.claude.json; your real file is untouched."
+        printf '%s\n' "  A sandboxed run never writes it back: mcpServers and projects.<path> there"
+        printf '%s\n' "  decide what an unsandboxed claude spawns and which folders it trusts."
+        printf '%s\n' "  Changed top-level keys: ${changed[*]:-(formatting only)}"
+        if [[ -n "$keep" ]]; then
+            printf '%s\n' "  The session's version: $keep"
+            printf '%s\n' "    compare: diff -u ~/.claude.json $keep"
+        fi
+    } | sanitize_agent_display >&2 || true
+    return 0
 }

@@ -27,6 +27,7 @@
 #   git-mask.sh     read-only .git mask
 #   agents.sh       per-agent state binds, RUN_CMD
 #   omp-home.sh     omp's per-run ~/.omp, settings merge-back at exit
+#   claude-json.sh  claude's per-run ~/.claude.json, report at exit
 #   cleanup.sh      EXIT trap and the teardown hooks registered against it
 #   run-dir.sh      per-run scratch directory lifecycle (teardown, reap)
 #   worktree.sh     --worktree branch/worktree lifecycle, review, commit
@@ -290,6 +291,8 @@ source "$FUNCTIONS_DIR/environment.sh"
 source "$FUNCTIONS_DIR/binds.sh"
 # shellcheck source=functions/omp-home.sh
 source "$FUNCTIONS_DIR/omp-home.sh"
+# shellcheck source=functions/claude-json.sh
+source "$FUNCTIONS_DIR/claude-json.sh"
 # shellcheck source=functions/git-mask.sh
 source "$FUNCTIONS_DIR/git-mask.sh"
 # shellcheck source=functions/agents.sh
@@ -493,6 +496,8 @@ if [[ -z "${WORKTREE_DIR:-}" ]]; then
     "${EXEC_ARGV[@]}" || AGENT_RC=$?
     # omp: merge modelRoles/cycleOrder back, name what was discarded.
     omp_home_finish || true
+    # claude: name what the session changed in its ~/.claude.json copy.
+    claude_json_report || true
     report_agent_patches || true
     # Normal mode has no approval gate: the review of what the agent
     # created at config paths that were absent at launch happens here.
@@ -514,6 +519,7 @@ while true; do
     # omp: this round's settings merge-back and discard report, whatever
     # the container's status, before anything reads the tree.
     omp_home_finish || true
+    claude_json_report || true
     # A main checkout mounted read-write (worktree_confirm_readonly_project)
     # is outside the approval gate, which only reviews the worktree -- so
     # config the agent created at its unbound paths gets the normal-mode
