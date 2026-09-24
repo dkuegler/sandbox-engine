@@ -21,8 +21,9 @@
 #   sandbox-overlay.yml                      read-only settings overlay
 #                      (PI_CONFIG_FILES) that forces secret redaction on
 #   agent/             per run:
-#     config.yml       a plain copy, so omp's rename-based save works; the
-#                      session's own changes to it stay in the run
+#     config.yml       a plain copy, so omp's rename-based save works; at
+#                      exit modelRoles and cycleOrder merge back
+#                      (omp_config_merge), everything else is reported
 #     agent.db (-wal, -shm), blobs/, sessions/<this checkout>/
 #                      the host's own, read-write: credentials and sessions
 #     history.db       symlink into a per-project database in
@@ -32,7 +33,7 @@
 #                      not bound: absent, or fresh per run
 #
 # Anything the session creates under a new name lands in $RUN_DIR and goes
-# with it.
+# with it; omp_home_report_created names it at exit.
 #
 # sqlite: the three agent.db files are bound by name, and created empty on
 # the host when absent. sqlite ignores the unlink that fails on a bound
@@ -145,10 +146,10 @@ omp_home_prepare() {
     omp_home_bind_private "$HOME/.agent/omp-history/$key" "$real/agent/.sandbox-history" || return 1
     ln -s .sandbox-history/history.db "$agent/history.db" || return 1
 
-    # config.yml (or an existing config.yaml): a plain per-run copy. With
-    # no host file, an empty mapping -- a missing one would send omp
-    # looking for legacy settings to migrate, and an empty document is not
-    # a mapping.
+    # config.yml (or an existing config.yaml): a plain per-run copy, the
+    # launch state kept beside it for omp_config_merge. With no host file,
+    # an empty mapping -- a missing one would send omp looking for legacy
+    # settings to migrate, and an empty document is not a mapping.
     OMP_CONFIG_NAME=config.yml
     for name in config.yml config.yaml; do
         if [[ -f "$real/agent/$name" ]]; then
@@ -163,6 +164,7 @@ omp_home_prepare() {
         printf '{}\n' >"$agent/$OMP_CONFIG_NAME" || return 1
     fi
     chmod 600 -- "$agent/$OMP_CONFIG_NAME"
+    cp -- "$agent/$OMP_CONFIG_NAME" "$RUN_DIR/omp-config.orig" || return 1
     if [[ -f "$real/agent/last-changelog-version" ]]; then
         cp -- "$real/agent/last-changelog-version" "$agent/" || return 1
     fi
@@ -224,6 +226,9 @@ omp_home_prepare() {
         omp_home_mountpoint "agent/$name" "$kind" || return 1
         bind_ro "$p"
     done < <(find "$real/agent" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+
+    (cd "$OMP_HOME_DIR" && find . -mindepth 1 -maxdepth 2 -print | LC_ALL=C sort) \
+        >"$RUN_DIR/omp-home.manifest" || return 1
 }
 
 # omp_home_refuse_overrides: a named profile, or a variable that moves
@@ -276,4 +281,323 @@ omp_home_refuse_overrides() {
             exit 1
         fi
     done
+}
+
+# --- after the container exits ------------------------------------------
+
+# The standard form. omp writes config.yml with Bun's YAML.stringify at
+# two-space indent, trailing spaces after a colon stripped; the merge
+# reads that form and nothing else, because a line scanner and a YAML
+# parser agree on what the top-level keys are only when no construct can
+# span lines or hide a key. omp_config_standard FILE accepts exactly:
+#   - "{}" as the only line (the empty mapping), or lines of which
+#   - every column-0 line is "KEY:" or "KEY: VALUE", KEY an identifier
+#     (A-Z a-z 0-9 _ -, not starting with a digit or "-"), each KEY once;
+#   - every other line is indented by a multiple of two spaces, then any
+#     number of "- " item markers, then "KEY:", "KEY: VALUE" or VALUE,
+#     KEY plain or double-quoted;
+#   - a VALUE is a complete double-quoted string, a plain scalar (no
+#     leading YAML indicator except "-", "?" or ":" before a non-space, no
+#     ": " or " #" inside, no leading/trailing space, no trailing ":"),
+#     or -- only as a whole item, never after "KEY: " -- "[]" or "{}".
+# Rejected, among others: blank lines, comments, tabs, control
+# characters, document markers, quoted/flow/complex top-level keys,
+# "KEY:VALUE" without the space, anchors, aliases, tags, single quotes,
+# block scalars, flow collections other than "[]"/"{}", a string left
+# open across lines. On rejection prints "line N: TEXT" and fails.
+omp_config_standard() {
+    awk '
+        BEGIN { IND = "-?:,[]{}#&*!|>\047\"%@`" }
+        function quotedok(s) { return s ~ /^"([^"\\]|\\.)*"$/ }
+        function plainok(s,   c) {
+            if (s == "" || s ~ /^ / || s ~ / $/ || s ~ /:$/) return 0
+            if (index(s, ": ") || index(s, " #")) return 0
+            c = substr(s, 1, 1)
+            if (index(IND, c) && !(index("-?:", c) && length(s) > 1 && substr(s, 2, 1) != " ")) return 0
+            return 1
+        }
+        function valueok(s, bare) {
+            if (substr(s, 1, 1) == "\"") return quotedok(s)
+            if (s == "[]" || s == "{}") return bare
+            return plainok(s)
+        }
+        function fail() { printf "line %d: %s\n", NR, $0; bad = 1; exit }
+        NR == 1 && $0 == "{}" { empty = 1; next }
+        empty || $0 == "" || /[[:cntrl:]]/ { fail() }
+        {
+            match($0, /^ */); n = RLENGTH; rest = substr($0, n + 1)
+            if (n % 2) fail()
+            if (n == 0) {
+                if (rest !~ /^[A-Za-z_][A-Za-z0-9_-]*:( |$)/) fail()
+                key = rest; sub(/:.*/, "", key)
+                if (key in seen) fail()
+                seen[key] = 1
+                v = substr(rest, length(key) + 3)
+                if (length(rest) > length(key) + 1 && !valueok(v, 0)) fail()
+                next
+            }
+            while (substr(rest, 1, 2) == "- ") rest = substr(rest, 3)
+            if (substr(rest, 1, 1) == "\"") {
+                if (!match(rest, /^"([^"\\]|\\.)*"/)) fail()
+                after = substr(rest, RLENGTH + 1)
+                if (after == "" || after == ":") next
+                if (substr(after, 1, 2) != ": " || !valueok(substr(after, 3), 0)) fail()
+                next
+            }
+            p = index(rest, ": ")
+            if (p) {
+                if (!plainok(substr(rest, 1, p - 1)) || !valueok(substr(rest, p + 2), 0)) fail()
+                next
+            }
+            if (rest ~ /:$/) {
+                if (!plainok(substr(rest, 1, length(rest) - 1))) fail()
+                next
+            }
+            if (!valueok(rest, 1)) fail()
+        }
+        END {
+            if (bad) exit 1
+            if (NR == 0) { print "the file is empty"; exit 1 }
+        }
+    ' "$1"
+}
+
+# The helpers below read files omp_config_standard has accepted: a
+# top-level block is its column-0 key line and every indented line after
+# it, and no key occurs twice.
+
+# omp_config_keys FILE: FILE's top-level keys, sorted.
+omp_config_keys() {
+    grep -o -E '^[A-Za-z_][A-Za-z0-9_-]*:' "$1" 2>/dev/null | sed 's/:$//' | LC_ALL=C sort
+}
+
+# omp_config_block FILE KEY: KEY's top-level block in FILE; empty when KEY
+# is absent.
+omp_config_block() {
+    [[ -f "$1" ]] || return 0
+    awk -v key="$2" '
+        /^[^ ]/ { if (inblk) exit; if ($0 ~ "^" key ":( |$)") inblk = 1 }
+        inblk { print }
+    ' "$1"
+}
+
+# omp_config_with_block FILE KEY BLOCKFILE: FILE on stdout with KEY's
+# top-level block replaced by BLOCKFILE, appended when FILE has none; the
+# empty mapping "{}" is replaced by the block alone.
+omp_config_with_block() {
+    awk -v key="$2" -v blockfile="$3" '
+        BEGIN { while ((getline l < blockfile) > 0) blk[++bn] = l }
+        function emit(   i) { for (i = 1; i <= bn; i++) print blk[i]; done = 1 }
+        NR == 1 && $0 == "{}" { next }
+        /^[^ ]/ {
+            inblk = 0
+            if (!done && $0 ~ "^" key ":( |$)") { emit(); inblk = 1; next }
+        }
+        inblk { next }
+        { print }
+        END { if (!done) emit() }
+    ' "$1"
+}
+
+# omp_config_block_mergeable KEY BLOCK: BLOCK is exactly the shape omp
+# writes for KEY -- "modelRoles:" with "  <role>: <model>" lines, or
+# "cycleOrder:" with "  - <model>" lines, or the empty form, "  {}" or
+# "  []" alone on the line after the key -- and every value is a plain
+# model id. Anything else is not merged.
+omp_config_block_mergeable() {
+    local key="$1" line first=1 items=0 empty
+    local id='[A-Za-z0-9][A-Za-z0-9._/:@+-]*'
+    case "$key" in
+        modelRoles) empty="  {}" ;;
+        cycleOrder) empty="  []" ;;
+        *) return 1 ;;
+    esac
+    while IFS= read -r line; do
+        if [[ "$first" -eq 1 ]]; then
+            first=0
+            [[ "$line" == "$key:" ]] || return 1
+            continue
+        fi
+        [[ "$items" -ge 0 ]] || return 1
+        if [[ "$items" -eq 0 && "$line" == "$empty" ]]; then
+            items=-1
+            continue
+        fi
+        case "$key" in
+            modelRoles) [[ "$line" =~ ^\ \ [A-Za-z0-9_-]+:\ ${id}$ ]] || return 1 ;;
+            cycleOrder) [[ "$line" =~ ^\ \ -\ ${id}$ ]] || return 1 ;;
+        esac
+        items=$((items + 1))
+    done <<<"$2"
+    [[ "$first" -eq 0 && "$items" -ne 0 ]]
+}
+
+# omp_config_others_equal OLD NEW KEY: every top-level block except KEY's
+# is identical in OLD and NEW.
+omp_config_others_equal() {
+    local k a b
+    while IFS= read -r k; do
+        [[ "$k" == "$3" ]] && continue
+        a="$(omp_config_block "$1" "$k")"
+        b="$(omp_config_block "$2" "$k")"
+        [[ "$a" == "$b" ]] || return 1
+    done < <({ omp_config_keys "$1"; omp_config_keys "$2"; } | LC_ALL=C sort -u)
+}
+
+# omp_config_merge: of everything the session saved to its config copy,
+# only modelRoles and cycleOrder reach the host's real file, and only when
+# the session changed the key, the new value passes
+# omp_config_block_mergeable, and the real file still holds what it held
+# at launch for that key -- a change made on the host meanwhile wins and
+# is reported. Other changed keys are reported, never merged. Every file
+# involved -- the session's copy, the launch copy, the host file and the
+# rewrite -- must be in the standard form (omp_config_standard); a copy
+# that is not is neither merged nor listed, and a host file that is not
+# is never written. A killed run never gets here, so it merges nothing.
+omp_config_merge() {
+    local copy orig real key s_orig s_now h_now tmp block newf bad real_bad=""
+    local -a merged=() skipped=() others=()
+    [[ -n "${OMP_HOME_DIR:-}" && -f "$RUN_DIR/omp-config.orig" ]] || return 0
+    copy="$OMP_HOME_DIR/agent/$OMP_CONFIG_NAME"
+    orig="$RUN_DIR/omp-config.orig"
+    real="$HOME/.omp/agent/$OMP_CONFIG_NAME"
+    block="$RUN_DIR/omp-config.block"
+    newf="$RUN_DIR/omp-config.new"
+    if [[ ! -f "$copy" || -L "$copy" ]]; then
+        printf '%s\n' "sandbox: the omp session left no regular $OMP_CONFIG_NAME; nothing was merged back." >&2
+        return 0
+    fi
+    if ! bad="$(omp_config_standard "$copy")"; then
+        {
+            printf '%s\n' "sandbox: the omp session's $OMP_CONFIG_NAME is not in the form omp writes, so"
+            printf '%s\n' "  nothing was merged back and its changes are not listed. The first line"
+            printf '%s\n' "  outside that form:"
+            printf '    %s\n' "$bad"
+        } | sanitize_agent_display >&2 || true
+        return 0
+    fi
+    if ! bad="$(omp_config_standard "$orig")"; then
+        {
+            printf '%s\n' "sandbox: $real was not in the form omp writes at launch, so nothing was"
+            printf '%s\n' "  merged back and the session's changes are not listed. The first line"
+            printf '%s\n' "  outside that form:"
+            printf '    %s\n' "$bad"
+        } | sanitize_agent_display >&2 || true
+        return 0
+    fi
+    if [[ -f "$real" && ! -L "$real" ]] && ! bad="$(omp_config_standard "$real")"; then
+        real_bad="$bad"
+    fi
+    while IFS= read -r key; do
+        s_orig="$(omp_config_block "$orig" "$key")"
+        s_now="$(omp_config_block "$copy" "$key")"
+        if [[ "$s_orig" == "$s_now" ]]; then
+            continue
+        fi
+        if [[ "$key" != modelRoles && "$key" != cycleOrder ]]; then
+            others+=("$key")
+            continue
+        fi
+        if ! omp_config_block_mergeable "$key" "$s_now"; then
+            skipped+=("$key: not the plain model-id shape omp writes")
+            continue
+        fi
+        if [[ -L "$real" || ! -f "$real" ]]; then
+            skipped+=("$key: $real is missing or a symlink")
+            continue
+        fi
+        if [[ -n "$real_bad" ]]; then
+            skipped+=("$key: $real is not in the form omp writes ($real_bad)")
+            continue
+        fi
+        h_now="$(omp_config_block "$real" "$key")"
+        if [[ "$h_now" != "$s_orig" ]]; then
+            skipped+=("$key: changed on the host during the run; the host's value stays")
+            continue
+        fi
+        printf '%s\n' "$s_now" >"$block"
+        if ! omp_config_with_block "$real" "$key" "$block" >"$newf" \
+            || ! omp_config_standard "$newf" >/dev/null \
+            || [[ "$(omp_config_block "$newf" "$key")" != "$s_now" ]] \
+            || ! omp_config_others_equal "$real" "$newf" "$key"; then
+            skipped+=("$key: the rewrite would have touched more than this key")
+            continue
+        fi
+        # Written beside the real file and renamed over it, so a reader
+        # never sees half a file; cp -p first carries its mode over.
+        if ! tmp="$(mktemp "${real%/*}/.sandbox-config.XXXXXX")"; then
+            skipped+=("$key: could not write beside $real")
+            continue
+        fi
+        if ! { cp -p -- "$real" "$tmp" && cat -- "$newf" >"$tmp" && mv -f -- "$tmp" "$real"; }; then
+            rm -f -- "$tmp"
+            skipped+=("$key: could not replace $real")
+            continue
+        fi
+        # A worktree re-run starts from what was just merged.
+        if omp_config_with_block "$orig" "$key" "$block" >"$orig.next"; then
+            mv -f -- "$orig.next" "$orig"
+        fi
+        merged+=("$key")
+    done < <({ omp_config_keys "$orig"; omp_config_keys "$copy"; } | LC_ALL=C sort -u)
+
+    if [[ ${#merged[@]} -gt 0 ]]; then
+        printf '%s\n' "sandbox: omp settings merged back into $real: ${merged[*]}" >&2
+    fi
+    if [[ ${#skipped[@]} -gt 0 ]]; then
+        {
+            printf '%s\n' "sandbox: omp settings the session changed but NOT merged into $real:"
+            printf '    %s\n' "${skipped[@]}"
+        } | sanitize_agent_display >&2 || true
+    fi
+    if [[ ${#others[@]} -gt 0 ]]; then
+        {
+            printf '%s\n' "sandbox: the omp session also changed these settings; only modelRoles and"
+            printf '%s\n' "  cycleOrder are ever merged back, so they stay in the run. Its values:"
+            for key in "${others[@]}"; do
+                omp_config_block "$copy" "$key" | sed 's/^/    /' || true
+            done
+            printf '%s\n' "  Apply any you want by hand, e.g. with 'omp config set'."
+        } | sanitize_agent_display >&2 || true
+    fi
+    return 0
+}
+
+# omp_home_report_created: name what the session created under ~/.omp at
+# a path that did not exist at launch. It is already gone with $RUN_DIR;
+# under agent/ it would have been loaded by the next unsandboxed omp, so
+# the human should know it was attempted. omp's own per-run state is not
+# listed: its databases, terminal sessions, caches, the placeholder key and
+# wt/ (the worktrees omp creates for isolated tasks).
+omp_home_report_created() {
+    local rel
+    local -a created=()
+    [[ -n "${OMP_HOME_DIR:-}" && -f "$RUN_DIR/omp-home.manifest" ]] || return 0
+    while IFS= read -r rel; do
+        case "$rel" in
+            ./run/* | ./logs/* | ./security/* | ./cache/* | ./natives/*) continue ;;
+        esac
+        case "${rel##*/}" in
+            *.db | *.db-wal | *.db-shm | *.db-journal | *.tmp | \
+                terminal-sessions | cache | secret-placeholder.key | wt) continue ;;
+        esac
+        created+=("$HOME/.omp/${rel#./}")
+    done < <(cd "$OMP_HOME_DIR" && find . -mindepth 1 -maxdepth 2 -print | LC_ALL=C sort \
+        | LC_ALL=C comm -13 "$RUN_DIR/omp-home.manifest" -)
+    [[ ${#created[@]} -gt 0 ]] || return 0
+    {
+        printf '%s\n' "sandbox: the omp session created these under ~/.omp; they were discarded with"
+        printf '%s\n' "  the run (anything under ~/.omp/agent would have loaded in your next omp):"
+        printf '    %s\n' "${created[@]}"
+    } | sanitize_agent_display >&2 || true
+    return 0
+}
+
+# omp_home_finish: the post-exit half, run after every container exit
+# (each round in worktree mode). A no-op for every other agent.
+omp_home_finish() {
+    [[ -n "${OMP_HOME_DIR:-}" ]] || return 0
+    omp_config_merge
+    omp_home_report_created
+    return 0
 }

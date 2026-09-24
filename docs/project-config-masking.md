@@ -1,6 +1,6 @@
 # Project config masking: what reads each path, and what the session sees
 
-Last verified: 2026-09-23.
+Last verified: 2026-09-23 (the `config.yml` form: 2026-09-24).
 
 Subject: every path a supported agent CLI — or the host tooling that shares the
 checkout with it — reads as configuration; the classification those paths are
@@ -261,19 +261,88 @@ host's paths bound into it one by one:
 | `~/.omp/natives` | the image's own read-only copy, extracted at build time |
 | `~/.omp/logs` | per project, kept on the host in `~/.agent/omp-logs/` |
 | `~/.omp/run`, `security`, `cache` | empty, per run |
-| `~/.omp/agent/config.yml` | a plain per-run copy; the session's own changes stay in the run |
+| `~/.omp/agent/config.yml` | a plain per-run copy; at exit, `modelRoles` and `cycleOrder` merge back, the rest is reported |
 | `~/.omp/agent/agent.db` (`-wal`, `-shm`), `blobs/`, `sessions/<this checkout>/` | the host's own, read-write — credentials and this checkout's sessions |
 | `~/.omp/agent/history.db` | a per-project database in `~/.agent/omp-history/` |
 | every other entry of the host's `~/.omp/agent` | read-only, including names a later omp version adds |
 | `.env`, `secret-placeholder.key`, `models.db`, `terminal-sessions/` | not bound: absent, or fresh per run; a host `.env` is announced as withheld |
 
 Secret redaction is forced on by a read-only settings overlay passed through
-`PI_CONFIG_FILES`; omp never writes overlay values into `config.yml`. Anything
-the session creates under a new name is discarded with the run. The residual: a
-host omp that closes its last `agent.db` connection in the moment between
-container start and the sandbox's own open removes the `-wal`/`-shm` files the
-sandbox has just bound, and a host omp opened after that writes a second WAL for
-the same database.
+`PI_CONFIG_FILES`; omp never writes overlay values into `config.yml`. The
+settings merge-back takes a key only when the session changed it, the value is
+plain model ids in the shape omp writes, and the host file still holds its
+launch value for that key — a change made on the host during the run wins and
+is reported. Anything the session created under a new name is discarded with
+the run and listed at exit. The residual: a host omp that closes its last
+`agent.db` connection in the moment between container start and the sandbox's
+own open removes the `-wal`/`-shm` files the sandbox has just bound, and a host
+omp opened after that writes a second WAL for the same database.
+
+**The merge-back reads one spelling of `config.yml`: the one omp writes**
+(`omp_config_standard()`, `functions/omp-home.sh`). A line scanner and a YAML
+parser agree on which top-level keys a file has only when no construct can
+span lines or hide a key, so every file the merge touches — the session's copy,
+the launch copy, the host file, and the rewrite before it replaces the host
+file — must be in this form. A session copy outside it merges nothing and lists
+nothing; a host file outside it is never written. Either case names the first
+line outside the form. The form:
+
+- `{}` as the only line (the empty mapping), or
+- every column-0 line is `KEY:` or `KEY: VALUE`, `KEY` made of `A-Z a-z 0-9 _ -`
+  and not starting with a digit or `-`, each `KEY` once;
+- every other line is indented by a multiple of two spaces, then any number of
+  `- ` item markers, then `KEY:`, `KEY: VALUE` or a bare `VALUE`, `KEY` plain or
+  double-quoted;
+- a `VALUE` is a complete double-quoted string; a plain scalar (no leading YAML
+  indicator except `-`, `?` or `:` before a non-space, no `: ` or ` #` inside,
+  no leading or trailing space, no trailing `:`); or `[]`/`{}`, only as a whole
+  item and never after `KEY: `.
+
+Outside the form, among others: blank lines, comments, tabs and other control
+characters, `---`/`...`/`%` lines, quoted, flow or `?` top-level keys,
+`KEY:VALUE` without the space (a plain scalar to YAML, not a key), anchors,
+aliases, tags, single quotes, block scalars, flow collections other than
+`[]`/`{}`, and a string left open across lines.
+
+`M` — omp 18.2.9 saves settings through `Bun.YAML.stringify(settings, null, 2)`
+with `/: +$/gm` replaced by `:` (`packages/utils/src/yaml-config.ts`, read from
+the omp binary). Run through omp's own Bun on 2026-09-24, it writes an empty
+list or mapping as the key followed by an indented `[]`/`{}`, double-quotes
+keys and strings that need it, writes a multi-line string as one quoted line,
+and in no shape tried emitted a comment, a blank line or a block scalar. The
+output below is in the form (`omp_config_standard` accepts it):
+
+```
+$ BUN_BE_BUN=1 omp -e 'const s=o=>Bun.YAML.stringify(o,null,2).replace(/: +$/gm,":");
+    console.log(s({cycleOrder:[],modelRoles:{},a:{b:[],"n":null,"we ird":1},q:"x: y",m:"a\nb",
+    h:"#x",ids:["anthropic/claude-haiku-4-5:low"]}))'
+cycleOrder:
+  []
+modelRoles:
+  {}
+a:
+  b:
+    []
+  "n": null
+  we ird: 1
+q: "x: y"
+m: "a\nb"
+h: "#x"
+ids:
+  - anthropic/claude-haiku-4-5:low
+```
+
+The same writer puts `"n"` or `we ird` at column 0 when such a key is
+top-level; the form does not admit that, so the merge refuses such a file.
+
+`M` — the merge-side behaviour, `bash tests/git-escape/worktree_check.sh`: a
+quoted top-level key or `KEY:VALUE` in the session copy, or a comment in the
+host file, merges nothing; omp's emptied `cycleOrder` merges:
+
+```
+ok   O12    a session copy or host file outside omp's written form merges nothing, and says so
+ok   O13    an emptied cycleOrder, in the form omp writes it, merges back
+```
 
 Only omp's default profile is mounted: a run that selects a named profile
 (`--profile`, or `OMP_PROFILE`/`PI_PROFILE` forwarded into the container) or

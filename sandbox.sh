@@ -26,7 +26,7 @@
 #   binds.sh        extra bind resolution (sandbox.yml binds: / --bind)
 #   git-mask.sh     read-only .git mask
 #   agents.sh       per-agent state binds, RUN_CMD
-#   omp-home.sh     omp's per-run ~/.omp
+#   omp-home.sh     omp's per-run ~/.omp, settings merge-back at exit
 #   cleanup.sh      EXIT trap and the teardown hooks registered against it
 #   run-dir.sh      per-run scratch directory lifecycle (teardown, reap)
 #   worktree.sh     --worktree branch/worktree lifecycle, review, commit
@@ -491,6 +491,8 @@ if [[ -z "${WORKTREE_DIR:-}" ]]; then
     log_argv "$SANDBOX_BACKEND argv" "${EXEC_ARGV[@]}"
     AGENT_RC=0
     "${EXEC_ARGV[@]}" || AGENT_RC=$?
+    # omp: merge modelRoles/cycleOrder back, name what was discarded.
+    omp_home_finish || true
     report_agent_patches || true
     # Normal mode has no approval gate: the review of what the agent
     # created at config paths that were absent at launch happens here.
@@ -509,6 +511,9 @@ while true; do
     log_argv "$SANDBOX_BACKEND argv" "${EXEC_ARGV[@]}"
     CONTAINER_RC=0
     "${EXEC_ARGV[@]}" || CONTAINER_RC=$?
+    # omp: this round's settings merge-back and discard report, whatever
+    # the container's status, before anything reads the tree.
+    omp_home_finish || true
     # A main checkout mounted read-write (worktree_confirm_readonly_project)
     # is outside the approval gate, which only reviews the worktree -- so
     # config the agent created at its unbound paths gets the normal-mode

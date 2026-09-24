@@ -715,7 +715,8 @@ link_refused || m13=1
 # The host's ~/.omp holds code omp loads (native addons, extensions/,
 # settings naming modules) and sockets to host-side processes (run/). What
 # is asserted: none of that is bound writable, config is a plain per-run
-# copy, and only the state that must persist is shared.
+# copy, only the state that must persist is shared, and the settings
+# merge-back takes exactly the two keys it may and nothing it should not.
 OMP="$HOME/.omp"
 mkdir -p "$OMP/agent/extensions" "$OMP/agent/sessions/-elsewhere" "$OMP/agent/terminal-sessions" \
     "$OMP/natives/9.9.9" "$OMP/run/daemons/x" "$HOME/projects/p"
@@ -779,6 +780,67 @@ if [[ "$(omp_session_bucket "$HOME/projects/p")" == -projects-p \
 else
     bad O5 "omp_session_bucket disagrees with omp's scheme"
 fi
+# The session edits its copy; only modelRoles/cycleOrder may reach the host.
+sed -i 's|default: vendor/big|default: vendor/other|; s|dark: night|dark: day|' "$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+if grep -q '^  default: vendor/other$' "$OMP/agent/config.yml" && grep -q '^  dark: night$' "$OMP/agent/config.yml" \
+    && [[ "$(omp_config_block "$OMP/agent/config.yml" cycleOrder)" == "$(printf 'cycleOrder:\n  - vendor/big\n  - vendor/small')" ]] \
+    && grep -q 'dark: day' "$W/omp-merge.err"; then
+    ok O7 "a modelRoles change merges back; a theme change is only reported"
+else
+    bad O7 "the merge-back took the wrong keys"
+fi
+sed -i 's|smol: vendor/small|smol: vendor/hostpick|' "$OMP/agent/config.yml"
+sed -i 's|smol: vendor/small|smol: vendor/sessionpick|' "$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+grep -q '^  smol: vendor/hostpick$' "$OMP/agent/config.yml" && grep -q 'changed on the host' "$W/omp-merge.err" \
+    && ok O8 "a change made on the host during the run wins, and is reported" \
+    || bad O8 "the session overwrote a concurrent host change"
+printf 'cycleOrder:\n  - vendor/big\n  - vendor/x; touch /tmp/pwn\n' >"$W/omp-bad.block"
+omp_config_with_block "$OMP_HOME_DIR/agent/config.yml" cycleOrder "$W/omp-bad.block" >"$W/omp-bad.yml"
+cp "$W/omp-bad.yml" "$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+grep -q '^  - vendor/small$' "$OMP/agent/config.yml" && ! grep -q 'pwn' "$OMP/agent/config.yml" \
+    && ok O9 "a value that is not a plain model id is not merged" \
+    || bad O9 "a non-model-id value reached the host config"
+: >"$OMP_HOME_DIR/agent/SYSTEM.md"
+: >"$OMP_HOME_DIR/agent/models.db-wal"
+omp_home_report_created 2>"$W/omp-created.err"
+grep -q 'agent/SYSTEM.md' "$W/omp-created.err" && ! grep -q 'models.db' "$W/omp-created.err" \
+    && ok O10 "a config file created in-session is named at exit; omp's own state is not" \
+    || bad O10 "the exit report missed a created config file, or listed omp's state"
+# The merge reads only the form omp writes (omp_config_standard). Each
+# case starts from a host file, a launch copy and a session copy set here.
+o_std() { printf '%b' "$1" >"$OMP/agent/config.yml"; cp "$OMP/agent/config.yml" "$RUN_DIR/omp-config.orig"; }
+O_HOST='modelRoles:\n  default: vendor/a\ncycleOrder:\n  - vendor/a\n'
+o12=0
+# A top-level key the line scanner cannot see: nothing merged, nothing listed.
+o_std "$O_HOST"
+printf 'modelRoles:\n  default: vendor/b\ncycleOrder:\n  - vendor/a\n"theme": x\n' >"$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+grep -q '^  default: vendor/a$' "$OMP/agent/config.yml" && grep -q 'not in the form omp writes' "$W/omp-merge.err" \
+    && grep -q '"theme": x' "$W/omp-merge.err" || o12=1
+# "KEY:VALUE" without the space is a plain scalar to YAML, not a key.
+printf 'modelRoles:\n  default: vendor/b\ncycleOrder:\n  - vendor/a\ntheme:x\n' >"$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+grep -q '^  default: vendor/a$' "$OMP/agent/config.yml" && grep -q 'not in the form omp writes' "$W/omp-merge.err" || o12=1
+# A host file outside the form is never written, however clean the session.
+o_std "$O_HOST"
+printf '# mine\n%b' "$O_HOST" >"$OMP/agent/config.yml"
+printf 'modelRoles:\n  default: vendor/b\ncycleOrder:\n  - vendor/a\n' >"$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+grep -q '^# mine$' "$OMP/agent/config.yml" && grep -q '^  default: vendor/a$' "$OMP/agent/config.yml" \
+    && grep -q 'not in the form omp writes' "$W/omp-merge.err" || o12=1
+[[ "$o12" -eq 0 ]] \
+    && ok O12 "a session copy or host file outside omp's written form merges nothing, and says so" \
+    || bad O12 "the merge read or wrote a config.yml that is not in the form omp writes"
+# omp writes an emptied list as the key followed by an indented "[]".
+o_std "$O_HOST"
+printf 'modelRoles:\n  default: vendor/a\ncycleOrder:\n  []\n' >"$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+[[ "$(omp_config_block "$OMP/agent/config.yml" cycleOrder)" == "$(printf 'cycleOrder:\n  []')" ]] \
+    && ok O13 "an emptied cycleOrder, in the form omp writes it, merges back" \
+    || bad O13 "omp's own empty-list form did not merge"
 OMP_HOME_DIR=""
 # The image-natives check: the stand-in apptainer runs the probe's own
 # command on the host, which plays the image, so OMP_IMAGE_NATIVES decides
