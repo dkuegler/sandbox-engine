@@ -147,7 +147,7 @@ agent launches with its cwd at the checkout root and none of them walks *above*
 it. But the always-loaded instruction files are read at any depth, so a
 root-only mask would leave `sub/AGENTS.md` writable and loadable. The mask
 therefore runs a second, tree-wide sweep (`config_deep_instruction_paths()`) for
-the basenames on the table's `anywhere:` list — `AGENTS.md`, `CLAUDE.md`,
+the basenames on the table's `[anywhere]` list — `AGENTS.md`, `CLAUDE.md`,
 `CLAUDE.local.md`, `.cursorrules` and `.envrc` — at every depth, and applies the
 identical committed/clean rule to each match: a committed, clean `sub/AGENTS.md`
 is a read-only copy of its committed content, an uncommitted one is hidden.
@@ -355,17 +355,43 @@ template; the run checks the image once at startup and asks for a single
 ## The mask table
 
 `D` — `config/mask.toml` is the perimeter: nothing discovers config paths, so a
-path that is not on the table is not masked. It has two keys. Under
-`project:`, each entry is `- file: PATH` or `- dir: PATH`, relative to the
-checkout root; a `dir` entry covers everything beneath it. Under `anywhere:`,
-each entry is `- name: BASENAME`, matched at every depth (see "The mask reaches
-the whole tree"). The loader, `project_config_mask_load()`, accepts only that
-strict subset of YAML and refuses the run on anything else — a missing file, a
-key that is absent, repeated or has no entries, an unknown key, quoting, a
-trailing comment, an absolute path, a `..` component, a `/` in a basename —
-because a row that silently dropped out would look exactly like a mask that
-works. The table is located relative to `functions/binds.sh`, never through the
+path that is not on the table is not masked. It is TOML in `pyproject.toml`
+layout. Each `[project.GROUP]` table holds a `files` array, a `dirs` array, or
+both, of paths relative to the checkout root; a `dirs` entry covers everything
+beneath it, and the group name only files rows under the comment that names
+their vector. `[anywhere]` holds a `names` array of basenames matched at every
+depth (see "The mask reaches the whole tree"). The loader,
+`project_config_mask_load()`, parses it line by line, without a TOML library,
+and accepts only a strict subset — comments, blank lines, those headers and
+keys, one `"VALUE",` per line at four-space indent, `]` — and refuses the run on
+anything else: a missing file, a repeated table or key, an unknown key or
+table, an empty table or array, an inline array, single quotes, a trailing
+comment, a path or name listed twice, an absolute path, a `.` or `..`
+component, a `/` in a basename — because a row that silently dropped out would
+look exactly like a mask that works. Every accepted value is a TOML basic
+string that needs no escape, so the file reads the same to any TOML parser.
+The table is located relative to `functions/binds.sh`, never through the
 environment.
+
+`M` — the loader's arrays equal what Python's `tomllib` reads from the file
+(same 64 paths with the same kinds, same 5 names, same order):
+
+```
+python3 -c 'import sys, tomllib
+d = tomllib.load(open("config/mask.toml", "rb"))
+for t in d["project"].values():
+    for k in ("files", "dirs"):
+        for v in t.get(k, []): print("P", k[:-1], v)
+for v in d["anywhere"]["names"]: print("A", v)' >/tmp/py.out
+bash -c 'source functions/log.sh; source functions/agents.sh; source functions/binds.sh
+project_config_mask_load
+for i in "${!PROJECT_CONFIG_MASK_PATH[@]}"; do
+    printf "P %s %s\n" "${PROJECT_CONFIG_MASK_KIND[i]}" "${PROJECT_CONFIG_MASK_PATH[i]}"
+done
+printf "A %s\n" "${PROJECT_CONFIG_MASK_ANYWHERE[@]}"' | cmp - /tmp/py.out && echo equal
+```
+
+prints `equal`.
 
 ## Where an agent-created config file can go
 
@@ -426,9 +452,9 @@ Three properties of that gate are load-bearing:
   nothing". The gate would then be skipped entirely and `git add -A` would
   sweep every plant into the commit unreviewed.
 
-The gate's candidate sweep (`config_shaped_untracked()`) matches a `project:`
-path exactly, anything inside a `project:` directory, and every `anywhere:`
-basename at any depth. It is deliberately over-inclusive: a false positive costs
+The gate's candidate sweep (`config_shaped_untracked()`) matches a `files` path
+exactly, anything inside a `dirs` directory, and every `[anywhere]` name at any
+depth. It is deliberately over-inclusive: a false positive costs
 one keystroke; a false negative is a plant that loads on the human's next
 bare-host session. The sweep lists `git ls-files --others` **without**
 `--exclude-standard`, so an ignore rule cannot hide a plant, and the matching is

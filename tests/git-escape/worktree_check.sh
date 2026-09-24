@@ -710,6 +710,50 @@ link_refused || m13=1
 [[ "$m13" -eq 0 ]] \
     && ok M13 "a config path that is a symlink, on disk or in HEAD, refuses the run" \
     || bad M13 "a symlinked config path was bound"
+# The mask table is the perimeter: a malformed table must refuse the run,
+# never load with rows silently missing.
+mask_table_refused() {
+    printf '%b' "$1" >"$W/mask-variant.toml"
+    (
+        # shellcheck disable=SC2030,SC2034  # subshell-local on purpose; read by project_config_mask_load
+        PROJECT_CONFIG_MASK_FILE="$W/mask-variant.toml" PROJECT_CONFIG_MASK_KIND=() \
+            PROJECT_CONFIG_MASK_PATH=() PROJECT_CONFIG_MASK_ANYWHERE=()
+        project_config_mask_load
+    ) >/dev/null 2>&1 && return 1
+    return 0
+}
+m15=0
+mask_table_refused '[project.a]\nfiles = [\n    "x.json",\n]\n[anywhere]\nnames = [\n    "A",\n]\n' && m15=1
+mask_table_refused '[project.a]\nfiles = [\n    "x.json",\n]\n[project.b]\ndirs = [\n    "x.json",\n]\n[anywhere]\nnames = [\n    "A",\n]\n' || m15=1
+mask_table_refused '[project.a]\nfiles = [\n    "../x",\n]\n[anywhere]\nnames = [\n    "A",\n]\n' || m15=1
+mask_table_refused '[project.a]\nfiles = ["x.json"]\n[anywhere]\nnames = [\n    "A",\n]\n' || m15=1
+mask_table_refused '[project.a]\nfiles = [\n    "x.json",\n]\n[anywhere]\nnames = [\n    "A",\n' || m15=1
+mask_table_refused '[project.a]\nfiles = [\n    "x.json",\n]\n' || m15=1
+[[ "$m15" -eq 0 ]] \
+    && ok M15 "a malformed mask table (duplicate, '..', inline array, unclosed, no [anywhere]) refuses; a valid one loads" \
+    || bad M15 "the mask loader accepted a malformed table, or refused a valid one"
+# The shipped table is TOML that any parser reads the same way: the
+# loader's rows equal tomllib's (Python >= 3.11; skipped without it).
+if python3 -c 'import tomllib' 2>/dev/null; then
+    m16_py="$(python3 -c 'import sys, tomllib
+d = tomllib.load(open(sys.argv[1], "rb"))
+for t in d["project"].values():
+    for k in ("files", "dirs"):
+        for v in t.get(k, []): print("P", k[:-1], v)
+for v in d["anywhere"]["names"]: print("A", v)' "$PROJECT_CONFIG_MASK_FILE")"
+    m16_sh="$(
+        project_config_mask_load
+        for i in "${!PROJECT_CONFIG_MASK_PATH[@]}"; do
+            printf 'P %s %s\n' "${PROJECT_CONFIG_MASK_KIND[i]}" "${PROJECT_CONFIG_MASK_PATH[i]}"
+        done
+        printf 'A %s\n' "${PROJECT_CONFIG_MASK_ANYWHERE[@]}"
+    )"
+    [[ -n "$m16_sh" && "$m16_sh" == "$m16_py" ]] \
+        && ok M16 "config/mask.toml loads to exactly what tomllib reads" \
+        || bad M16 "the mask loader and tomllib disagree about config/mask.toml"
+else
+    printf 'skip %-6s %s\n' M16 "no python3 with tomllib (>= 3.11)"
+fi
 
 # --- O: omp's per-run ~/.omp (functions/omp-home.sh) ---------------------
 # The host's ~/.omp holds code omp loads (native addons, extensions/,

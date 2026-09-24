@@ -694,7 +694,7 @@ worktree_approval_gate() {
     } >&2
     # Agent-created config candidates: untracked paths that are
     # config-shaped (mask-entry paths, content of mask-entry directories,
-    # or "anywhere:" basenames at any depth). The commit must not sweep
+    # or "[anywhere]" names at any depth). The commit must not sweep
     # them in -- each one is shown and decided individually, and only an
     # explicit "add" stages it. Every decision's default is "exclude":
     # left uncommitted in the worktree, which then survives the commit

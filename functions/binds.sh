@@ -281,9 +281,9 @@ bind_never() {
 # it is read from is not something a caller gets to choose.
 PROJECT_CONFIG_MASK_FILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/config/mask.toml"
 
-# PROJECT_CONFIG_MASK_KIND / PROJECT_CONFIG_MASK_PATH: the "project:"
-# entries, index-aligned; PROJECT_CONFIG_MASK_ANYWHERE: the "anywhere:"
-# basenames. Filled once by project_config_mask_load().
+# PROJECT_CONFIG_MASK_KIND / PROJECT_CONFIG_MASK_PATH: the "[project.*]"
+# entries, index-aligned, kind "file" or "dir"; PROJECT_CONFIG_MASK_ANYWHERE:
+# the "[anywhere]" basenames. Filled once by project_config_mask_load().
 PROJECT_CONFIG_MASK_KIND=()
 PROJECT_CONFIG_MASK_PATH=()
 PROJECT_CONFIG_MASK_ANYWHERE=()
@@ -300,76 +300,101 @@ project_config_mask_refuse() {
 # project_config_mask_load: read PROJECT_CONFIG_MASK_FILE into the arrays
 # above, once per run.
 #
-# The file is YAML, but only the strict subset its header documents is
-# accepted, parsed line by line without a YAML library (none can be
-# assumed on the host). Every line is a comment, blank, one of the two
-# keys "project:" and "anywhere:" (each at most once -- YAML parsers
-# disagree on which of two duplicate keys wins), or an entry of the
-# section it sits in:
+# The file is TOML, but only the strict subset its header documents is
+# accepted, parsed line by line without a TOML library (none can be
+# assumed on the host). Every line is a comment, blank, or one of:
 #
-#   project:   "  - file: PATH" / "  - dir: PATH", PATH made only of
-#              [A-Za-z0-9._/-], relative, with no empty, "." or ".."
-#              component -- anything else would bind something other than
-#              the checkout path the row names;
-#   anywhere:  "  - name: BASENAME", BASENAME made only of [A-Za-z0-9._-]
-#              and neither "." nor "..".
+#   "[project.GROUP]"   GROUP made only of [a-z0-9-], each table once;
+#   "[anywhere]"        once;
+#   "files = [" / "dirs = ["   inside a "[project.*]" table, each once;
+#   "names = ["         inside "[anywhere]", once;
+#   "    \"VALUE\","    inside an open array: a "files"/"dirs" VALUE made
+#                       only of [A-Za-z0-9._/-], relative, with no empty,
+#                       "." or ".." component -- anything else would bind
+#                       something other than the checkout path the row
+#                       names; a "names" VALUE made only of [A-Za-z0-9._-]
+#                       and neither "." nor "..";
+#   "]"                 closing the open array.
 #
-# Both character sets make every value a plain YAML string that no
-# quoting, anchor, tag or flow syntax can reinterpret. Anything else
-# refuses, as does a missing or unreadable file and a section with no
-# entries: an empty "anywhere:" would silently switch off the tree-wide
-# half of the mask. Callers iterate the arrays rather than a "< <(...)"
-# stream, so a refusal here always reaches the real shell.
+# Both character sets make every value a TOML basic string that needs no
+# escape, so the lines read the same to tomllib. Anything else refuses, as
+# does a missing or unreadable file, a table or array with no entries, a
+# path or name listed twice, and no "[anywhere]" at all: an empty
+# "anywhere" would silently switch off the tree-wide half of the mask.
+# Callers iterate the arrays rather than a "< <(...)" stream, so a refusal
+# here always reaches the real shell.
 project_config_mask_load() {
-    local line n=0 kind rel section=""
-    declare -A seen_key=()
+    local line n=0 table="" key="" entries=0 tentries=0 val where
+    declare -A seen_table=() seen_key=() seen_val=()
     [[ ${#PROJECT_CONFIG_MASK_PATH[@]} -gt 0 ]] && return 0
     if [[ ! -f "$PROJECT_CONFIG_MASK_FILE" || ! -r "$PROJECT_CONFIG_MASK_FILE" ]]; then
         project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE is missing or unreadable"
     fi
     while IFS= read -r line || [[ -n "$line" ]]; do
         n=$((n + 1))
+        where="$PROJECT_CONFIG_MASK_FILE:$n"
         [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]] && continue
-        if [[ "$line" =~ ^(project|anywhere):$ ]]; then
-            section="${BASH_REMATCH[1]}"
-            if [[ -n "${seen_key[$section]+x}" ]]; then
-                project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: \"$section:\" appears more than once"
+        if [[ -n "$key" ]]; then
+            if [[ "$line" == "]" ]]; then
+                [[ "$entries" -gt 0 ]] || project_config_mask_refuse "$where: \"$key\" has no entries"
+                key=""
+                continue
             fi
-            seen_key["$section"]=1
+            if [[ ! "$line" =~ ^\ \ \ \ \"([^\"]*)\",$ ]]; then
+                project_config_mask_refuse "$where: not a '    \"VALUE\",' entry in \"$key\""
+            fi
+            val="${BASH_REMATCH[1]}"
+            if [[ "$key" == names ]]; then
+                if [[ ! "$val" =~ ^[A-Za-z0-9._-]+$ || "$val" == . || "$val" == .. ]]; then
+                    project_config_mask_refuse "$where: $val is not a plain file name"
+                fi
+                [[ -z "${seen_val[name:$val]+x}" ]] || project_config_mask_refuse "$where: $val is listed twice"
+                seen_val["name:$val"]=1
+                PROJECT_CONFIG_MASK_ANYWHERE+=("$val")
+            else
+                # "/$val/" also turns an empty value or a leading "/" into
+                # an empty component.
+                if [[ ! "$val" =~ ^[A-Za-z0-9._/-]+$ || "/$val/" == *//* \
+                      || "/$val/" == */./* || "/$val/" == */../* ]]; then
+                    project_config_mask_refuse "$where: $val is not a plain checkout-relative path"
+                fi
+                [[ -z "${seen_val[path:$val]+x}" ]] || project_config_mask_refuse "$where: $val is listed twice"
+                seen_val["path:$val"]=1
+                PROJECT_CONFIG_MASK_KIND+=("${key%s}")
+                PROJECT_CONFIG_MASK_PATH+=("$val")
+            fi
+            entries=$((entries + 1))
+            tentries=$((tentries + 1))
             continue
         fi
-        case "$section" in
-            project)
-                if [[ ! "$line" =~ ^\ \ -\ (file|dir):\ ([A-Za-z0-9._/-]+)$ ]]; then
-                    project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: not a \"  - file|dir: PATH\" entry under \"project:\""
-                fi
-                kind="${BASH_REMATCH[1]}"
-                rel="${BASH_REMATCH[2]}"
-                case "/$rel/" in
-                    *//* | */./* | */../*)
-                        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: $rel is not a plain checkout-relative path"
-                        ;;
-                esac
-                PROJECT_CONFIG_MASK_KIND+=("$kind")
-                PROJECT_CONFIG_MASK_PATH+=("$rel")
-                ;;
-            anywhere)
-                if [[ ! "$line" =~ ^\ \ -\ name:\ ([A-Za-z0-9._-]+)$ \
-                      || "${BASH_REMATCH[1]}" == . || "${BASH_REMATCH[1]}" == .. ]]; then
-                    project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: not a \"  - name: BASENAME\" entry under \"anywhere:\""
-                fi
-                PROJECT_CONFIG_MASK_ANYWHERE+=("${BASH_REMATCH[1]}")
-                ;;
-            *)
-                project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE:$n: not under \"project:\" or \"anywhere:\""
-                ;;
-        esac
+        if [[ "$line" =~ ^\[(project\.[a-z0-9-]+|anywhere)\]$ ]]; then
+            [[ -z "$table" || "$tentries" -gt 0 ]] || project_config_mask_refuse "$where: [$table] has no entries"
+            table="${BASH_REMATCH[1]}"
+            [[ -z "${seen_table[$table]+x}" ]] || project_config_mask_refuse "$where: [$table] appears more than once"
+            seen_table["$table"]=1
+            tentries=0
+            continue
+        fi
+        if [[ "$line" =~ ^(files|dirs|names)\ =\ \[$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            case "$table:$key" in
+                project.*:files | project.*:dirs | anywhere:names) ;;
+                *) project_config_mask_refuse "$where: \"$key\" does not belong in [${table:-no table}]" ;;
+            esac
+            [[ -z "${seen_key[$table:$key]+x}" ]] || project_config_mask_refuse "$where: \"$key\" appears twice in [$table]"
+            seen_key["$table:$key"]=1
+            entries=0
+            continue
+        fi
+        project_config_mask_refuse "$where: not a comment, a [project.GROUP] or [anywhere] header, or a '\"files\"/\"dirs\"/\"names\" = [' line"
     done <"$PROJECT_CONFIG_MASK_FILE"
+    [[ -z "$key" ]] || project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE: \"$key\" in [$table] is never closed"
+    [[ -z "$table" || "$tentries" -gt 0 ]] || project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE: [$table] has no entries"
     if [[ ${#PROJECT_CONFIG_MASK_PATH[@]} -eq 0 ]]; then
-        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE: \"project:\" has no entries"
+        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE: no [project.*] entries"
     fi
     if [[ ${#PROJECT_CONFIG_MASK_ANYWHERE[@]} -eq 0 ]]; then
-        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE: \"anywhere:\" has no entries"
+        project_config_mask_refuse "$PROJECT_CONFIG_MASK_FILE: [anywhere] has no entries"
     fi
 }
 
@@ -525,7 +550,7 @@ config_mask_symlink_refuse() {
 }
 
 # config_deep_instruction_paths DIR OUT: every path in DIR's tree, at any
-# depth, whose basename is on the table's "anywhere:" list (the
+# depth, whose basename is one of the table's "[anywhere]" names (the
 # always-loaded instruction files discovery reaches below the root, and
 # direnv's .envrc) -- tracked or not, including gitignored ones, since an
 # ignore rule must not be a place to hide a plant. Writes NUL-separated
@@ -871,7 +896,7 @@ report_created_config_paths() {
 
 # config_shaped_untracked DIR OUT: every untracked path under DIR
 # (including gitignored ones) that is config-shaped: a mask-entry path,
-# anything inside a mask-entry directory, or an "anywhere:" basename at
+# anything inside a mask-entry directory, or an "[anywhere]" name at
 # any depth. Writes NUL-separated absolute paths to OUT; the worktree
 # approval gate's per-file decisions feed from it. Deliberately
 # over-inclusive: a false positive costs one question the human answers

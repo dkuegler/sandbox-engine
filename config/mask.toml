@@ -3,24 +3,29 @@
 # auto-loads from a checkout (read by project_config_mask_load,
 # functions/binds.sh).
 #
-# "project:" is the single table of those surfaces inside a checkout,
-# relative to the checkout root the mask is resolved against. Each entry
-# is "- file: PATH" or "- dir: PATH": a single file, or a directory whose
-# whole content counts as config. PATH is relative to the checkout root
-# and made only of A-Z a-z 0-9 . _ / - (no leading "/", no "." or ".."
-# component), so it is always a plain YAML string.
+# "[project.<group>]" tables are the single table of those surfaces
+# inside a checkout, relative to the checkout root the mask is resolved
+# against. Each group has a "files" array (single files), a "dirs" array
+# (directories whose whole content counts as config), or both. A PATH is
+# relative to the checkout root and made only of A-Z a-z 0-9 . _ / - (no
+# leading "/", no "." or ".." component). Group names (a-z 0-9 -) only
+# group rows under the comment that names their vector; they change
+# nothing about how a row is masked.
 #
-# "anywhere:" lists file names matched at EVERY depth of the checkout,
-# gitignored or not, and decided by the same rule as a "project:" row.
-# Each entry is "- name: BASENAME", made only of A-Z a-z 0-9 . _ - (no
+# "[anywhere]" "names" lists file names matched at EVERY depth of the
+# checkout, gitignored or not, and decided by the same rule as a
+# "[project.*]" row. A BASENAME is made only of A-Z a-z 0-9 . _ - (no
 # "/", not "." or "..").
 #
-# This is a strict subset of YAML, parsed without a YAML library: comment
-# lines, blank lines, the two keys (each once) and entries exactly as
-# above. Anything else -- a different indent, quoting, a trailing
-# comment, an unknown key, a key with no entries -- refuses the run
-# rather than being skipped, because a row that silently dropped out
-# would look exactly like a mask that works.
+# This is valid TOML, in the layout pyproject.toml files use, but only a
+# strict subset of it is accepted, parsed line by line without a TOML
+# library: comment lines, blank lines, the table headers above (each
+# once), "files = [" / "dirs = [" / "names = [" (each once per table),
+# one "    \"VALUE\"," per line, and "]". Anything else -- a different
+# indent, single quotes, an inline array, a trailing comment, an unknown
+# key or table, an empty table or array, a path listed twice -- refuses
+# the run rather than being skipped, because a row that silently dropped
+# out would look exactly like a mask that works.
 #
 # The table IS the perimeter of the whole masking convention -- nothing
 # discovers configs -- so every new agent or tool surface lands here by
@@ -39,129 +44,184 @@
 # is always launched with its cwd at the project root (or the worktree
 # root), and none of them walks above its cwd for config. The always-
 # loaded instruction files are the exception discovery can reach at
-# other depths; "project:" carries their root-level copies, and
-# "anywhere:" the basenames swept at every depth.
+# other depths; "[project.*]" carries their root-level copies, and
+# "[anywhere]" the basenames swept at every depth.
 
-project:
-  # sandbox.yml decides this sandbox's own binds, environment and base
-  # image. The host parses it before any container exists, so its real
-  # gate is the tracked-and-clean refusal in parse_project_sandbox_config
-  # (functions/project-sandbox-config.sh); the row below only keeps the
-  # session from reading an uncommitted copy or rewriting a committed one.
-  - file: sandbox.yml
+# sandbox.yml decides this sandbox's own binds, environment and base
+# image. The host parses it before any container exists, so its real
+# gate is the tracked-and-clean refusal in parse_project_sandbox_config
+# (functions/project-sandbox-config.sh); the row below only keeps the
+# session from reading an uncommitted copy or rewriting a committed one.
+[project.sandbox]
+files = [
+    "sandbox.yml",
+]
 
-  # Claude Code: project-scope settings, its own MCP files, and the
-  # subagent/command/skill content directories mirrored from its global
-  # equivalents.
-  - file: .claude/settings.json
-  - file: .claude/settings.local.json
-  - file: .claude/mcp.json
-  - file: .claude/.mcp.json
-  - dir: .claude/hooks
-  - dir: .claude/plugins
-  - dir: .claude/agents
-  - dir: .claude/commands
-  - dir: .claude/skills
-  - dir: .claude/rules
-  - dir: .claude/output-styles
+# Claude Code: project-scope settings, its own MCP files, and the
+# subagent/command/skill content directories mirrored from its global
+# equivalents.
+[project.claude]
+files = [
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".claude/mcp.json",
+    ".claude/.mcp.json",
+]
+dirs = [
+    ".claude/hooks",
+    ".claude/plugins",
+    ".claude/agents",
+    ".claude/commands",
+    ".claude/skills",
+    ".claude/rules",
+    ".claude/output-styles",
+]
 
-  # opencode: project-root config (both spellings) and its own content
-  # directories, current-plural and back-compat-singular.
-  - file: opencode.json
-  - file: opencode.jsonc
-  - dir: .opencode/plugin
-  - dir: .opencode/plugins
-  - dir: .opencode/agent
-  - dir: .opencode/agents
-  - dir: .opencode/command
-  - dir: .opencode/commands
-  - dir: .opencode/mode
-  - dir: .opencode/modes
-  - dir: .opencode/tool
-  - dir: .opencode/tools
-  - dir: .opencode/skill
-  - dir: .opencode/skills
-  - dir: .opencode/theme
-  - dir: .opencode/themes
+# opencode: project-root config (both spellings) and its own content
+# directories, current-plural and back-compat-singular.
+[project.opencode]
+files = [
+    "opencode.json",
+    "opencode.jsonc",
+]
+dirs = [
+    ".opencode/plugin",
+    ".opencode/plugins",
+    ".opencode/agent",
+    ".opencode/agents",
+    ".opencode/command",
+    ".opencode/commands",
+    ".opencode/mode",
+    ".opencode/modes",
+    ".opencode/tool",
+    ".opencode/tools",
+    ".opencode/skill",
+    ".opencode/skills",
+    ".opencode/theme",
+    ".opencode/themes",
+]
 
-  # omp: project-local settings/MCP files (docs/settings.md,
-  # docs/mcp-config.md).
-  - file: .omp/config.yml
-  - file: .omp/settings.json
-  - file: .omp/mcp.json
-  - file: .omp/.mcp.json
+# omp: project-local settings/MCP files (docs/settings.md,
+# docs/mcp-config.md).
+[project.omp]
+files = [
+    ".omp/config.yml",
+    ".omp/settings.json",
+    ".omp/mcp.json",
+    ".omp/.mcp.json",
+]
 
-  # Root fallback MCP files every discovery chain can read.
-  - file: mcp.json
-  - file: .mcp.json
+# Root fallback MCP files every discovery chain can read.
+[project.mcp]
+files = [
+    "mcp.json",
+    ".mcp.json",
+]
 
-  # Other tools' project config omp's cross-tool MCP discovery reads
-  # regardless of which agent this run uses.
-  - file: .codex/config.toml
-  - file: .gemini/settings.json
-  - file: .cursor/mcp.json
-  - file: .windsurf/mcp_config.json
-  - file: .vscode/mcp.json
+# Other tools' project config omp's cross-tool MCP discovery reads
+# regardless of which agent this run uses.
+[project.cross-tool]
+files = [
+    ".codex/config.toml",
+    ".gemini/settings.json",
+    ".cursor/mcp.json",
+    ".windsurf/mcp_config.json",
+    ".vscode/mcp.json",
+]
 
-  # Editor task/debug config VS Code runs without being asked:
-  # tasks.json runOptions.runOn=folderOpen on folder open,
-  # launch.json preLaunchTask/postDebugTask on every debug session.
-  - file: .vscode/tasks.json
-  - file: .vscode/launch.json
+# Editor task/debug config VS Code runs without being asked:
+# tasks.json runOptions.runOn=folderOpen on folder open,
+# launch.json preLaunchTask/postDebugTask on every debug session.
+[project.vscode]
+files = [
+    ".vscode/tasks.json",
+    ".vscode/launch.json",
+]
 
-  # devcontainer.json initializeCommand runs on the HOST before any
-  # container is built.
-  - file: .devcontainer/devcontainer.json
+# devcontainer.json initializeCommand runs on the HOST before any
+# container is built.
+[project.devcontainer]
+files = [
+    ".devcontainer/devcontainer.json",
+]
 
-  # direnv executes .envrc, as the human, on cd.
-  - file: .envrc
+# direnv executes .envrc, as the human, on cd.
+[project.direnv]
+files = [
+    ".envrc",
+]
 
-  # .pre-commit-config.yaml names programs the commit path fetches and
-  # runs.
-  - file: .pre-commit-config.yaml
+# .pre-commit-config.yaml names programs the commit path fetches and
+# runs.
+[project.pre-commit]
+files = [
+    ".pre-commit-config.yaml",
+]
 
-  # Always-loaded instruction files: nothing executes these, but every
-  # agent reads them into its system prompt unprompted.
-  - file: AGENTS.md
-  - file: CLAUDE.md
-  - file: CLAUDE.local.md
-  - file: .cursorrules
-  - file: .github/copilot-instructions.md
+# Always-loaded instruction files: nothing executes these, but every
+# agent reads them into its system prompt unprompted.
+[project.instructions]
+files = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    ".cursorrules",
+    ".github/copilot-instructions.md",
+]
 
-  # omp: RULES.md is always-apply -- injected into the system prompt on
-  # every request -- and rules/ is loaded the same way.
-  - file: .omp/RULES.md
-  - file: .omp/AGENTS.md
-  - dir: .omp/rules
+# omp: RULES.md is always-apply -- injected into the system prompt on
+# every request -- and rules/ is loaded the same way.
+[project.omp-instructions]
+files = [
+    ".omp/RULES.md",
+    ".omp/AGENTS.md",
+]
+dirs = [
+    ".omp/rules",
+]
 
-  # Claude Code's own project-scope instruction copies.
-  - file: .claude/CLAUDE.md
-  - file: .claude/AGENTS.md
+# Claude Code's own project-scope instruction copies.
+[project.claude-instructions]
+files = [
+    ".claude/CLAUDE.md",
+    ".claude/AGENTS.md",
+]
 
-  # Other assistants that auto-load project instructions, read whether or
-  # not this run's agent is the one that wrote them.
-  - file: .gemini/GEMINI.md
-  - dir: .github/instructions
-  - dir: .cursor/rules
-  - dir: .windsurf/rules
-  - file: .windsurfrules
-  - file: .clinerules
+# Other assistants that auto-load project instructions, read whether or
+# not this run's agent is the one that wrote them.
+[project.other-assistants]
+files = [
+    ".gemini/GEMINI.md",
+    ".windsurfrules",
+    ".clinerules",
+]
+dirs = [
+    ".github/instructions",
+    ".cursor/rules",
+    ".windsurf/rules",
+]
 
-  # Tool-neutral agent directories (.agent/, .agents/).
-  - file: .agent/AGENTS.md
-  - dir: .agent/rules
-  - file: .agents/AGENTS.md
-  - dir: .agents/rules
+# Tool-neutral agent directories (.agent/, .agents/).
+[project.agent-dirs]
+files = [
+    ".agent/AGENTS.md",
+    ".agents/AGENTS.md",
+]
+dirs = [
+    ".agent/rules",
+    ".agents/rules",
+]
 
-anywhere:
-  # Always-loaded instruction files discovery reaches below the checkout
-  # root: claude injects a subdirectory's copy when it first reads a file
-  # there, omp points the session at it.
-  - name: AGENTS.md
-  - name: CLAUDE.md
-  - name: CLAUDE.local.md
-  - name: .cursorrules
-
-  # direnv executes .envrc, as the human, on cd into any directory
-  # holding one.
-  - name: .envrc
+[anywhere]
+names = [
+    # Always-loaded instruction files discovery reaches below the
+    # checkout root: claude injects a subdirectory's copy when it first
+    # reads a file there, omp points the session at it.
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    ".cursorrules",
+    # direnv executes .envrc, as the human, on cd into any directory
+    # holding one.
+    ".envrc",
+]
