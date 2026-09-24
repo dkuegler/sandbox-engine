@@ -66,12 +66,15 @@ config read-only where the host has it (`bind_ro()`), and nothing else; omp's
 (`functions/omp-home.sh`). A path upstream adds is therefore unbound by default,
 which fails safe for containment but not for function: a new state file the CLI
 must persist is silently lost. The silent containment risk is inside the paths
-that ARE bound read-write as whole directories — `~/.local/share/opencode`, and
-claude's `~/.claude/projects`, `shell-snapshots`, `todos`, `statsig`,
-`file-history` and `ide` — where a new config file, executable or server
+that ARE bound read-write from the host as whole directories — claude's
+`~/.claude/projects`, `shell-snapshots`, `todos`, `statsig`, `file-history`
+and `ide` — where a new config file, executable or server
 registry the CLI starts keeping there is writable by every run and read by the
-next unsandboxed one. The per-agent comment blocks in `configure_agent()` are
-the enumeration to keep current, each writable path with its reason.
+next unsandboxed one. The sandbox-owned per-project directories under
+`~/.agent/` (`omp-history`, `omp-logs`, `opencode-share`) are read by no host
+CLI, so they do not carry that risk. The per-agent comment blocks in
+`configure_agent()` are the enumeration to keep current, each writable path
+with its reason.
 
 **Procedure.** For each supported agent, list the paths the new version reads
 and writes under `$HOME`, and reconcile against that agent's branch: new config

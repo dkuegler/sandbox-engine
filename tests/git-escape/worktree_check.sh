@@ -809,6 +809,19 @@ if grep -qx -- "$RUN_DIR/opencode-state:$HOME/.local/state/opencode" <<<"$b5_bin
 else
     bad B5 "the session could read or write the host's opencode service.json"
 fi
+# opencode's data directory holds every project's session database and the
+# bin/ tools it executes: the session gets a per-project private one, and
+# only the two credential files are the host's.
+b6_srcs="$(grep -v -- '^-B$' <<<"$b5_binds" | sed 's/:.*//')"
+b6_key="$(project_state_key)"
+if grep -qx -- "$HOME/.agent/opencode-share/$b6_key:$HOME/.local/share/opencode" <<<"$b5_binds" \
+    && [[ "$(grep -c -- "^$HOME/.local/share/opencode" <<<"$b6_srcs")" -eq 2 ]] \
+    && grep -qx -- "$HOME/.local/share/opencode/auth.json" <<<"$b6_srcs" \
+    && grep -qx -- "$HOME/.local/share/opencode/mcp-auth.json" <<<"$b6_srcs"; then
+    ok B6 "opencode's data directory is per project and sandbox-owned; only auth.json and mcp-auth.json are the host's"
+else
+    bad B6 "the session could read or write the host's opencode data directory"
+fi
 
 # --- J: the ~/.claude.json key scanner (functions/claude-json.sh) --------
 # The scanner decides which bytes are top-level mcpServers. A wrong answer
@@ -898,7 +911,7 @@ omp_bound_under() {
 }
 # shellcheck disable=SC2031  # W15 changed PROJECT_DIR only inside its own subshell
 O_BUCKET="$(omp_session_bucket "${WORKTREE_DIR:-$PROJECT_DIR}")"
-O_KEY="$(omp_home_project_key)"
+O_KEY="$(project_state_key)"
 
 if omp_bound "$RUN_DIR/omp:$OMP" && [[ "$(readlink "$OMP_HOME_DIR/natives")" == /usr/local/omp/natives ]] \
     && ! omp_bound_src_under "$OMP/natives" && ! omp_bound_src_under "$OMP/run" \

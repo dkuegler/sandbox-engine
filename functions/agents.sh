@@ -19,6 +19,15 @@ ensure_run_dir() {
     fi
 }
 
+# project_state_key: "<basename>-<8 hex>" of the checkout, the same key
+# --worktree uses under ~/.agent/worktrees, so both modes -- and every
+# worktree of one repository -- share one set of sandbox-owned per-project
+# state (omp's history and logs, opencode's data directory).
+project_state_key() {
+    local top="${WORKTREE_REPO_ROOT:-$PROJECT_DIR}"
+    printf '%s-%s' "$(basename "$top")" "$(printf '%s' "$top" | sha256sum | cut -c1-8)"
+}
+
 # require_host_env VAR CONTEXT: forward the host's VAR into the container
 # via backend_forward_env if this shell's environment has it set (e.g. because
 # the user exported it in ~/.bashrc), otherwise refuse to launch instead
@@ -561,18 +570,31 @@ configure_agent() {
             # wholesale bind of ~/.config/opencode; its config is mounted
             # read-only.
             #
-            # Writable, and why: tui.json is rewritten every session;
-            # ~/.local/share/opencode carries the session database, its
-            # logs, the credentials opencode refreshes itself (auth.json,
-            # mcp-auth.json) and its per-project data. It is bound as a
-            # DIRECTORY rather than file by file, deliberately: the
-            # database is sqlite, and sqlite creates and removes its own
-            # "-wal"/"-shm" siblings next to it, which a per-file bind
-            # makes impossible (an unlink of a bind-mounted file fails).
-            # The only executable surface under it is bin/, bound
-            # read-only just below.
+            # Writable, and why: tui.json is rewritten every session.
             bind_state_rw "$HOME/.config/opencode/tui.json" file '{}'
-            bind_state_rw "$HOME/.local/share/opencode" dir
+            # ~/.local/share/opencode is a sandbox-owned per-project
+            # directory, never the host's. The host's holds the session
+            # database of EVERY project on the machine, storage/, log/ and
+            # bin/ (tools opencode downloads and executes): shared, a
+            # session could read every other project's sessions, and leave
+            # data or binaries the next unsandboxed opencode reads or runs.
+            # Keyed like omp's history (project_state_key), so every run
+            # and worktree of this project share it; sessions started on
+            # the host are not visible here, nor these on the host. Bound
+            # as a DIRECTORY, deliberately: the database is sqlite, and
+            # sqlite creates and removes its own "-wal"/"-shm" siblings next
+            # to it, which a per-file bind makes impossible (an unlink of a
+            # bind-mounted file fails). Only the credentials opencode
+            # refreshes itself are the host's, bound in by name over mount
+            # points made in the private directory.
+            local oc_share
+            oc_share="$HOME/.agent/opencode-share/$(project_state_key)"
+            mkdir -p -- "$oc_share" && chmod 700 -- "$oc_share"
+            BINDS+=(-B "$oc_share:$HOME/.local/share/opencode")
+            for p in auth.json mcp-auth.json; do
+                : >>"$oc_share/$p"
+                bind_state_rw "$HOME/.local/share/opencode/$p" file '{}'
+            done
             # ~/.local/state/opencode is a fresh per-run directory, never
             # the host's. opencode registers its background server there
             # (service.json: pid, http://127.0.0.1:<port>, password;
@@ -592,11 +614,6 @@ configure_agent() {
             # a writable bind would let the sandbox replace a binary the
             # human then executes on the bare host.
             bind_ro "$HOME/.opencode" dir
-            # Same reason, one level down: bin/ inside the writable state
-            # directory above is the one path there that is executed. A
-            # host without one gets it created empty first (bind_ro, under
-            # a read-write parent), so the session cannot create it.
-            bind_ro "$HOME/.local/share/opencode/bin" dir
             # opencode.json/opencode.jsonc define mcp.<name>.command arrays,
             # plugin paths, lsp.*.command, formatter.*.command and
             # experimental.hook.* -- all executed; plugins/ is JS/TS loaded

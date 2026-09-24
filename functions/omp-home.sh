@@ -69,14 +69,6 @@ omp_home_require_natives() {
     exit 1
 }
 
-# omp_home_project_key: "<basename>-<8 hex>" of the checkout, the same key
-# --worktree uses under ~/.agent/worktrees, so both modes share one history
-# and one log folder per project.
-omp_home_project_key() {
-    local top="${WORKTREE_REPO_ROOT:-$PROJECT_DIR}"
-    printf '%s-%s' "$(basename "$top")" "$(printf '%s' "$top" | sha256sum | cut -c1-8)"
-}
-
 # omp_session_bucket DIR: the folder omp files DIR's sessions under.
 # omp buckets by canonical working directory: "-<relative>" under $HOME,
 # "-tmp-<relative>" under the temp root, "--<absolute>--" otherwise, with
@@ -141,7 +133,7 @@ omp_home_prepare() {
     done
     BINDS+=(-B "$OMP_HOME_DIR:$real")
 
-    key="$(omp_home_project_key)"
+    key="$(project_state_key)"
     omp_home_bind_private "$HOME/.agent/omp-logs/$key" "$real/logs" || return 1
     omp_home_bind_private "$HOME/.agent/omp-history/$key" "$real/agent/.sandbox-history" || return 1
     ln -s .sandbox-history/history.db "$agent/history.db" || return 1
