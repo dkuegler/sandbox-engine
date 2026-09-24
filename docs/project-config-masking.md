@@ -165,6 +165,93 @@ single tree walk in C rather than a shell loop over every path in
 The startup block is fed from the same pass, so a deep uncommitted instruction
 file is named at launch.
 
+### `@` imports move class-D content off the mask list
+
+Class D is "diff = payload" only for an instruction file that contains no
+imports. Both claude and omp expand an `@path` token inside an instruction file
+inline before injection, resolving it relative to the importing file and
+recursing — four hops for claude, five for omp. `D`.
+
+So a committed, masked, human-reviewed `AGENTS.md` holding `@docs/notes.md`
+loads `docs/notes.md` into the system prompt at launch, and `docs/notes.md` is an
+ordinary source file: not on the table, writable by every run. It is the class-D
+form of the indirection below — the reviewed diff is the reference, not the
+referent — and it means the payload of a class-D path is bounded by its imports,
+not by its own diff.
+
+## What indirection costs
+
+Classes B and C are the classes where a review of the committed file is not a
+review of what runs. The concrete shape, `D`:
+
+- `mcp.json` naming `{"command": "node", "args": ["tools/helper.js"]}` commits a
+  reference. `tools/helper.js` is an ordinary source file: not on the mask table
+  (`config/mask.toml`), writable by every sandboxed run, and read by the agent
+  CLI on the human's next bare-host start in that checkout.
+- `.claude/settings.json` `hooks`, `apiKeyHelper` and `statusLine` are command
+  strings with the same property.
+- `.pre-commit-config.yaml` names a repository and revision that the commit path
+  fetches and executes; the fetched content is not in the checkout at all.
+- `.devcontainer/devcontainer.json` `initializeCommand` is a host command line.
+
+The consequence for the convention is bounded and worth stating directly:
+masking a class-B or class-C path read-only removes the agent's ability to
+change *which* referent is named. It does not remove its ability to change the
+referent, when the referent is a path in the same checkout.
+
+## The class-C perimeter does not bound what becomes context
+
+An MCP server returns text to its client at connect time — the `initialize`
+response's `instructions` field, plus every tool name, description and input
+schema — and that text is read into the model's context before the session's
+first prompt. `D`, from the MCP specification.
+
+Nothing constrains where the server sources that text. A server that reads a
+file in the checkout turns that file into class-D content without the file
+appearing on the mask list and without any masked path changing. The mask list
+is therefore a perimeter over *config paths*, not a perimeter over *what becomes
+instructions*, and no masking polarity changes that.
+
+## What crosses the container barrier
+
+Transport decides whether a class-C definition is reachable from inside a
+sandboxed run. `D`:
+
+| transport | inside the container |
+| --- | --- |
+| stdio | the client spawns the named `command` inside the container. The image ships a fixed toolchain (`sandbox/agent/Dockerfile.template`), so a definition naming a host path has nothing to spawn and the server fails to start, like any other missing binary; a command that exists in the image, or a host binary mounted read-only by a `sandbox.yml` `binds:` entry, runs contained. |
+| `http` / `sse` | the client opens a network connection. The agent image ships curl and ca-certificates with open network egress, and the read-only `.git` mask does not restrict egress (`git-breakout.md`), so a remote endpoint is reachable. |
+
+MCP credentials: opencode's `~/.local/share/opencode/mcp-auth.json` and claude's
+`~/.claude/.credentials.json` are bound read-write, so what the agent stores
+there survives the run. claude's `~/.claude.json` is a per-run copy that is
+never written back (below), so nothing claude keeps in that file persists.
+
+Current handling of on-disk MCP config by the three agent branches in
+`configure_agent()` (`functions/agents.sh`), `D`:
+
+| agent | project- and user-scope MCP config from disk | mechanism |
+| --- | --- | --- |
+| claude | loaded | `RUN_CMD=(claude "${ARGS[@]}")`; the run's own argv passes through untouched |
+| omp | loaded | `RUN_CMD=(omp "${ARGS[@]}")` |
+| opencode | loaded | `RUN_CMD=(opencode "${ARGS[@]}")`; `mcp.*.command` is read from the visible `opencode.json` |
+
+Each source has its own gate, which is why no CLI-level switch is forced:
+
+| source | gate |
+| --- | --- |
+| project-scope files (`.mcp.json`, `mcp.json`, `.claude/settings.json`, `opencode.json`, `.omp/mcp.json`, …) | the convention below: visible only when committed and clean, as a read-only copy — a change lands only through a commit, i.e. a human review pass |
+| claude's user- and local-scope servers (`~/.claude.json`) | the per-run copy: loaded from the host's file, and nothing the session writes there reaches a later run |
+| the other global definitions (`~/.claude/settings.json`, `~/.claude/mcp.json`/`.mcp.json`, `~/.omp/agent/mcp.json`/`.mcp.json`, `~/.config/opencode/opencode.json`) | read-only, human-authored outside any repo the agent can reach |
+
+claude used to get `--strict-mcp-config` appended unconditionally, with the
+run's own `--mcp-config` values folded into a single occurrence. The flag only
+stopped the sandboxed session from *loading* definitions; it did nothing about a
+definition the session wrote into `~/.claude.json` being live on the human's
+next bare-host start, which the per-run copy now prevents. omp's named profiles
+(`~/.omp/profiles/`) are not supported in the sandbox: a run that selects one
+refuses to start.
+
 ## The convention: the session sees what the branch commits
 
 The mask list is fixed; the decision is not. For every path on the list, per

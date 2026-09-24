@@ -539,44 +539,22 @@ configure_agent() {
             # with a copy of itself plus a pointer at the generated
             # limitations lookup file, rather than a plain read-only bind.
             bind_augmented_instructions "$HOME/.claude/CLAUDE.md"
-            # Fold every user --mcp-config value into one occurrence and
-            # force --strict-mcp-config unconditionally: user- and
-            # project-scope MCP servers from the host (~/.claude.json,
-            # .mcp.json, settings.json) name host command lines that
-            # either do not exist in the container or are exactly the
-            # injection vector the .git masking exists to contain. A user
-            # who wants their own servers passes --mcp-config, preserved
-            # below. `--mcp-config` takes space-separated values, so one
-            # flag with several values loads all of them; emitting a
-            # second occurrence would depend on whether repeats accumulate.
-            local -a user_mcp=() rest=()
-            local i=0
-            while [[ $i -lt ${#ARGS[@]} ]]; do
-                case "${ARGS[$i]}" in
-                    --mcp-config)
-                        i=$((i + 1))
-                        while [[ $i -lt ${#ARGS[@]} && "${ARGS[$i]}" != -* ]]; do
-                            user_mcp+=("${ARGS[$i]}")
-                            i=$((i + 1))
-                        done
-                        ;;
-                    --mcp-config=*)
-                        user_mcp+=("${ARGS[$i]#--mcp-config=}")
-                        i=$((i + 1))
-                        ;;
-                    --strict-mcp-config)
-                        i=$((i + 1))
-                        ;;
-                    *)
-                        rest+=("${ARGS[$i]}")
-                        i=$((i + 1))
-                        ;;
-                esac
-            done
-            local -a mcp_flag=()
-            [[ ${#user_mcp[@]} -gt 0 ]] && mcp_flag=(--mcp-config "${user_mcp[@]}")
-            RUN_CMD=(claude ${mcp_flag[@]+"${mcp_flag[@]}"}
-                     --strict-mcp-config ${rest[@]+"${rest[@]}"})
+            # No --strict-mcp-config, and no interception of the user's own
+            # --mcp-config: ARGS passes through untouched, exactly as it
+            # does for opencode and omp. The MCP definitions claude reads
+            # each have their own gate, and whatever a definition spawns
+            # runs inside this container:
+            #
+            #   project .mcp.json / .claude/settings.json -- the project
+            #     mask: committed and clean is a read-only copy,
+            #     uncommitted is hidden;
+            #   ~/.claude.json (user- and local-scope servers) -- the
+            #     per-run copy, never written back, so nothing a session
+            #     writes there reaches a later run;
+            #   ~/.claude/settings.json, mcp.json and the rest of the
+            #     global surface -- read-only, human-authored outside any
+            #     repo the agent can reach.
+            RUN_CMD=(claude "${ARGS[@]}")
             ;;
         opencode)
             # Inverted polarity, same as the claude branch above: no
