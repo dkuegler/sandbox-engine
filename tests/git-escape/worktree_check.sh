@@ -100,6 +100,8 @@ source "$REPO_ROOT/functions/commit-message.sh"
 source "$REPO_ROOT/functions/binds.sh"
 # shellcheck source=functions/omp-home.sh
 source "$REPO_ROOT/functions/omp-home.sh"
+# shellcheck source=functions/claude-json.sh
+source "$REPO_ROOT/functions/claude-json.sh"
 
 RUN_DIR="$W/run"
 mkdir -p "$RUN_DIR" || fail_setup "mkdir RUN_DIR"
@@ -807,6 +809,47 @@ if grep -qx -- "$RUN_DIR/opencode-state:$HOME/.local/state/opencode" <<<"$b5_bin
 else
     bad B5 "the session could read or write the host's opencode service.json"
 fi
+
+# --- J: the ~/.claude.json key scanner (functions/claude-json.sh) --------
+# The scanner decides which bytes are top-level mcpServers. A wrong answer
+# either way is a spawned command line on the human's next bare-host run,
+# so decoys that look like the key must not match, and anything ambiguous
+# must refuse rather than pick.
+J="$W/json"
+mkdir -p "$J"
+printf '%s' '{"path":"/home/ü/p","a":"x \"mcpServers\": {\"evil\":1}","p":{"mcpServers":{"n":1}},"mcpServers":{"s":{"command":"x"}},"z":[1,{"q":2}]}' >"$J/ok.json"
+[[ "$(claude_json_value "$J/ok.json" mcpServers)" == '{"s":{"command":"x"}}' \
+    && "$(claude_json_value "$J/ok.json" z)" == '[1,{"q":2}]' \
+    && -z "$(claude_json_value "$J/ok.json" absent)" ]] \
+    && ok J1 "the top-level value is found past decoys: the key inside a string, the same key nested, non-ASCII before it" \
+    || bad J1 "the scanner returned the wrong span for a top-level key"
+j2=0
+printf '%s' '{"mcpServers":{},"mcpServers":{"s":{"command":"x"}}}' >"$J/dup.json"
+claude_json_value "$J/dup.json" mcpServers >/dev/null && j2=1
+printf '%s' '{"\u006dcpServers":{"s":{"command":"x"}}}' >"$J/esc.json"
+claude_json_wellformed "$J/esc.json" && j2=1
+[[ "$j2" -eq 0 ]] \
+    && ok J2 "a duplicated or backslash-escaped top-level key refuses instead of picking one" \
+    || bad J2 "an ambiguous top-level key was resolved to one reading"
+j3=0
+printf '%s' '{"a":1,"mcpServers":{"s":{"command":"x"' >"$J/trunc.json"
+claude_json_wellformed "$J/trunc.json" && j3=1
+printf '%s' '{"a":"unterminated}' >"$J/str.json"
+claude_json_wellformed "$J/str.json" && j3=1
+claude_json_wellformed "$J/ok.json" || j3=1
+[[ "$j3" -eq 0 ]] \
+    && ok J3 "a truncated file or an unterminated string is not well-formed; a sound one is" \
+    || bad J3 "the well-formedness check passed a half-written file or refused a sound one"
+j4=0
+printf '%s' '{}' >"$J/repl"
+claude_json_splice "$J/ok.json" mcpServers "$J/repl" "$J/out.json" || j4=1
+[[ "$(cat "$J/out.json")" == '{"path":"/home/ü/p","a":"x \"mcpServers\": {\"evil\":1}","p":{"mcpServers":{"n":1}},"mcpServers":{},"z":[1,{"q":2}]}' ]] || j4=1
+printf '%s' '{"unclosed":' >"$J/badrepl"
+claude_json_splice "$J/ok.json" mcpServers "$J/badrepl" "$J/bad.json" && j4=1
+claude_json_splice "$J/ok.json" absent "$J/repl" "$J/abs.json" && j4=1
+[[ "$j4" -eq 0 ]] \
+    && ok J4 "a splice replaces exactly the value's bytes; a malformed replacement or an absent key fails" \
+    || bad J4 "the splice changed other bytes, or produced a file it should have refused"
 
 # --- O: omp's per-run ~/.omp (functions/omp-home.sh) ---------------------
 # The host's ~/.omp holds code omp loads (native addons, extensions/,
