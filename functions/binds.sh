@@ -279,14 +279,28 @@ bind_rw_covers() {
 # path here costs a lost cache the user notices at once, where forgetting
 # one in a subtract-from-the-parent list is a silently writable config
 # file.
+
+# Newly created, and only then, it is also chmod'd to owner-only (0600 file,
+# 0700 dir) -- an existing file/dir this run merely reuses is left exactly
+# as it was. Several of these paths hold credentials outright (claude's
+# `.credentials.json`, opencode's `auth.json`/`mcp-auth.json`), and at
+# least one CLI treats the mode as a trust signal, not just a permission:
+# claude code CLI reportedly distrusts (and silently re-prompts login for)
+# a `.credentials.json` that is not 0600, so creating it with the umask's
+# default (commonly 0644/0664) meant a session's first-ever login inside
+# the sandbox could look successful and then not persist, sometimes within
+# the very same run. `printf`/`mkdir` alone never narrow a mode past the
+# umask.
 bind_state_rw() {
     local p="$1" kind="${2:-dir}" initial="${3:-}"
     if [[ ! -e "$p" && ! -L "$p" ]]; then
         if [[ "$kind" == dir ]]; then
             mkdir -p -- "$p" || return 1
+            chmod 700 -- "$p" || return 1
         else
             mkdir -p -- "${p%/*}" || return 1
             printf '%s' "$initial" >"$p" || return 1
+            chmod 600 -- "$p" || return 1
         fi
     fi
     BINDS+=(-B "$p")
