@@ -257,6 +257,7 @@ agent's directory is bound:
 | present config | the real content, read-only |
 | absent config | nothing bound at all |
 | absent config inside a read-write state directory (opencode's `~/.local/share/opencode/bin`) | created empty on the host, then read-only — left unbound it would be creatable through the parent; a dangling symlink there refuses the run |
+| opencode's `~/.local/state/opencode` (its server registry, `service.json`: pid, port, password) | a fresh per-run directory, never the host's — the host's would hand the session a host server's password (`docs/parallelization.md`) |
 | writable state (session databases, caches, credentials the agent refreshes) | read-write, one path at a time; a missing JSON state file is created as `{}` |
 | `.env` | never mounted, not even read-only — announced on the terminal instead |
 

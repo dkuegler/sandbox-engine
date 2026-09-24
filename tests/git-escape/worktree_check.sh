@@ -792,6 +792,21 @@ bind_augmented_instructions "$G/rwparent/AGENTS.md" 2>/dev/null
     && ok B4 "the instruction overlay is skipped where a read-write bind covers an absent destination" \
     || bad B4 "the instruction overlay would materialize a file inside a read-write bind"
 BINDS=() RO_MASKED=()
+# opencode's state directory holds service.json (a server's pid, port and
+# password); the host's copy must never be what the session sees.
+b5_binds="$(
+    # shellcheck disable=SC2030,SC2034  # subshell-local; read by configure_agent
+    AGENT=opencode ARGS=() BINDS=() RO_MASKED=() EXTRA_BIND_SRCS=() EXTRA_BIND_RO=()
+    mkdir -p "$HOME/.local/state/opencode"
+    configure_agent >/dev/null 2>&1
+    printf '%s\n' "${BINDS[@]}"
+)"
+if grep -qx -- "$RUN_DIR/opencode-state:$HOME/.local/state/opencode" <<<"$b5_binds" \
+    && ! grep -q -- "^$HOME/.local/state/opencode" <<<"$b5_binds"; then
+    ok B5 "opencode's state directory (service.json) is per run, never the host's"
+else
+    bad B5 "the session could read or write the host's opencode service.json"
+fi
 
 # --- O: omp's per-run ~/.omp (functions/omp-home.sh) ---------------------
 # The host's ~/.omp holds code omp loads (native addons, extensions/,

@@ -96,37 +96,27 @@ Put together: any `opencode serve --service` that the opencode branch of
 `RUN_CMD=(opencode "${ARGS[@]}")` is a child of that one apptainer
 `exec --containall` invocation's PID namespace, so it dies the instant that
 invocation's process exits — every single time, regardless of how the
-daemon tries to detach. Meanwhile `~/.local/state/opencode/service.json`
-(`~/.local/state/opencode` is bound **read-write** by that same branch,
-unscoped by project, identical for every `./sandbox.sh opencode ...`
-invocation on the host) survives on the host after the container that wrote
-it is gone. The net effect measured above — the "self-healing respawn" —
-is not a convenience, it is *mandatory* on every single invocation: opencode
-can never actually observe a live server it didn't just spawn itself in the
-same container, so every run pays the full ~9–10s cold-start tax that
-opencode's own design exists to amortize away.
+daemon tries to detach. The net effect measured above — the "self-healing
+respawn" — is not a convenience, it is *mandatory* on every single
+invocation: opencode can never actually observe a live server it didn't just
+spawn itself in the same container, so every run pays the full ~9–10s
+cold-start tax that opencode's own design exists to amortize away.
 
-That also creates a real cross-project hazard that follows directly from two
-things already established above, without needing a nested apptainer test
-to demonstrate the mechanism: apptainer instances share the host's network
-namespace by default (unprivileged apptainer has no `--net` flag without
-root, and this repo never passes one), and the shared, unscoped-by-project
-bind above means every concurrent `./sandbox.sh opencode ...` invocation
-reads and writes the *same* `service.json`. So if two invocations against
-two *different* projects genuinely overlap in time, the second one to start
-will find the first one's live `service.json` (a real, host-reachable
-`127.0.0.1:<port>`, exactly as this repeatedly measured above for
-same-project-directory races) and attach to it as a client rather than
-spawning its own — meaning one container's opencode server ends up quietly
-serving another, unrelated project's session. When the first container's
-own agent turn finishes and its process exits, its PID namespace — and the
-server living in it — dies, silently taking down the second project's
-in-flight session with it. This half of the chain was not independently
-reproduced end-to-end (that needs two real concurrent `sandbox.sh`
-invocations sharing a real apptainer host), but it follows directly from two
-independently-verified facts above (shared netns; shared, live,
-per-machine-not-per-project `service.json`) plus the auto-attach behavior
-already measured directly in the two/three-way same-host races.
+`service.json` is also a security boundary. Apptainer instances share the
+host's network namespace by default (unprivileged apptainer has no `--net`
+flag without root, and this repo never passes one), so a `127.0.0.1:<port>`
+plus password read from a `service.json` is enough to drive the server it
+names — and a server started by a host opencode runs its tools on the host,
+unsandboxed. A `service.json` the session wrote would likewise point the next
+host opencode at a server the session controls. So the opencode branch binds
+neither copy (`D` — `configure_agent()`, `functions/agents.sh`):
+`~/.local/state/opencode` is a fresh per-run directory under the run's scratch
+directory, never the host's, and `~/.config/opencode/service.json` is not
+bound at all. Per run rather than per project, so two concurrent
+`./sandbox.sh opencode ...` invocations cannot attach to each other's server
+either; before this, the second of two overlapping runs would have found the
+first one's live `service.json` and attached to it as a client, and the
+first run's exit would have killed the second one's session with its server.
 
 ## Is opencode's server mode "usable" inside the sandbox?
 
@@ -149,14 +139,14 @@ deleted 2026-09-17 in favor of a real `git` binary in the agent image, see
 still the right one to reuse here.) Concretely:
 
 - **One server per project**, not per user and not per run. Per-run is what
-  happens today by accident and defeats the entire point of a persistent
-  server (same ~9–10s tax, forever). Per-user (one daemon shared by every
-  project on the host) is what the *unscoped* bind layout produces today,
-  and it is exactly the mechanism behind the cross-project hazard above:
-  one project's container lifecycle becomes a single point of failure for
-  every other concurrently-running project's session. Per-project matches
-  how opencode already partitions its own data internally (`project`,
-  `project_directory`, `workspace` tables in the shared db).
+  the per-run state directory produces today and defeats the entire point of
+  a persistent server (same ~9–10s tax, forever). Per-user (one daemon shared
+  by every project on the host) makes one project's container lifecycle a
+  single point of failure for every other concurrently-running project's
+  session, and puts every project's server password in reach of every
+  session. Per-project matches how opencode already partitions its own data
+  internally (`project`, `project_directory`, `workspace` tables in the
+  shared db).
 - `sandbox.sh` would need to: (1) start-or-attach an `opencode serve`
   apptainer instance keyed by the project directory; (2) point the per-run
   agent container at it with opencode's own `--server <url>` flag (already

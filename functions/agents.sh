@@ -581,21 +581,31 @@ configure_agent() {
             # wholesale bind of ~/.config/opencode; its config is mounted
             # read-only.
             #
-            # Writable, and why: tui.json is rewritten every session; the
-            # state directories carry the session database, its logs, the
-            # credentials opencode refreshes itself (auth.json,
-            # mcp-auth.json) and its per-project data.
-            #
-            # ~/.local/share/opencode and ~/.local/state/opencode are bound
-            # as DIRECTORIES rather than file by file, deliberately: they
-            # hold a sqlite database, and sqlite creates and removes its
-            # own "-wal"/"-shm" siblings next to it, which a per-file bind
+            # Writable, and why: tui.json is rewritten every session;
+            # ~/.local/share/opencode carries the session database, its
+            # logs, the credentials opencode refreshes itself (auth.json,
+            # mcp-auth.json) and its per-project data. It is bound as a
+            # DIRECTORY rather than file by file, deliberately: the
+            # database is sqlite, and sqlite creates and removes its own
+            # "-wal"/"-shm" siblings next to it, which a per-file bind
             # makes impossible (an unlink of a bind-mounted file fails).
-            # The only executable surface under either is bin/, bound
+            # The only executable surface under it is bin/, bound
             # read-only just below.
             bind_state_rw "$HOME/.config/opencode/tui.json" file '{}'
             bind_state_rw "$HOME/.local/share/opencode" dir
-            bind_state_rw "$HOME/.local/state/opencode" dir
+            # ~/.local/state/opencode is a fresh per-run directory, never
+            # the host's. opencode registers its background server there
+            # (service.json: pid, http://127.0.0.1:<port>, password;
+            # docs/parallelization.md), and the container shares the
+            # host's network: the host's own file would hand the session
+            # the password of a HOST opencode server, which runs its tools
+            # unsandboxed, and a file the session wrote would point the
+            # next host opencode at a server the session controls. Per run
+            # rather than per project, so concurrent runs cannot attach to
+            # each other's server either. (~/.config/opencode/service.json,
+            # the second copy, is not bound at all.)
+            mkdir -p -- "$RUN_DIR/opencode-state" && chmod 700 -- "$RUN_DIR/opencode-state"
+            BINDS+=(-B "$RUN_DIR/opencode-state:$HOME/.local/state/opencode")
             # ~/.opencode is the host install directory holding the
             # opencode binary (the image installs its own at
             # /usr/local/opencode/bin, see sandbox/agent/Dockerfile.template);
