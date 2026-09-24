@@ -228,7 +228,7 @@ worktree_confirm_readonly_project() {
             "[n] does not hide the repository. It leaves the main checkout's WORKING TREE" \
             "unmounted, while $PROJECT_DIR/.git -- and every nested repository's .git --" \
             "stays mounted read-only exactly as in the other two options, so the full" \
-            "tracked history stays readable. What [d] withholds is the untracked and" \
+            "tracked history stays readable. What [n] withholds is the untracked and" \
             "ignored content that exists only in the main checkout (notes, .env, build" \
             "output) and that a worktree does not carry." \
             "" 2>/dev/null >/dev/tty; then
