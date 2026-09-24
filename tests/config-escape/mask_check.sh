@@ -531,6 +531,41 @@ omp_config_merge 2>"$W/omp-merge.err"
 [[ "$(omp_config_block "$OMP/agent/config.yml" cycleOrder)" == "$(printf 'cycleOrder:\n  []')" ]] \
     && ok O13 "an emptied cycleOrder, in the form omp writes it, merges back" \
     || bad O13 "omp's own empty-list form did not merge"
+# A blank line -- around a top-level key, between blocks, inside a list, or
+# trailing at EOF -- hides nothing once block scalars are banned, so it is
+# inert rather than a break in the form, and a merge heals it away.
+o_std 'setupVersion: 2\nmodelRoles:\n  default: vendor/a\n\ncycleOrder:\n  - vendor/a\n  - vendor/b\nsecrets:\n  enabled: true\n\n'
+printf 'setupVersion: 2\nmodelRoles:\n  default: vendor/a\n\ncycleOrder:\n  - vendor/b\n\n  - vendor/a\nsecrets:\n  enabled: true\n\n' >"$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+if grep -q 'merged back into' "$W/omp-merge.err" \
+    && [[ "$(omp_config_block "$OMP/agent/config.yml" cycleOrder)" == "$(printf 'cycleOrder:\n  - vendor/b\n  - vendor/a')" ]] \
+    && ! grep -q '^$' "$OMP/agent/config.yml"; then
+    ok O14 "a blank line around a key, between blocks, inside a list, or trailing merges and is healed away"
+else
+    bad O14 "a blank line was rejected, or survived the merge, when it should have been inert"
+fi
+# Blank lines are the only tolerance: a file of nothing but blank lines is
+# still the empty file it is, not a silently-accepted no-op.
+printf '\n\n\n' >"$W/omp-blank.yml"
+if ! omp_config_standard "$W/omp-blank.yml" >/dev/null 2>&1; then
+    ok O15 "a file of only blank lines is still rejected as empty"
+else
+    bad O15 "an all-blank file was silently accepted"
+fi
+# A key the session dropped entirely still has an old value worth showing,
+# and skip/others always leave an on-disk snapshot to inspect afterward.
+rm -rf "$OMP/agent/.sandbox-config-debug"
+o_std 'setupVersion: 2\nmodelRoles:\n  default: vendor/a\ntheme:\n  dark: titanium\ncycleOrder:\n  - vendor/a\n'
+printf 'setupVersion: 2\nmodelRoles:\n  default: vendor/b\ncycleOrder:\n  - vendor/a\n' >"$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+if grep -q 'theme: removed, was:' "$W/omp-merge.err" && grep -q 'dark: titanium' "$W/omp-merge.err" \
+    && grep -q 'kept for inspection at' "$W/omp-merge.err" \
+    && grep -q 'default: vendor/b' "$OMP/agent/.sandbox-config-debug/session-copy.yml" \
+    && grep -q 'default: vendor/a' "$OMP/agent/.sandbox-config-debug/launch-snapshot.yml"; then
+    ok O16 "a removed key is reported with its old value, and a snapshot is kept for inspection"
+else
+    bad O16 "a removed key's old value, or the inspection snapshot, went missing"
+fi
 OMP_HOME_DIR=""
 # The image-natives check: the stand-in apptainer runs the probe's own
 # command on the host, which plays the image, so OMP_IMAGE_NATIVES decides

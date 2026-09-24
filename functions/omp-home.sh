@@ -202,6 +202,7 @@ omp_home_prepare() {
             agent.db | agent.db-wal | agent.db-shm | blobs | sessions | \
                 config.yml | config.yaml | last-changelog-version | AGENTS.md | \
                 .env | secret-placeholder.key | terminal-sessions | cache | .sandbox-history | \
+                .sandbox-config-debug | \
                 *.db | *.db-wal | *.db-shm | *.db-journal | *.tmp)
                 continue
                 ;;
@@ -281,8 +282,14 @@ omp_home_refuse_overrides() {
 # two-space indent, trailing spaces after a colon stripped; the merge
 # reads that form and nothing else, because a line scanner and a YAML
 # parser agree on what the top-level keys are only when no construct can
-# span lines or hide a key. omp_config_standard FILE accepts exactly:
-#   - "{}" as the only line (the empty mapping), or lines of which
+# span lines or hide a key. Blank lines are the one exception: omp's own
+# writer never emits one, but nothing in the accepted grammar can hide a
+# key or a value inside a blank line once block scalars are banned (they
+# are, below), so a blank line -- wherever it appears -- is inert and is
+# skipped rather than rejected; every helper below skips it the same way,
+# so it never survives into a block comparison or a rewrite. Otherwise
+# omp_config_standard FILE accepts exactly:
+#   - "{}" as the only content line (the empty mapping), or lines of which
 #   - every column-0 line is "KEY:" or "KEY: VALUE", KEY an identifier
 #     (A-Z a-z 0-9 _ -, not starting with a digit or "-"), each KEY once;
 #   - every other line is indented by a multiple of two spaces, then any
@@ -292,11 +299,11 @@ omp_home_refuse_overrides() {
 #     leading YAML indicator except "-", "?" or ":" before a non-space, no
 #     ": " or " #" inside, no leading/trailing space, no trailing ":"),
 #     or -- only as a whole item, never after "KEY: " -- "[]" or "{}".
-# Rejected, among others: blank lines, comments, tabs, control
-# characters, document markers, quoted/flow/complex top-level keys,
-# "KEY:VALUE" without the space, anchors, aliases, tags, single quotes,
-# block scalars, flow collections other than "[]"/"{}", a string left
-# open across lines. On rejection prints "line N: TEXT" and fails.
+# Rejected, among others: comments, tabs, control characters, document
+# markers, quoted/flow/complex top-level keys, "KEY:VALUE" without the
+# space, anchors, aliases, tags, single quotes, block scalars, flow
+# collections other than "[]"/"{}", a string left open across lines. On
+# rejection prints "line N: TEXT" and fails.
 omp_config_standard() {
     awk '
         BEGIN { IND = "-?:,[]{}#&*!|>\047\"%@`" }
@@ -314,8 +321,11 @@ omp_config_standard() {
             return plainok(s)
         }
         function fail() { printf "line %d: %s\n", NR, $0; bad = 1; exit }
-        NR == 1 && $0 == "{}" { empty = 1; next }
-        empty || $0 == "" || /[[:cntrl:]]/ { fail() }
+        $0 == "" { next }
+        { content++ }
+        content == 1 && $0 == "{}" { empty = 1; next }
+        empty { fail() }
+        /[[:cntrl:]]/ { fail() }
         {
             match($0, /^ */); n = RLENGTH; rest = substr($0, n + 1)
             if (n % 2) fail()
@@ -349,35 +359,36 @@ omp_config_standard() {
         }
         END {
             if (bad) exit 1
-            if (NR == 0) { print "the file is empty"; exit 1 }
+            if (content == 0) { print "the file is empty"; exit 1 }
         }
     ' "$1"
 }
 
 # The helpers below read files omp_config_standard has accepted: a
 # top-level block is its column-0 key line and every indented line after
-# it, and no key occurs twice.
+# it, no key occurs twice, and blank lines are dropped on the way in so
+# none can survive into an extracted block or a rewrite.
 
 # omp_config_keys FILE: FILE's top-level keys, sorted.
 omp_config_keys() {
-    grep -o -E '^[A-Za-z_][A-Za-z0-9_-]*:' "$1" 2>/dev/null | sed 's/:$//' | LC_ALL=C sort
+    grep -v '^$' -- "$1" 2>/dev/null | grep -o -E '^[A-Za-z_][A-Za-z0-9_-]*:' | sed 's/:$//' | LC_ALL=C sort
 }
 
 # omp_config_block FILE KEY: KEY's top-level block in FILE; empty when KEY
 # is absent.
 omp_config_block() {
     [[ -f "$1" ]] || return 0
-    awk -v key="$2" '
+    grep -v '^$' -- "$1" | awk -v key="$2" '
         /^[^ ]/ { if (inblk) exit; if ($0 ~ "^" key ":( |$)") inblk = 1 }
         inblk { print }
-    ' "$1"
+    '
 }
 
 # omp_config_with_block FILE KEY BLOCKFILE: FILE on stdout with KEY's
 # top-level block replaced by BLOCKFILE, appended when FILE has none; the
 # empty mapping "{}" is replaced by the block alone.
 omp_config_with_block() {
-    awk -v key="$2" -v blockfile="$3" '
+    grep -v '^$' -- "$1" | awk -v key="$2" -v blockfile="$3" '
         BEGIN { while ((getline l < blockfile) > 0) blk[++bn] = l }
         function emit(   i) { for (i = 1; i <= bn; i++) print blk[i]; done = 1 }
         NR == 1 && $0 == "{}" { next }
@@ -388,7 +399,7 @@ omp_config_with_block() {
         inblk { next }
         { print }
         END { if (!done) emit() }
-    ' "$1"
+    '
 }
 
 # omp_config_block_mergeable KEY BLOCK: BLOCK is exactly the shape omp
@@ -446,8 +457,23 @@ omp_config_others_equal() {
 # rewrite -- must be in the standard form (omp_config_standard); a copy
 # that is not is neither merged nor listed, and a host file that is not
 # is never written. A killed run never gets here, so it merges nothing.
+
+# omp_config_save_debug COPY ORIG REAL: a copy of everything the merge
+# looked at, kept at a fixed path and overwritten every run -- the one
+# place to look when a skip or a rejection needs figuring out, instead of
+# guessing from the report alone or diffing a hand-made backup.
+omp_config_save_debug() {
+    local copy="$1" orig="$2" real="$3"
+    local dbg="$HOME/.omp/agent/.sandbox-config-debug"
+    mkdir -p -- "$dbg" 2>/dev/null || return 1
+    [[ -f "$copy" ]] && cp -- "$copy" "$dbg/session-copy.yml" 2>/dev/null
+    [[ -f "$orig" ]] && cp -- "$orig" "$dbg/launch-snapshot.yml" 2>/dev/null
+    [[ -f "$real" ]] && cp -- "$real" "$dbg/host-at-exit.yml" 2>/dev/null
+    printf '%s\n' "sandbox: kept for inspection at $dbg (session-copy.yml, launch-snapshot.yml, host-at-exit.yml)." >&2
+}
+
 omp_config_merge() {
-    local copy orig real key s_orig s_now h_now tmp block newf bad real_bad=""
+    local copy orig real key s_orig s_now h_now tmp block newf bad real_bad="" ov oldv launch
     local -a merged=() skipped=() others=()
     [[ -n "${OMP_HOME_DIR:-}" && -f "$RUN_DIR/omp-config.orig" ]] || return 0
     copy="$OMP_HOME_DIR/agent/$OMP_CONFIG_NAME"
@@ -466,6 +492,7 @@ omp_config_merge() {
             printf '%s\n' "  outside that form:"
             printf '    %s\n' "$bad"
         } | sanitize_agent_display >&2 || true
+        omp_config_save_debug "$copy" "$orig" "$real"
         return 0
     fi
     if ! bad="$(omp_config_standard "$orig")"; then
@@ -475,11 +502,17 @@ omp_config_merge() {
             printf '%s\n' "  outside that form:"
             printf '    %s\n' "$bad"
         } | sanitize_agent_display >&2 || true
+        omp_config_save_debug "$copy" "$orig" "$real"
         return 0
     fi
     if [[ -f "$real" && ! -L "$real" ]] && ! bad="$(omp_config_standard "$real")"; then
         real_bad="$bad"
     fi
+    # A snapshot of what the launch copy held before this loop may amend
+    # it for a merged key, so the debug copy below still shows the truth
+    # at launch rather than the next round's already-merged baseline.
+    launch="$RUN_DIR/omp-config.launch"
+    cp -- "$orig" "$launch" 2>/dev/null || launch="$orig"
     while IFS= read -r key; do
         s_orig="$(omp_config_block "$orig" "$key")"
         s_now="$(omp_config_block "$copy" "$key")"
@@ -547,10 +580,26 @@ omp_config_merge() {
             printf '%s\n' "sandbox: the omp session also changed these settings; only modelRoles and"
             printf '%s\n' "  cycleOrder are ever merged back, so they stay in the run. Its values:"
             for key in "${others[@]}"; do
-                omp_config_block "$copy" "$key" | sed 's/^/    /' || true
+                oldv="$(omp_config_block "$orig" "$key")"
+                ov="$(omp_config_block "$copy" "$key")"
+                if [[ -z "$oldv" ]]; then
+                    printf '    %s: added\n' "$key"
+                    printf '%s\n' "$ov" | sed 's/^/      /'
+                elif [[ -z "$ov" ]]; then
+                    printf '    %s: removed, was:\n' "$key"
+                    printf '%s\n' "$oldv" | sed 's/^/      /'
+                else
+                    printf '    %s: was:\n' "$key"
+                    printf '%s\n' "$oldv" | sed 's/^/      /'
+                    printf '    %s: now:\n' "$key"
+                    printf '%s\n' "$ov" | sed 's/^/      /'
+                fi
             done
             printf '%s\n' "  Apply any you want by hand, e.g. with 'omp config set'."
         } | sanitize_agent_display >&2 || true
+    fi
+    if [[ ${#skipped[@]} -gt 0 || ${#others[@]} -gt 0 ]]; then
+        omp_config_save_debug "$copy" "$launch" "$real"
     fi
     return 0
 }
