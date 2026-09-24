@@ -204,15 +204,14 @@ check_agent_update() {
 
     local baked_version
     baked_version="$(backend_agent_version "$IMAGE_AGENT" 2>/dev/null)" || baked_version=""
-    baked_version="${baked_version##* }"
-    # omp prints "omp/<version>" as a single space-free token (claude/opencode
-    # print "<name> <version>", already handled by the space-split above), so
-    # strip a leading "<name>/" the same way before the "v" strip below --
-    # otherwise baked_version stays "omp/18.2.7" against a bare "18.2.7"
-    # latest and the two never compare equal even when they are the same
-    # release.
-    baked_version="${baked_version#"$IMAGE_AGENT"/}"
-    baked_version="${baked_version#v}"
+    # Every agent's --version prints the semver somewhere in otherwise
+    # varying decoration ("2.1.281 (Claude Code)" for claude, "omp/1.2.3"
+    # for omp, "opencode v1.2.3" for opencode) -- pulling out the first
+    # dotted-numeric token is robust to all three instead of assuming a
+    # fixed field position (a trailing "(Claude Code)" parenthetical used
+    # to be picked as the "version" by a last-whitespace-field split).
+    baked_version="$(printf '%s' "$baked_version" | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -n1)" \
+      || baked_version=""
     [[ -n "$baked_version" ]] || return 0
     [[ "$baked_version" == "$latest" ]] && return 0
 
