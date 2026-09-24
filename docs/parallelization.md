@@ -109,14 +109,50 @@ plus password read from a `service.json` is enough to drive the server it
 names — and a server started by a host opencode runs its tools on the host,
 unsandboxed. A `service.json` the session wrote would likewise point the next
 host opencode at a server the session controls. So the opencode branch binds
-neither copy (`D` — `configure_agent()`, `functions/agents.sh`):
-`~/.local/state/opencode` is a fresh per-run directory under the run's scratch
-directory, never the host's, and `~/.config/opencode/service.json` is not
-bound at all. Per run rather than per project, so two concurrent
-`./sandbox.sh opencode ...` invocations cannot attach to each other's server
-either; before this, the second of two overlapping runs would have found the
-first one's live `service.json` and attached to it as a client, and the
-first run's exit would have killed the second one's session with its server.
+neither copy to the host's own file (`D` — `configure_agent()`,
+`functions/agents.sh`): `~/.local/state/opencode` and
+`~/.config/opencode/service.json` are each a fresh per-run file/directory
+under the run's scratch directory, never the host's. Per run rather than per
+project, so two concurrent `./sandbox.sh opencode ...` invocations cannot
+attach to each other's server either; before this, the second of two
+overlapping runs would have found the first one's live `service.json` and
+attached to it as a client, and the first run's exit would have killed the
+second one's session with its server.
+
+`M` (opencode v2.0.16, 2026-09-24): the `~/.config/opencode/service.json`
+copy cannot simply be left unbound the way `~/.local/state/opencode` can be
+backed by an empty directory. It is one file among others opencode's own
+config directory otherwise keeps read-only, and opencode writes it with an
+atomic rename (`service.json.tmp`, then renamed over `service.json`) — when
+the write fails, the whole background server aborts outright:
+
+```
+Error: Server process exited with code 1
+PlatformError: Unknown: FileSystem.writeFile (~/.config/opencode/service.json.tmp)
+  [cause]: Error: EROFS: read-only file system, open '.../service.json.tmp'
+```
+
+First fix attempt — binding `service.json` and `service.json.tmp`
+individually by name, each a fresh empty per-run file — closed the `open`
+failure above but not the rename that follows it: a rename is a metadata
+operation on the two names' shared PARENT directory (unlink one dentry,
+create the other), which binding the two leaf names does not make writable.
+Measured failing one step later, same version:
+
+```
+PlatformError: Unknown: FileSystem.rename (/home/kueglerd/.config/opencode/service.json.tmp)
+  [cause]: Error: EROFS: read-only file system, rename '.../service.json.tmp' -> '.../service.json'
+```
+
+Fixed by making `~/.config/opencode` itself a fresh, empty, per-run
+directory — never the host's real one — with the host's real config layered
+back in through deeper read-only binds (`opencode.json`, `plugin/`,
+`agent/`, ...), the same shallow-writable/deeper-read-only layering
+`mask_git_readonly` uses for the project dir vs. its `.git`. `tui.json`
+keeps its own deeper bind back to the host's real file (state genuinely
+meant to persist); `service.json` gets none, so it and its `.tmp` sibling
+simply live in the ephemeral per-run directory like anything else the
+session invents there.
 
 ## Is opencode's server mode "usable" inside the sandbox?
 

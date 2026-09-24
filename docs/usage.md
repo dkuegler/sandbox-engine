@@ -161,6 +161,7 @@ refuses. Interactive use only. See `worktree-mode.md` and
 | `~/.agent/worktrees/` | worktree mode: worktrees, locks, review log |
 | `~/.agent/omp-logs/`, `~/.agent/omp-history/` | omp logs and prompt history, per project |
 | `~/.agent/opencode-share/` | opencode's data directory, per project |
+| `~/.agent/opencode-cache/` | opencode's cache directory (models.dev catalog etc.), per project |
 | `~/.agent/claude.json.last-session` | the last session's copy of `~/.claude.json`, when it changed |
 
 ## Fact records

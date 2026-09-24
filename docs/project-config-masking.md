@@ -338,15 +338,17 @@ different anchor** (`D` — `configure_agent()`, `functions/agents.sh`;
 committed-vs-uncommitted cannot be evaluated against it; the anchor is that the
 human put it in their own `$HOME`, outside any repo the agent can reach. So
 global config is mounted read-only and readable, and nothing else of the
-agent's directory is bound:
+agent's directory is bound — with one exception, opencode's `~/.config/opencode`
+(below), forced by a write opencode itself requires there:
 
 | global path | session sees |
 | --- | --- |
 | present config | the real content, read-only |
 | absent config | nothing bound at all |
 | absent config inside a directory bound read-write from the host (none in the current layout; the rule is `bind_ro()`'s) | created empty on the host, then read-only — left unbound it would be creatable through the parent; a dangling symlink there refuses the run |
+| opencode's `~/.config/opencode` itself | a fresh, empty, per-run directory, never the host's real one, with the host's real `opencode.json`/`plugin/`/`agent/`/... layered back in through deeper read-only binds (same shallow-writable/deeper-read-only layering as `.git` over the project dir). Forced by `service.json`'s atomic rename below, which needs its parent directory genuinely writable, not just the file itself (`docs/parallelization.md`) |
 | opencode's `~/.local/share/opencode` (every project's session database, `storage/`, `log/`, the `bin/` tools it executes) | a sandbox-owned per-project directory, `~/.agent/opencode-share/<basename>-<8 hex>` (shared by every run and worktree of the project), never the host's; only `auth.json` and `mcp-auth.json` are the host's, bound in by name |
-| opencode's `~/.local/state/opencode` (its server registry, `service.json`: pid, port, password) | a fresh per-run directory, never the host's — the host's would hand the session a host server's password (`docs/parallelization.md`) |
+| opencode's `~/.local/state/opencode` and `~/.config/opencode/service.json` (its server registry, both copies: pid, port, password) | a fresh per-run directory each — `service.json` has no bind of its own, it just lives inside the fresh `~/.config/opencode` above; neither is ever the host's real file, which would hand the session a host server's password (`docs/parallelization.md`) |
 | writable state (session databases, caches, credentials the agent refreshes) | read-write, one path at a time; a missing JSON state file is created as `{}` |
 | `.env` | never mounted, not even read-only — announced on the terminal instead |
 

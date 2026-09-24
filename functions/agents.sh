@@ -566,10 +566,35 @@ configure_agent() {
             RUN_CMD=(claude "${ARGS[@]}")
             ;;
         opencode)
-            # Inverted polarity, same as the claude branch above: no
-            # wholesale bind of ~/.config/opencode; its config is mounted
-            # read-only.
+            # ~/.config/opencode's DIRECTORY ENTRY itself has to be
+            # writable, not just specific files in it: opencode writes
+            # tui.json and service.json (below) with an atomic rename
+            # (write "<name>.tmp", then rename it over "<name>"), and a
+            # rename is a metadata operation on the ENCLOSING directory
+            # (unlink one dentry, create another) -- binding "tui.json" or
+            # "service.json" individually, as their own separate mount
+            # points, does not make their shared parent directory
+            # writable, so the rename itself still hits EROFS even though
+            # both names are themselves bound read-write (measured:
+            # opencode v2.0.16, "PlatformError ... EROFS ... rename
+            # '.../service.json.tmp' -> '.../service.json'").
             #
+            # So the base is a fresh, empty, per-run directory -- never
+            # the host's real ~/.config/opencode -- bound in its place,
+            # with the host's real config layered back in through deeper
+            # binds below (opencode.json, plugin/, agent/, ...), the same
+            # shallow-rw-then-deeper-ro layering `mask_git_readonly` uses
+            # for the project dir vs. its `.git` (apptainer sorts mounts
+            # by destination depth, so the deeper read-only binds always
+            # apply after this one regardless of insertion order). Losing
+            # anything the session writes at the base level (tui.json,
+            # service.json, or a stray top-level file opencode invents)
+            # costs nothing real: it goes with $RUN_DIR, and none of it
+            # was ever the host's to keep.
+            local oc_config
+            oc_config="$RUN_DIR/opencode-config"
+            mkdir -p -- "$oc_config" && chmod 700 -- "$oc_config"
+            BINDS+=(-B "$oc_config:$HOME/.config/opencode")
             # Writable, and why: tui.json is rewritten every session.
             bind_state_rw "$HOME/.config/opencode/tui.json" file '{}'
             # ~/.local/share/opencode is a sandbox-owned per-project
@@ -595,6 +620,41 @@ configure_agent() {
                 : >>"$oc_share/$p"
                 bind_state_rw "$HOME/.local/share/opencode/$p" file '{}'
             done
+            # ~/.cache/opencode is where opencode caches the models.dev
+            # provider catalog (models.json) and, per opencode's own docs,
+            # other "download caches and temporary data" whose exact
+            # contents beyond models.json are not confirmed here -- unlike
+            # ~/.local/share/opencode's bin/ above, which opencode's docs
+            # explicitly describe as downloaded tools it executes. Treated
+            # with the same never-the-host's-real-path caution regardless:
+            # the host's ~/.cache/opencode is shared by every project on
+            # the machine and by unsandboxed opencode runs, so anything
+            # this session writes there -- confirmed executable or not --
+            # must not leak into it.
+            #
+            # Unlike opencode-share above, this is a CACHE, not session
+            # state: losing it costs a re-fetch of the catalog, nothing
+            # more, so it does not belong in ~/.agent among the directories
+            # nothing ever purges (docs/maintenance.md, "The $HOME agent
+            # surfaces"). Housed under TMPDIR instead, keyed like
+            # opencode-share so every run/worktree of one project reuses
+            # it rather than refetching every session, but reclaimable by
+            # the OS's own tmp janitor (systemd-tmpfiles, tmpwatch, or a
+            # tmpfs /tmp cleared at reboot) instead of a purge mechanism
+            # this repository would otherwise have to build and maintain.
+            # Named apart from "sandbox-engine.*" (functions/run-dir.sh)
+            # on purpose: that glob is per-run scratch reaped by PID
+            # liveness (reap_orphaned_run_dirs), which does not apply to a
+            # directory meant to outlive any single run.
+            #
+            # Bound read-write, not read-only: opencode's own mkdir of
+            # ~/.cache (never otherwise scaffolded under --no-mount home)
+            # fails with EROFS without a writable bind here -- that
+            # failure is the bug this bind fixes.
+            local oc_cache
+            oc_cache="${TMPDIR:-/tmp}/sandbox-engine-cache/opencode/$(project_state_key)"
+            mkdir -p -- "$oc_cache" && chmod 700 -- "$oc_cache"
+            BINDS+=(-B "$oc_cache:$HOME/.cache/opencode")
             # ~/.local/state/opencode is a fresh per-run directory, never
             # the host's. opencode registers its background server there
             # (service.json: pid, http://127.0.0.1:<port>, password;
@@ -604,10 +664,24 @@ configure_agent() {
             # unsandboxed, and a file the session wrote would point the
             # next host opencode at a server the session controls. Per run
             # rather than per project, so concurrent runs cannot attach to
-            # each other's server either. (~/.config/opencode/service.json,
-            # the second copy, is not bound at all.)
+            # each other's server either.
             mkdir -p -- "$RUN_DIR/opencode-state" && chmod 700 -- "$RUN_DIR/opencode-state"
             BINDS+=(-B "$RUN_DIR/opencode-state:$HOME/.local/state/opencode")
+            # ~/.config/opencode/service.json is the SAME registry's second
+            # copy, and needs no bind of its own now (unlike tui.json
+            # above, it gets no deeper bind back to a real host file
+            # either -- it never had one, and still doesn't; it just lives
+            # in the ephemeral base like everything else this session
+            # invents there): the base directory is already a writable
+            # per-run directory, so opencode's create-then-rename of
+            # service.json.tmp -> service.json succeeds inside it. (An
+            # earlier fix bound service.json and service.json.tmp
+            # individually by name over the old read-only base, which
+            # covered the create but not the rename -- a rename's
+            # unlink+create pair needs its shared parent directory
+            # writable, not just the two names in isolation; measured
+            # failing with "EROFS ... rename '.../service.json.tmp' ->
+            # '.../service.json'" even with both names bound.)
             # ~/.opencode is the host install directory holding the
             # opencode binary (the image installs its own at
             # /usr/local/opencode/bin, see sandbox/agent/Dockerfile.template);

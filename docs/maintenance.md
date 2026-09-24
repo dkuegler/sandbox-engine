@@ -71,10 +71,10 @@ that ARE bound read-write from the host as whole directories — claude's
 and `ide` — where a new config file, executable or server
 registry the CLI starts keeping there is writable by every run and read by the
 next unsandboxed one. The sandbox-owned per-project directories under
-`~/.agent/` (`omp-history`, `omp-logs`, `opencode-share`) are read by no host
-CLI, so they do not carry that risk. The per-agent comment blocks in
-`configure_agent()` are the enumeration to keep current, each writable path
-with its reason.
+`~/.agent/` (`omp-history`, `omp-logs`, `opencode-share`, `opencode-cache`) are
+read by no host CLI, so they do not carry that risk. The per-agent comment
+blocks in `configure_agent()` are the enumeration to keep current, each
+writable path with its reason.
 
 **Procedure.** For each supported agent, list the paths the new version reads
 and writes under `$HOME`, and reconcile against that agent's branch: new config
