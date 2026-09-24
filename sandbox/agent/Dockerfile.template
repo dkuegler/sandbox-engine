@@ -21,9 +21,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 FROM base AS claude
-# claude: Node.js + npm package
+# claude: Node.js + npm package. zsh: claude code CLI looks for a shell
+# it can use for its own shell-integration/completion setup and expects
+# zsh to be installed, not just bash.
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get install -y --no-install-recommends nodejs zsh \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code \
     && npm cache clean --force \
