@@ -85,9 +85,8 @@ confirm_warnings() {
 # log_argv LABEL ARG...: -vv-only helper that %q-quotes an argv array onto
 # one copy-pasteable line, e.g. `log_argv "apptainer exec argv" apptainer
 # exec --containall ...`. Any token immediately following a literal "--env"
-# has its VALUE redacted (only the KEY= prefix survives) since --env
-# becomes APPTAINERENV_* inside the container and must never be dumped in
-# full -- see the "Git access" note in sandbox.sh.
+# has its VALUE redacted (only the KEY= prefix survives): --env carries the
+# API keys forwarded into the container, which must never be dumped in full.
 log_argv() {
     local label="$1"
     shift

@@ -81,8 +81,8 @@ position, and object presence — exit code alone reproduces the false negative.
 → 200; raw TCP `github.com:22` from a python socket → `SSH-2.0-…` banner.
 
 The raw-socket row is decisive: this is not "`curl` is installed"
-(`sandbox/agent/Dockerfile.template:30-32`). Every preset ships python
-(`functions/environment.sh:49-62`), so removing `curl` changes nothing. An agent
+(`sandbox/agent/Dockerfile.template`, the `base` stage). Every preset ships python
+(`resolve_environment`, `functions/environment.sh`), so removing `curl` changes nothing. An agent
 with arbitrary outbound TCP already has every channel `git push <url>` offers.
 No apptainer-level fix exists without root (`--net` needs privileges).
 

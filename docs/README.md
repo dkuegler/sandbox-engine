@@ -1,12 +1,14 @@
 # docs/
 
-Archival fact records for `sandbox-engine`. What is true, how it was
-established, and how to re-establish it.
+Fact records for `sandbox-engine`: what is true, how it was established, and how
+to re-establish it. `usage.md` is the user reference.
 
 ## Contents
 
 | document | subject |
 | --- | --- |
+| [`usage.md`](usage.md) | the user reference: invocation and options, `sandbox.yml`, what the session sees, the start-up prompts, worktree mode, host state |
+| [`apptainer.md`](apptainer.md) | apptainer behaviour the launch line relies on: `$HOME` absent unless bound, `/tmp` limits, `EBUSY` on renaming onto a bind, no gVisor through apptainer |
 | [`git-breakout.md`](git-breakout.md) | the git boundary: what the read-only `.git` mask enforces, measured behaviour of git against it, what is not contained, reproduction |
 | [`commit-message-generation.md`](commit-message-generation.md) | the `--worktree` message fallback: why it runs inside the sandbox, which model each agent uses, and which of the run's own flags propagate |
 | [`parallelization.md`](parallelization.md) | how claude-code, omp and opencode handle concurrent sessions, and why opencode's server mode does not survive `--containall` unmodified |
@@ -43,3 +45,11 @@ finding nobody can re-check is not archival.
 
 **One subject per file**, named for the subject (`git-breakout.md`), not for its
 status or date. Correct a page in place; do not accumulate versioned copies.
+
+**`usage.md` and the help header.** `usage.md` is the exception to the fact-record
+rules above. It describes current behaviour for a user, with no `M`/`D` labels
+and no date, and points to the fact records for evidence. It changes in the same
+commit as the behaviour it describes. `sandbox.sh`'s help header (what `-h`
+prints) stays short: the usage line, one line per option, and pointers into
+`usage.md`. Detail belongs in `usage.md`, not in the header or in
+`sandbox.example.yml`.

@@ -1,37 +1,20 @@
 ARG AGENT
 
-# Base image for the "base" stage below. sandbox.sh resolves this from
-# sandbox.yml (environment.image / environment.dockerfile / environment.preset)
-# and/or --environment KEY=VALUE command-line flags, and substitutes the
-# literal "$BASE_IMAGE" placeholder via sed, since apptainer's Dockerfile
-# bootstrap does not evaluate ARG inside FROM lines.
-# The generated file is only ever consumed by "apptainer build". The
-# textual placeholder substitution exists because apptainer cannot evaluate
-# ARG in FROM lines.
-# With no sandbox.yml/--environment (or no environment.* set), this defaults
-# to the "uv" preset: ghcr.io/astral-sh/uv:python3.13-bookworm-slim (uv
-# preinstalled). Environments that need uv but don't ship it (e.g. a plain
-# "python" preset or a custom image/dockerfile) must provide it themselves —
-# see the "latex" preset / sandbox/latex/Dockerfile for an example that
-# layers uv onto a non-uv base via environment.preset (or
-# environment.dockerfile, pointed at a fork of that file).
+# sandbox.sh replaces the literal $BASE_IMAGE with the resolved environment
+# (functions/environment.sh): apptainer does not evaluate ARG in FROM.
 FROM $BASE_IMAGE AS base
 
 ARG USERNAME=agent
 ARG UID=1000
 ARG GID=1000
-# Which agent to install into this image: claude | opencode | omp
 
 ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
 LABEL agent="${AGENT}"
 
-# git ships directly in the shared layer (decided 2026-09-17:
-# option A) -- there is no MCP sidecar to bridge to, so no `nc`/transport
-# dependency is needed here. GIT_OPTIONAL_LOCKS=0 keeps `status`/`diff`
-# from emitting confusing lock errors against the read-only `.git` mask
-# (functions/git-mask.sh); GIT_CONFIG_NOSYSTEM=1 keeps the container from
-# reading a host-wide /etc/gitconfig that was never meant to travel here.
+# git for the agent; the read-only .git mask is the access control.
+# GIT_OPTIONAL_LOCKS=0 keeps status/diff quiet on that mask;
+# GIT_CONFIG_NOSYSTEM=1 ignores the image's /etc/gitconfig.
 ENV GIT_OPTIONAL_LOCKS=0 GIT_CONFIG_NOSYSTEM=1
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates gnupg poppler-utils imagemagick git \
@@ -47,16 +30,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && ln -sf "$(command -v claude)" /usr/local/bin/claude
 
 FROM base AS opencode
-# opencode: curl install script. opencode.ai/install.sh (used until this
-# comment was updated) now 404s -- the project moved its installer to
-# /v2/install (opencode.ai/install redirects to a moving `dev`-branch raw
-# file on GitHub, not something to pin a build to). Verified 2026-09-15:
-# https://opencode.ai/v2/install returns 200 and still sets
-# INSTALL_DIR=$HOME/.opencode/bin, so the same sed override applies.
-# NOTE: the `&&` matters. Without it the line-continuation folds the curl
-# invocation into `export`'s argument list, the pipeline reads empty
-# input, the RUN layer still exits 0, and the image ships without an
-# opencode binary.
+# opencode's installer, with its INSTALL_DIR moved out of $HOME
+# (docs/maintenance.md). The test -x catches an install that silently wrote
+# nothing: a piped installer exits 0 either way.
 RUN export HOME="/usr/local" \
     && curl -fsSL https://opencode.ai/v2/install \
         | sed 's|INSTALL_DIR=\$HOME/.opencode/bin|INSTALL_DIR=/usr/local/opencode/bin|' \
@@ -72,13 +48,10 @@ RUN export PI_INSTALL_DIR="/usr/local/omp/bin" ; \
 
 ENV PATH="/usr/local/omp/bin:${PATH}"
 
-# omp's native addons, extracted once at build time into the image. At run
-# time ~/.omp is a per-run directory whose "natives" entry is a symlink to
-# this read-only copy (functions/omp-home.sh). The host's ~/.omp/natives is
-# never mounted: omp reuses an extracted addon whenever its file size
-# matches, with no hash check, so a copy the sandbox could write would be
-# native code the next host omp loads. `omp config path` is a cheap command
-# that loads -- and so extracts -- them; `omp --version` does not.
+# omp's native addons, extracted into the image at build time; the per-run
+# ~/.omp links to this read-only copy (functions/omp-home.sh). The host's
+# ~/.omp/natives is never mounted: omp would load a sandbox-written addon on
+# the host (docs/project-config-masking.md). `omp config path` extracts them.
 RUN HOME=/tmp/omp-natives-home omp config path >/dev/null \
     && mv /tmp/omp-natives-home/.omp/natives /usr/local/omp/natives \
     && rm -rf /tmp/omp-natives-home \

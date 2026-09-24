@@ -95,10 +95,13 @@ as configuration, executed, or used to reach a host process.
 agents from upstream endpoints, not from pinned artifacts: an npm package for
 claude on a NodeSource LTS repository, a piped install script for opencode with
 a `sed` rewrite of its `INSTALL_DIR`, and a piped install script for omp. `D` —
-the opencode endpoint has already moved once; the template's comment records the
-previous URL now returning 404. A moved installer, a renamed install directory,
-or a script that changes what it writes can produce an image that builds and
-ships without a working agent.
+the opencode endpoint has already moved once (2026-09-15): `opencode.ai/install.sh`
+returns 404, `opencode.ai/v2/install` is the installer, and `opencode.ai/install`
+redirects to a moving `dev`-branch file, not something to pin a build to. The
+`sed` rewrites the script's `INSTALL_DIR=$HOME/.opencode/bin`; a renamed variable
+makes it a silent no-op. A moved installer, a renamed install directory, or a
+script that changes what it writes can produce an image that builds and ships
+without a working agent.
 
 **Procedure.** Rebuild each agent image and run the agent's own version command
 inside it. The `test -x /usr/local/opencode/bin/opencode` guard in the opencode

@@ -301,6 +301,11 @@ own hardcoded lightweight tasks (title and summary generation), never for
 and named on the command line. Global config only, for both mechanisms: project
 config is not read, because the project is deliberately not mounted.
 
+`D` — opencode documents `run --title` as "uses truncated prompt if no value
+provided", which implies a title-generation call on the diff text when the
+flag is absent. The generator passes no `--title`; whether `opencode run` then
+makes that second call, and on which model, is not measured.
+
 ## Flag propagation from the run's own argv
 
 Generation is a different task from the coding run with a smaller mandate, so

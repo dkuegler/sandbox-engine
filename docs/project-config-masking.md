@@ -243,6 +243,7 @@ Each source has its own gate, which is why no CLI-level switch is forced:
 | project-scope files (`.mcp.json`, `mcp.json`, `.claude/settings.json`, `opencode.json`, `.omp/mcp.json`, …) | the convention below: visible only when committed and clean, as a read-only copy — a change lands only through a commit, i.e. a human review pass |
 | claude's user- and local-scope servers (`~/.claude.json`) | the per-run copy: loaded from the host's file, and nothing the session writes there reaches a later run |
 | the other global definitions (`~/.claude/settings.json`, `~/.claude/mcp.json`/`.mcp.json`, `~/.omp/agent/mcp.json`/`.mcp.json`, `~/.config/opencode/opencode.json`) | read-only, human-authored outside any repo the agent can reach |
+| opencode's remote config (`D` — opencode's documented config precedence: fetched from a provider's `.well-known/opencode` endpoint when authenticated against a provider that offers one, ranked ahead of the global and project files, and able to define `mcp` servers) | none: it arrives over the network inside the container, where no bind reaches it and egress is open |
 
 claude used to get `--strict-mcp-config` appended unconditionally, with the
 run's own `--mcp-config` values folded into a single occurrence. The flag only
@@ -349,18 +350,11 @@ agent's directory is bound:
 | writable state (session databases, caches, credentials the agent refreshes) | read-write, one path at a time; a missing JSON state file is created as `{}` |
 | `.env` | never mounted, not even read-only — announced on the terminal instead |
 
-`D` — the launch line (`--containall --no-mount home,…`, `functions/apptainer.sh`)
+The launch line (`--containall --no-mount home,…`, `functions/apptainer.sh`)
 leaves `$HOME` absent inside the container except where a bind scaffolds it,
-so a path nothing binds cannot reach the host. Per apptainer's documented
-behaviour, a write in-session lands as follows; not measured with this launch
-line:
-
-| path under `$HOME` | in-container write |
-| --- | --- |
-| bound read-write | lands, persists on the host — the deliberate set |
-| bound read-only | refused, `EROFS` |
-| unbound, beside a bind (scaffolded) | not on the host: refused, or lost with the container |
-| unbound, nothing scaffolds it | refused, `ENOENT` |
+so a path nothing binds cannot reach the host (`M`, `apptainer.md`): bound
+read-write lands on the host, bound read-only is `EROFS`, unbound beside a bind
+is `EROFS`, unbound with nothing scaffolding it is `ENOENT`.
 
 **claude's `~/.claude.json` is a per-run copy that is never written back**
 (`D` — `claude_json_prepare()`, `claude_json_report()`,
@@ -486,7 +480,9 @@ forwards a variable that moves omp's directories refuses to start. An omp image
 built before the native addons were extracted at build time has no read-only
 copy for `~/.omp/natives` to point at, and image names do not change with the
 template; the run checks the image once at startup and asks for a single
-`--rebuild` rather than letting omp fail on a dangling link.
+`--rebuild` rather than letting omp fail on a dangling link. `D` — the build
+extracts the addons with `omp config path`, which loads them; `omp --version`
+does not.
 
 ## The mask table
 
@@ -508,6 +504,21 @@ look exactly like a mask that works. Every accepted value is a TOML basic
 string that needs no escape, so the file reads the same to any TOML parser.
 The table is located relative to `functions/binds.sh`, never through the
 environment.
+
+TOML rather than YAML, because two YAML parsers need not agree on one file.
+`M` (2026-09-24), the same input `n: 1 / on: 2 / yes: 3 / version: 1.10 /
+mode: 0755 / time: 12:30`, one key per line:
+
+| parser | result |
+| --- | --- |
+| PyYAML 6.0.3 (YAML 1.1) | `{'n': 1, True: 3, 'version': 1.1, 'mode': 493, 'time': 750}` — `on` and `yes` both become `True` and `on` is lost; octal; base 60 |
+| omp's Bun | `{"n":1,"on":2,"yes":3,"version":1.1,"mode":755,"time":"12:30"}` |
+
+```
+printf 'n: 1\non: 2\nyes: 3\nversion: 1.10\nmode: 0755\ntime: 12:30\n' >/tmp/y.yml
+python3 -c 'import yaml; print(yaml.safe_load(open("/tmp/y.yml")))'     # needs PyYAML
+BUN_BE_BUN=1 omp -e 'console.log(JSON.stringify(Bun.YAML.parse(await Bun.file("/tmp/y.yml").text())))'
+```
 
 `M` — the loader's arrays equal what Python's `tomllib` reads from the file
 (same 64 paths with the same kinds, same 5 names, same order):
