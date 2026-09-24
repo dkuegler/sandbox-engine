@@ -99,9 +99,11 @@ Every mount of the run is printed to stderr once at startup.
 A gitignored directory in the checkout (default `.agent/patches`) where the
 agent can leave a unified diff for a file it cannot write. Each run gets its
 own subdirectory. At exit, every file in it is listed with its `git apply`
-command. Nothing is applied or deleted. If the directory is not gitignored,
-the channel is off for that run. Details: `project-config-masking.md`, "The
-patch channel".
+command. Nothing is applied or deleted. Before creating its own subdirectory,
+a run removes any sibling subdirectory that is both empty and not owned by a
+still-running sandbox process, so a run that never writes a patch leaves
+nothing behind. If the directory is not gitignored, the channel is off for
+that run. Details: `project-config-masking.md`, "The patch channel".
 
 ## What the session sees
 

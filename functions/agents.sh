@@ -361,6 +361,73 @@ bind_augmented_instructions() {
 AGENT_PATCH_DIR_HOST=""
 AGENT_PATCH_DIR_REL=""
 
+# PATCH_RUN_INFO_NAME: hidden bookkeeping file dropped inside each run's
+# patch directory, recording the owner pid and hostname. Kept out of the
+# directory name itself (which is now just the minute-resolution
+# timestamp, plus a letter suffix on collision -- see resolve_patch_dir())
+# so a patch path stays short and readable. prune_empty_patch_dirs() reads
+# it to tell a same-host dead run from a foreign-host one, the same
+# host-then-pid reasoning as worktree_lock_acquire() (functions/worktree.sh):
+# kill -0 is meaningless across machines, so a directory whose recorded
+# host is not this host is never touched. report_agent_patches() excludes
+# this exact name from what it reports -- it is not a patch.
+PATCH_RUN_INFO_NAME=".sandbox-run-info"
+
+# prune_empty_patch_dirs BASE: remove this run's dead siblings under BASE
+# (the resolved "$dir/$rel" patch root) before adding a new one -- run
+# once per invocation of resolve_patch_dir(), so the directory does not
+# accumulate one empty per-run folder for every run that never wrote a
+# patch. Only directories that are both empty (ignoring their own
+# PATCH_RUN_INFO_NAME file) AND whose owner pid is confirmed no longer
+# running are removed: a live pid means that run may still write into it,
+# and any non-empty directory holds an actual patch, whose retention is
+# the user's call (see report_agent_patches() below) not this function's.
+# rmdir rather than rm -rf: it fails closed if the directory gains real
+# content between the emptiness check and the removal (the info file
+# itself is removed first so rmdir still sees a truly empty directory,
+# not the disappearance of a race window).
+#
+# A directory whose PATCH_RUN_INFO_NAME names a different host is left
+# alone unconditionally -- kill -0 cannot tell a live remote pid from a
+# reused local one, so liveness is simply not decided from here (compare
+# worktree_lock_acquire()'s "$HOME can be a network mount" reasoning).
+# Likewise a directory with no readable pid (info file missing or
+# unparsable, e.g. this run crashed between mkdir and the write) is left
+# alone rather than guessed at -- except the legacy "<stamp>-<pid>" shape
+# from before this info file existed, whose pid was always the name's own
+# trailing digits and always meant this host.
+#
+# Unrecognized entries (wrong name shape, not a directory) are left
+# alone rather than guessed at, the same stance reap_orphaned_run_dirs()
+# (functions/run-dir.sh) takes for RUN_DIR.
+prune_empty_patch_dirs() {
+    local base="$1" entry name pid host_in_file this_host info
+    [[ -d "$base" ]] || return 0
+    this_host="${HOSTNAME:-$(uname -n 2>/dev/null || echo unknown)}"
+    for entry in "$base"/*; do
+        [[ -d "$entry" ]] || continue
+        name="${entry##*/}"
+        host_in_file=""
+        pid=""
+        if [[ "$name" =~ ^[0-9]{6}-[0-9]{4}[a-z]?$ ]]; then
+            info="$entry/$PATCH_RUN_INFO_NAME"
+            if [[ -f "$info" ]]; then
+                host_in_file="$(sed -n 's/^host=//p' "$info" 2>/dev/null | head -n1)"
+                pid="$(sed -n 's/^pid=//p' "$info" 2>/dev/null | head -n1)"
+            fi
+            [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        elif [[ "$name" =~ ^[0-9]{6}-[0-9]{4}-[0-9]+$ ]]; then
+            pid="${name##*-}"
+        else
+            continue
+        fi
+        [[ -z "$host_in_file" || "$host_in_file" == "$this_host" ]] || continue
+        kill -0 "$pid" 2>/dev/null && continue
+        rm -f -- "$entry/$PATCH_RUN_INFO_NAME" 2>/dev/null
+        rmdir -- "$entry" 2>/dev/null || true
+    done
+}
+
 # resolve_patch_dir DIR: decide the channel for the writable checkout DIR,
 # and create this run's directory when it is available. Gitignored is a
 # requirement, not a preference: an un-ignored patch directory would put
@@ -370,7 +437,8 @@ AGENT_PATCH_DIR_REL=""
 # invented -- the channel is a convenience, and an agent that has nowhere
 # to write a proposal simply says so in its summary instead.
 resolve_patch_dir() {
-    local dir="$1" rel base stamp real_dir real_run rc=0
+    local dir="$1" rel base stamp real_dir real_base rc=0
+    local suf leaf host
     AGENT_PATCH_DIR_HOST=""
     AGENT_PATCH_DIR_REL=""
     [[ -n "$dir" && -d "$dir" ]] || return 0
@@ -387,28 +455,48 @@ resolve_patch_dir() {
             "Set a gitignored 'patches:' directory in sandbox.yml to give the agent one."
         return 0
     fi
-    # A same-second collision would need an identical PID as well, which
-    # cannot happen inside one run's lifetime.
-    stamp="$(date +%Y%m%d-%H%M%S)-$$"
     base="$dir/$rel"
     # The directory must really be inside the checkout once symlinks are
     # resolved -- checked BEFORE anything is created: a symlinked
     # component (".agent" a link out of the tree) would otherwise have the
     # host create, and later scan, a directory somewhere else entirely.
     # readlink -m resolves the components that exist and tolerates the
-    # ones that do not yet.
+    # ones that do not yet. Checking "$base" itself (rather than a
+    # specific run's leaf) is equivalent here and suffix-independent: any
+    # escape lives in $dir or $rel, not in the leaf name chosen below.
     real_dir="$(readlink -f -- "$dir")"
-    real_run="$(readlink -m -- "$base/$stamp")"
-    if [[ -z "$real_dir" || "$real_run" != "$real_dir"/* ]]; then
+    real_base="$(readlink -m -- "$base")"
+    if [[ -z "$real_dir" || "$real_base" != "$real_dir"/* ]]; then
         log_warn "no patch channel this run -- '$rel' resolves outside $dir."
         return 0
     fi
-    if ! mkdir -p "$base/$stamp"; then
-        log_warn "could not create the patch directory $base/$stamp; the patch channel is off this run"
+    prune_empty_patch_dirs "$base"
+    if ! mkdir -p -- "$base"; then
+        log_warn "could not create the patch directory $base; the patch channel is off this run"
         return 0
     fi
-    AGENT_PATCH_DIR_HOST="$base/$stamp"
-    AGENT_PATCH_DIR_REL="$rel/$stamp"
+    # Minute resolution, no pid: two runs starting in the same minute
+    # would otherwise collide, so mkdir (atomic create-or-fail) is tried
+    # first bare, then with a single letter suffix a, b, c, ... -- the
+    # first one that did not already exist is this run's directory.
+    # Exhausting the alphabet inside one minute is not handled further;
+    # it fails closed like any other mkdir failure below.
+    stamp="$(date +%y%m%d-%H%M)"
+    leaf=""
+    for suf in "" a b c d e f g h i j k l m n o p q r s t u v w x y z; do
+        if mkdir -- "$base/$stamp$suf" 2>/dev/null; then
+            leaf="$stamp$suf"
+            break
+        fi
+    done
+    if [[ -z "$leaf" ]]; then
+        log_warn "could not create the patch directory under $base (all of ${stamp}[a-z] are taken); the patch channel is off this run"
+        return 0
+    fi
+    AGENT_PATCH_DIR_HOST="$base/$leaf"
+    AGENT_PATCH_DIR_REL="$rel/$leaf"
+    host="${HOSTNAME:-$(uname -n 2>/dev/null || echo unknown)}"
+    printf 'pid=%s\nhost=%s\n' "$$" "$host" >"$AGENT_PATCH_DIR_HOST/$PATCH_RUN_INFO_NAME" 2>/dev/null || true
     log_info "patches: $AGENT_PATCH_DIR_REL (gitignored, inside the checkout)"
 }
 
@@ -423,10 +511,11 @@ resolve_patch_dir() {
 # out. Retention of old per-run directories is the user's, like any other
 # directory they own.
 #
-# `find -type f` is both the selection and the complete answer now that
-# nothing is copied: there is no second enumeration that could disagree
-# with it. It does not follow symlinks, so a link the agent planted there
-# is not reported as a patch.
+# `find -type f` is the selection, with PATCH_RUN_INFO_NAME (the pid/host
+# bookkeeping file resolve_patch_dir() drops in every run's directory)
+# excluded by name -- it is not a patch, and is otherwise indistinguishable
+# from one to a plain file listing. It does not follow symlinks, so a
+# link the agent planted there is not reported as a patch either.
 #
 # Nothing is applied and nothing is parsed -- a human judgement call.
 # Paths are printed %q-quoted because the agent chose the filename, so it
@@ -438,7 +527,7 @@ report_agent_patches() {
     local -a files=()
     while IFS= read -r -d '' f; do
         files+=("$f")
-    done < <(find "$dir" -mindepth 1 -type f -print0 2>/dev/null | sort -z)
+    done < <(find "$dir" -mindepth 1 -type f -not -name "$PATCH_RUN_INFO_NAME" -print0 2>/dev/null | sort -z)
     [[ ${#files[@]} -gt 0 ]] || return 0
     # The worktree is the tree the patch was written against when there is
     # one; otherwise the agent worked in the project checkout directly.

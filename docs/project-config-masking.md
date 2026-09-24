@@ -679,8 +679,8 @@ and prints, per patch, the command that would apply it:
 ```
 sandbox: the sandboxed agent left 1 proposed patch(es) for
   paths this run mounted read-only:
-  /home/you/proj/.agent/patches/20260921-101500-12345/mcp.patch
-    git -C /home/you/proj apply /home/you/proj/.agent/patches/20260921-101500-12345/mcp.patch
+  /home/you/proj/.agent/patches/260921-1415/mcp.patch
+    git -C /home/you/proj apply /home/you/proj/.agent/patches/260921-1415/mcp.patch
 sandbox: those patches were written by the sandboxed agent. Nothing has
   been applied -- reading each one before applying it is your job.
 ```
@@ -689,7 +689,18 @@ Nothing is copied and nothing is deleted. The files are already in their final
 location inside your own project directory: a copy-out step would only create a
 second place to look, and deleting from a directory you own after merely
 reporting it is the "the sandbox removed files from my checkout" behaviour this
-design rules out. Old per-run directories are yours to keep or clean up.
+design rules out. Old per-run directories that hold a patch are yours to keep
+or clean up. A directory that never received one -- the common case, since
+most runs need no patch -- does not linger: `resolve_patch_dir()` removes any
+sibling directory that is both empty and not owned by a still-running sandbox
+process on the same host. The directory name is just a minute-resolution
+timestamp (`YYMMDD-HHMM`), with a letter appended (`260921-1415a`,
+`260921-1415b`, ...) only when two runs start in the same checkout in the
+same minute; the owner pid and hostname live in a hidden bookkeeping file
+inside the directory instead of the name, so a foreign host sharing the
+same checkout (over a network mount, for instance) is never mistaken for a
+dead local run -- `kill -0` cannot see across machines, so that directory
+is simply left alone until it holds a patch or its own host cleans it up.
 
 Nothing is applied automatically: a patch that the host applies without a human
 reading it is the write access that was just taken away, restored by a longer
