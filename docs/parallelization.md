@@ -96,11 +96,11 @@ Put together: any `opencode serve --service` that the opencode branch of
 `RUN_CMD=(opencode "${ARGS[@]}")` is a child of that one apptainer
 `exec --containall` invocation's PID namespace, so it dies the instant that
 invocation's process exits — every single time, regardless of how the
-daemon tries to detach. Meanwhile `~/.config/opencode/service.json` and
-`~/.local/state/opencode` (bound **read-write** by that same branch,
+daemon tries to detach. Meanwhile `~/.local/state/opencode/service.json`
+(`~/.local/state/opencode` is bound **read-write** by that same branch,
 unscoped by project, identical for every `./sandbox.sh opencode ...`
-invocation on the host) survive on the host after the container that wrote
-them is gone. The net effect measured above — the "self-healing respawn" —
+invocation on the host) survives on the host after the container that wrote
+it is gone. The net effect measured above — the "self-healing respawn" —
 is not a convenience, it is *mandatory* on every single invocation: opencode
 can never actually observe a live server it didn't just spawn itself in the
 same container, so every run pays the full ~9–10s cold-start tax that

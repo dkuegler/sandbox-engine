@@ -236,10 +236,13 @@ bind_ro() {
     RO_MASKED+=("$p")
 }
 
-# bind_state_rw PATH KIND: bind PATH read-WRITE, creating it on the host
-# first if it is missing (KIND: "file" or "dir"). For the paths an agent
-# genuinely has to write -- session databases, caches, credentials it
-# refreshes itself -- named one at a time.
+# bind_state_rw PATH KIND [INITIAL]: bind PATH read-WRITE, creating it on
+# the host first if it is missing (KIND: "file" or "dir"). A file is
+# created holding INITIAL (default: empty); a JSON state file passes "{}",
+# since an empty file is not JSON and the next unsandboxed CLI would have
+# to parse it. For the paths an agent genuinely has to write -- session
+# databases, caches, credentials it refreshes itself -- named one at a
+# time.
 #
 # Creating the source host-side is required, not incidental: apptainer
 # refuses a bind whose SOURCE does not exist. It is also the point. Each
@@ -249,13 +252,13 @@ bind_ro() {
 # one in a subtract-from-the-parent list is a silently writable config
 # file.
 bind_state_rw() {
-    local p="$1" kind="${2:-dir}"
+    local p="$1" kind="${2:-dir}" initial="${3:-}"
     if [[ ! -e "$p" && ! -L "$p" ]]; then
         if [[ "$kind" == dir ]]; then
             mkdir -p -- "$p" || return 1
         else
             mkdir -p -- "${p%/*}" || return 1
-            : >"$p" || return 1
+            printf '%s' "$initial" >"$p" || return 1
         fi
     fi
     BINDS+=(-B "$p")

@@ -483,38 +483,47 @@ configure_agent() {
 
     case "$AGENT" in
         claude)
-            mkdir -p "$HOME/.claude" "$HOME/.config/claude"
-            touch "$HOME/.claude.json"
-            BINDS+=(
-                -B "$HOME/.claude"
-                -B "$HOME/.claude.json"
-            )
-            # ~/.config/claude is the alternate settings location; nothing
-            # writes it, so mask it read-only instead of leaving it
-            # read-write like ~/.claude above.
-            bind_ro "$HOME/.config/claude"
-            # settings.json/settings.local.json carry hooks (shell commands
-            # run on tool events), apiKeyHelper (a shell command run on
-            # credential expiry), statusLine (a shell command run per
-            # render), and mcpServers (spawned command lines); hooks/ and
-            # plugins/ hold executed code; agents/, commands/, skills/,
-            # rules/, output-styles/, and CLAUDE.md are prompt/instruction
-            # content that persists into the human's next bare-host run.
-            # Left read-write: ~/.claude/.credentials.json (OAuth refresh,
-            # note the leading dot), ~/.claude.json (rewritten constantly:
-            # session state, per-project trust, MCP OAuth tokens), and
-            # projects/, shell-snapshots/, todos/, statsig/, file-history/,
-            # history.jsonl, ide/.
-            for p in settings.json settings.local.json \
+            # Inverted polarity: ~/.claude is NOT bound as a tree. Only the
+            # paths claude writes are bound read-write, by name, and its
+            # config read-only. $HOME exists inside the container only
+            # where a bind scaffolds it (--no-mount home,
+            # functions/apptainer.sh), so a path bound neither way cannot
+            # reach the host.
+            #
+            # Writable, and why: .credentials.json is the OAuth material
+            # claude refreshes itself (note the leading dot); ~/.claude.json
+            # is rewritten constantly with session state, per-project trust
+            # and MCP OAuth tokens (its mcpServers do not load:
+            # --strict-mcp-config below); the rest is session, history and
+            # telemetry state.
+            bind_state_rw "$HOME/.claude/.credentials.json" file '{}'
+            bind_state_rw "$HOME/.claude.json" file '{}'
+            bind_state_rw "$HOME/.claude/history.jsonl" file
+            for p in projects shell-snapshots todos statsig file-history ide; do
+                bind_state_rw "$HOME/.claude/$p" dir
+            done
+            # Read-only, and why: settings.json/settings.local.json carry
+            # hooks (shell commands run on tool events), apiKeyHelper (a
+            # shell command run on credential expiry), statusLine (a shell
+            # command run per render) and mcpServers (spawned command
+            # lines); hooks/ and plugins/ hold executed code; agents/,
+            # commands/, skills/, rules/ and output-styles/ are prompt
+            # content that would persist into the human's next bare-host
+            # run. The human authored all of it outside any repo the agent
+            # can reach, so the session may READ it but never write it.
+            # ~/.config/claude is the alternate settings location.
+            bind_ro "$HOME/.config/claude" dir
+            for p in settings.json settings.local.json mcp.json .mcp.json \
                      hooks plugins agents commands skills rules output-styles; do
                 case "$p" in
-                    settings.json | settings.local.json) bind_ro "$HOME/.claude/$p" ;;
-                    *)                                    bind_ro "$HOME/.claude/$p" dir ;;
+                    settings.json | settings.local.json | mcp.json | .mcp.json)
+                        bind_ro "$HOME/.claude/$p" ;;
+                    *)  bind_ro "$HOME/.claude/$p" dir ;;
                 esac
             done
-            # CLAUDE.md is the always-loaded instruction file: overlay
-            # it with a copy of itself plus a pointer at the generated
-            # limitations lookup file, instead of a plain read-only bind.
+            # CLAUDE.md is the always-loaded instruction file: overlaid
+            # with a copy of itself plus a pointer at the generated
+            # limitations lookup file, rather than a plain read-only bind.
             bind_augmented_instructions "$HOME/.claude/CLAUDE.md"
             # Fold every user --mcp-config value into one occurrence and
             # force --strict-mcp-config unconditionally: user- and
@@ -556,19 +565,34 @@ configure_agent() {
                      --strict-mcp-config ${rest[@]+"${rest[@]}"})
             ;;
         opencode)
-            mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode" \
-                "$HOME/.local/state/opencode" "$HOME/.opencode"
-            BINDS+=(
-                -B "$HOME/.config/opencode"
-                -B "$HOME/.local/share/opencode"
-                -B "$HOME/.local/state/opencode"
-            )
+            # Inverted polarity, same as the claude branch above: no
+            # wholesale bind of ~/.config/opencode; its config is mounted
+            # read-only.
+            #
+            # Writable, and why: tui.json is rewritten every session; the
+            # state directories carry the session database, its logs, the
+            # credentials opencode refreshes itself (auth.json,
+            # mcp-auth.json) and its per-project data.
+            #
+            # ~/.local/share/opencode and ~/.local/state/opencode are bound
+            # as DIRECTORIES rather than file by file, deliberately: they
+            # hold a sqlite database, and sqlite creates and removes its
+            # own "-wal"/"-shm" siblings next to it, which a per-file bind
+            # makes impossible (an unlink of a bind-mounted file fails).
+            # The only executable surface under either is bin/, bound
+            # read-only just below.
+            bind_state_rw "$HOME/.config/opencode/tui.json" file '{}'
+            bind_state_rw "$HOME/.local/share/opencode" dir
+            bind_state_rw "$HOME/.local/state/opencode" dir
             # ~/.opencode is the host install directory holding the
             # opencode binary (the image installs its own at
             # /usr/local/opencode/bin, see sandbox/agent/Dockerfile.template);
             # a writable bind would let the sandbox replace a binary the
             # human then executes on the bare host.
-            bind_ro "$HOME/.opencode"
+            bind_ro "$HOME/.opencode" dir
+            # Same reason, one level down: bin/ inside the writable state
+            # directory above is the one path there that is executed.
+            bind_ro "$HOME/.local/share/opencode/bin" dir
             # opencode.json/opencode.jsonc define mcp.<name>.command arrays,
             # plugin paths, lsp.*.command, formatter.*.command and
             # experimental.hook.* -- all executed; plugins/ is JS/TS loaded
@@ -579,11 +603,7 @@ configure_agent() {
             # plugins/, skills/, tools/, themes/) and the singular names are
             # kept for backwards compatibility, so both are loaded and
             # masking only one spelling would leave a writable path that
-            # executes on the host. Left read-write:
-            # ~/.config/opencode/tui.json (written every session), all of
-            # ~/.local/share/opencode except bin/ (auth.json, mcp-auth.json,
-            # db.sqlite, storage/, log/, project/), and
-            # ~/.local/state/opencode.
+            # executes on the host.
             for p in opencode.json opencode.jsonc \
                      plugin plugins agent agents command commands \
                      mode modes tool tools skill skills theme themes; do
@@ -599,7 +619,6 @@ configure_agent() {
             done
             # AGENTS.md is the always-loaded instruction file.
             bind_augmented_instructions "$HOME/.config/opencode/AGENTS.md"
-            bind_ro "$HOME/.local/share/opencode/bin"
             RUN_CMD=(opencode "${ARGS[@]}")
             ;;
         omp)
