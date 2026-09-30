@@ -53,7 +53,13 @@ resolve_environment() {
         ENV_TAG="preset-${ENV_PRESET}"
         # shellcheck disable=SC2034  # ENV_TAG (set in the uv/python arms below) is read by sandbox.sh after resolve_environment returns
         case "$ENV_PRESET" in
-            uv) BASE_IMAGE="ghcr.io/astral-sh/uv:python${ENV_PYTHON_VERSION}-bookworm-slim"; ENV_TAG="preset-uv-py$(sanitize_tag "$ENV_PYTHON_VERSION")" ;;
+            uv)
+                # Same bundled/trusted dockerfile-splice pattern as
+                # "shell"/"latex" below (see sandbox/uv/Dockerfile). Its base
+                # is fixed, so python_version does not apply to this preset.
+                ENV_MODE="dockerfile"
+                CUSTOM_DOCKERFILE="$SANDBOX_DIR/uv/Dockerfile"
+                ;;
             python) BASE_IMAGE="python:${ENV_PYTHON_VERSION}-slim-bookworm"; ENV_TAG="preset-python-py$(sanitize_tag "$ENV_PYTHON_VERSION")" ;;
             shell)
                 # Bundled, trusted dockerfile (ships with sandbox-engine,

@@ -7,10 +7,9 @@
 #   image: <ref>          this image, verbatim
 #   dockerfile: <path>    relative to the project; its last stage is the base
 #   preset: <name>        uv | python | shell | latex
-#   python_version: "X"   uv and python presets only
+#   python_version: "X"   python preset only (uv ships python3.10-3.14)
 environment:
   preset: uv
-  python_version: "3.13"
 
 # Extra mounts, read-only unless ":rw". A source outside the project needs
 # confirmation on the terminal, or --allow-external-binds.

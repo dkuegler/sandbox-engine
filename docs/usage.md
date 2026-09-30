@@ -56,11 +56,11 @@ The first key set wins, in this order:
 | `image: REF` | this image, verbatim |
 | `dockerfile: PATH` | a Dockerfile relative to the project; its last stage becomes the base |
 | `preset: NAME` | a named base (below); default `uv` |
-| `python_version: "3.13"` | used by the `uv` and `python` presets only |
+| `python_version: "3.13"` | used by the `python` preset only |
 
 | preset | base |
 | --- | --- |
-| `uv` | `ghcr.io/astral-sh/uv:python<version>-bookworm-slim`, uv preinstalled |
+| `uv` | uv on Python 3.13 (default interpreter) plus uv-managed 3.10 through 3.14 (`sandbox/uv/Dockerfile`) |
 | `python` | `python:<version>-slim-bookworm` |
 | `shell` | the `uv` base (Python 3.13) plus shellcheck, dash and ksh (`sandbox/shell/Dockerfile`) |
 | `latex` | full TeX Live plus uv (`sandbox/latex/Dockerfile`) |
@@ -73,6 +73,15 @@ run by an interpreter shellcheck did not check it against.
 Only the `uv`, `shell` and `latex` bases include uv. A custom image or
 Dockerfile has to install it itself, for example with
 `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/`.
+
+The `uv` preset (and only it: not `shell`, `latex` or a custom base) also
+carries uv-managed CPython 3.10 through 3.14 in `/opt/uv-python`
+(`sandbox/uv/Dockerfile`), with `python3.10` ... `python3.14` on
+`PATH` after the base interpreter. `requires-python`, `.python-version` and
+`uv run --python X` resolve offline for any of them.
+`UV_PYTHON_DOWNLOADS=never` is set there (the image is read-only at run
+time), so a version outside that range fails with uv's "downloads are set to
+never" error. Edit `sandbox/uv/Dockerfile` to change the set.
 
 The image is `<agent>.<env-tag>.sif`, built on first use. The tag changes
 whenever the environment changes, and that change triggers a fresh build.
