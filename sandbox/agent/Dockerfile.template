@@ -12,6 +12,14 @@ ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
 LABEL agent="${AGENT}"
 
+# Never served from the builder's cache: generate_dockerfile
+# (functions/environment.sh) writes a fresh id here for every build, so this
+# layer and every one after it -- packages and the agent install -- are
+# rebuilt, and a rebuild installs the agent's current release. Only the base
+# stage above can come from cache (docs/apptainer.md). The id stays in the
+# image as /etc/sandbox-engine-build-id.
+RUN printf '%s\n' '$SANDBOX_BUILD_ID' >/etc/sandbox-engine-build-id
+
 # git for the agent; the read-only .git mask is the access control.
 # GIT_OPTIONAL_LOCKS=0 keeps status/diff quiet on that mask;
 # GIT_CONFIG_NOSYSTEM=1 ignores the image's /etc/gitconfig.

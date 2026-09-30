@@ -1,4 +1,4 @@
-# Apptainer: behaviour the launch line relies on
+# Apptainer: behaviour the launch line and the image build rely on
 
 Last verified: 2026-09-24.
 
@@ -8,6 +8,8 @@ The launch line is `APPTAINER_EXEC` in `functions/apptainer.sh`:
 reference: [`apptainer exec`](https://apptainer.org/docs/user/latest/cli/apptainer_exec.html),
 [bind paths and mounts](https://apptainer.org/docs/user/latest/bind_paths_and_mounts.html),
 [`apptainer.conf`](https://apptainer.org/docs/admin/latest/configfiles.html).
+The image build is `backend_build_image` in the same file:
+`apptainer build --fakeroot … dockerfile:sandbox/agent`.
 
 ## `$HOME` exists only where a bind creates it
 
@@ -157,3 +159,73 @@ the `oci` command group requires root and is documented as deprecated. Apptainer
 has no flag that selects a different low-level runtime. A gVisor launch path
 therefore has to run the unpacked image with `runsc` itself, next to apptainer
 rather than through it.
+
+## Image builds reuse the builder's layer cache and drop `--build-arg`
+
+`D` — apptainer 1.5.3, `internal/pkg/build/sources/conveyorPacker_buildkit.go`:
+a `dockerfile:DIR` build runs `buildctl build` when `buildctl` is on `PATH` and
+`docker build --quiet` otherwise, neither with `--no-cache`. Build args are read
+only from a definition file's `buildargs:` header. For a URI spec,
+`MakeAllDefs` (`internal/pkg/build/build.go`) returns
+`NewDefinitionFromURI(spec)`, a definition holding just `bootstrap` and `from`,
+and never consults the `--build-arg` map, so no `--build-arg` reaches the
+Dockerfile.
+
+`M` (2026-09-30) — on a host with docker and no `buildctl` (`$img` is the omp
+image's SIF), the image lacks the build log that only the `buildctl` path
+writes, and docker's cache holds one omp install layer per distinct parent
+layer, some served to later builds (a usage count of 3 is one build plus two
+cache hits):
+
+```
+$ command -v buildctl docker
+/usr/bin/docker
+$ apptainer exec --containall "$img" sh -c 'omp --version; ls -l /.singularity.d/buildkit_build.log'
+omp/18.4.4
+ls: cannot access '/.singularity.d/buildkit_build.log': No such file or directory
+$ docker buildx du --verbose | awk -v RS= -v ORS='\n\n' '/install\.sh/'
+[...]
+ID:           ceciadry6cwzwaqlt7ueeilxj
+Parents:
+ - mlps3gmuh1xjfd3n1587gixih
+Created at:   2026-09-15 16:38:07.100642932 +0000 UTC
+Mutable:      false
+Reclaimable:  true
+Shared:       true
+Size:         400.8MB
+Description:  mount / from exec /bin/sh -c export PI_INSTALL_DIR="/usr/local/omp/bin" ;     curl -fsSL https://omp.sh/install.sh | sh ;
+Usage count:  3
+Last used:    2 weeks ago
+Type:         regular
+[...]
+```
+
+`M` (2026-09-30), consistent with the dropped build args: a direct `docker build`
+of the same generated Dockerfile with the four `--build-arg`s `build_images`
+passes (`USERNAME`, `UID`, `GID`, `AGENT`) took the `RUN`s before the
+template's `ARG USERNAME`/`UID`/`GID` from cache but re-ran the first `RUN`
+after them, which that morning's apptainer build had cached under the ARGs'
+defaults:
+
+```
+$ docker build --progress=plain --platform linux/amd64 --build-arg USERNAME="$USER" \
+    --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" --build-arg AGENT=omp \
+    -f sandbox/agent/Dockerfile sandbox/agent
+[...]
+#5 [base 2/4] RUN apt-get update     && apt-get install -y --no-install-recommends shellcheck dash ksh     && rm -rf /var/lib/apt/lists/*
+#5 CACHED
+[...]
+#7 [base 4/4] RUN apt-get update     && apt-get install -y --no-install-recommends curl ca-certificates gnupg poppler-utils imagemagick git     && rm -rf /var/lib/apt/lists/*
+#7 1.272 Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+```
+
+So with the Dockerfile text and the base image unchanged, a rebuild's agent
+install comes from the cache, holding whatever release was current when that
+layer was first built. `generate_dockerfile` (`functions/environment.sh`)
+writes a fresh id into the template's first `RUN` for every build, textually
+like `$BASE_IMAGE` because a build arg would not arrive. `D` — a `RUN` layer's
+cache key covers its command text and its parent, so that layer and every
+later one (packages, agent install) miss the cache; the base stage before it
+(a preset's or a custom Dockerfile) stays cacheable. The id stays in the image
+as `/etc/sandbox-engine-build-id`, and `docker buildx du` then lists one new
+install-layer record per build, with usage count 1.

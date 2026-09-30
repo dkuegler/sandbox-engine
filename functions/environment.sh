@@ -83,10 +83,11 @@ resolve_environment() {
 }
 
 # generate_dockerfile: substitutes sandbox/agent/Dockerfile.template's
-# "$BASE_IMAGE"/"$AGENT" arguments textually into sandbox/agent/Dockerfile,
-# since apptainer's Dockerfile bootstrap does not evaluate ARG in FROM
-# lines. In dockerfile mode, splices the custom Dockerfile in as the
-# "base" stage.
+# "$BASE_IMAGE"/"$AGENT"/"$SANDBOX_BUILD_ID" placeholders textually into
+# sandbox/agent/Dockerfile, since apptainer's Dockerfile bootstrap neither
+# evaluates ARG in FROM lines nor passes --build-arg on (docs/apptainer.md).
+# In dockerfile mode, splices the custom Dockerfile in as the "base" stage.
+# Sets SANDBOX_BUILD_ID.
 generate_dockerfile() {
     local template="$SANDBOX_DIR/agent/Dockerfile.template"
     local out="$SANDBOX_DIR/agent/Dockerfile"
@@ -131,12 +132,109 @@ generate_dockerfile() {
     # stage of its own (sandbox.sh sets it to a real agent's name).
     tail_part="${tail_part//FROM \$AGENT AS/FROM ${IMAGE_AGENT:-$AGENT} AS}"
 
+    # A fresh id per build. The builder keys a RUN layer on its command text
+    # and its parent, so the template's first RUN, which carries this id, and
+    # every layer after it are rebuilt instead of served from its cache --
+    # which is what would otherwise pin the agent to whatever release was
+    # current when that layer was first built. Refused if the template lost
+    # the placeholder: the build would quietly be cacheable again.
+    # $RANDOM, not $$: the id ends up inside the image, a host PID need not.
+    SANDBOX_BUILD_ID="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+    # shellcheck disable=SC2016  # single quotes intentional: the literal placeholder text
+    if [[ "$tail_part" != *'$SANDBOX_BUILD_ID'* ]]; then
+        echo "sandbox/agent/Dockerfile.template: missing the \$SANDBOX_BUILD_ID placeholder" >&2
+        exit 1
+    fi
+    tail_part="${tail_part//\$SANDBOX_BUILD_ID/$SANDBOX_BUILD_ID}"
+
     rm -f "$out"
     {
         printf '%s\n' "$head_part"
         printf '%s\n' "$body"
         printf '%s\n' "$tail_part"
     } > "$out"
+}
+
+# agent_upstream_version AGENT: the latest upstream release of AGENT on
+# stdout, or status 1 when it cannot be told: unknown agent, no curl, no
+# network, an HTTP error (GitHub's unauthenticated API allows 60 requests
+# an hour per IP, and a shared institute address runs out), or a reply
+# without a well-formed version. Each endpoint is the one the agent's own
+# installer resolves "latest" from, so the answer names what a build of
+# sandbox/agent/Dockerfile.template installs. Bounded by a 3 s timeout;
+# -vv logs the request and its outcome.
+agent_upstream_version() {
+    local url response="" status body latest="" rc=0
+    case "$1" in
+        claude) url="https://registry.npmjs.org/@anthropic-ai/claude-code/latest" ;;
+        # Same endpoint opencode.ai/v2/install itself queries for its own latest version.
+        opencode) url="https://opencode.ai/update/api/latest/cli/npm" ;;
+        # Same endpoint omp.sh/install.sh's binary-install path itself queries.
+        omp) url="https://api.github.com/repos/can1357/oh-my-pi/releases/latest" ;;
+        *)
+            log_debug "agent version: no upstream endpoint known for '$1'"
+            return 1
+            ;;
+    esac
+    if ! command -v curl >/dev/null 2>&1; then
+        log_debug "agent version: no curl on the host"
+        return 1
+    fi
+
+    # -w appends the HTTP status as a line of its own; 000 means no reply.
+    response="$(curl -sL --max-time 3 -w '\n%{http_code}' "$url" 2>/dev/null)" || rc=$?
+    status="${response##*$'\n'}"
+    body="${response%$'\n'*}"
+    if [[ "$status" == 200 ]]; then
+        case "$1" in
+            omp)
+                latest="$(printf '%s\n' "$body" \
+                    | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')" || latest=""
+                latest="${latest#v}"
+                ;;
+            *)
+                latest="$(printf '%s\n' "$body" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')" || latest=""
+                ;;
+        esac
+    else
+        # The reply is network content headed for the terminal: one line,
+        # control bytes removed (functions/binds.sh).
+        log_debug "agent version: reply from $url: $(printf '%s' "${body:0:200}" | tr '\t\n' '  ' | sanitize_agent_display)"
+    fi
+    # The version is printed in the rebuild prompt and compared as text, so
+    # anything but one short version token (an escape sequence, a second
+    # match on another line) counts as no answer.
+    if [[ -n "$latest" && ! "$latest" =~ ^[0-9A-Za-z.+-]{1,64}$ ]]; then
+        log_debug "agent version: reply from $url holds no well-formed version"
+        latest=""
+    fi
+    log_debug "agent version: GET $url -> HTTP ${status:-none} (curl exit $rc), latest release '$latest'"
+    [[ -n "$latest" ]] || return 1
+    printf '%s\n' "$latest"
+}
+
+# image_agent_version: the version IMAGE_AGENT reports inside SANDBOX_IMAGE
+# on stdout, or status 1. Every agent's --version prints the semver
+# somewhere in otherwise varying decoration ("2.1.281 (Claude Code)" for
+# claude, "omp/1.2.3" for omp, "opencode v1.2.3" for opencode) -- pulling
+# out the first dotted-numeric token is robust to all three instead of
+# assuming a fixed field position (a trailing "(Claude Code)" parenthetical
+# used to be picked as the "version" by a last-whitespace-field split).
+image_agent_version() {
+    local raw="" version=""
+    raw="$(backend_agent_version "$IMAGE_AGENT" 2>/dev/null)" || raw=""
+    version="$(printf '%s' "$raw" | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -n1)" || version=""
+    log_debug "agent version: '$IMAGE_AGENT --version' in $SANDBOX_IMAGE printed" \
+        "'$(printf '%s' "$raw" | tr '\t\n' '  ' | sanitize_agent_display)' -> '$version'"
+    [[ -n "$version" ]] || return 1
+    printf '%s\n' "$version"
+}
+
+# agent_update_cache_write LATEST IN_IMAGE: records one version comparison
+# in SANDBOX_IMAGE_INFO. Its mtime is what rate-limits check_agent_update.
+agent_update_cache_write() {
+    printf 'Agent: %s\nDate: %s\nVersion available: %s\nVersion in image: %s\n' \
+        "$IMAGE_AGENT" "$(date +%s)" "$1" "$2" 2>/dev/null >"$SANDBOX_IMAGE_INFO" || true
 }
 
 # check_agent_update: best-effort, rate-limited check for whether a newer
@@ -148,81 +246,63 @@ generate_dockerfile() {
 # image on its own, and --rebuild forces one regardless. None of the three
 # agents pin a version in sandbox/agent/Dockerfile.template (`claude` is
 # `npm install -g @anthropic-ai/claude-code`; `opencode`/`omp` are
-# curl-piped install scripts), so every rebuild installs whatever is
-# current at build time and the baked-in version silently drifts from
-# upstream between rebuilds with nothing else to surface that.
+# curl-piped install scripts), and generate_dockerfile's per-build id keeps
+# the builder from serving the install from its cache, so every build
+# installs whatever is current at build time and the baked-in version
+# drifts from upstream between builds with nothing else to surface that.
 #
 # Every step here is best-effort: no runtime or curl, no network, a
-# malformed response, or no /dev/tty to prompt on all degrade silently to
+# malformed response, or no /dev/tty to prompt on all degrade to
 # build/reuse the image exactly as before -- this must never fail or add
 # meaningful latency to a run, so every fallible command substitution
 # below is paired with an explicit `|| var=""` fallback (a pipeline's
 # failure under `set -o pipefail` otherwise trips the caller's `set -e`,
-# even when a later stage of that same pipe succeeds). The per-(agent,
+# even when a later stage of that same pipe succeeds). -v prints the two
+# versions compared, -vv the step a check stopped at. The per-(agent,
 # environment) cache is written on every attempt, successful or not, so a
 # persistently offline host pays the short, timeout-bounded network cost
 # at most once an hour, not once per invocation.
 check_agent_update() {
-    [[ "${NO_UPDATE_CHECK:-0}" -eq 1 ]] && return 0
-    backend_image_present || return 0 # nothing built yet to compare against
-    backend_available || return 0
-    command -v curl >/dev/null 2>&1 || return 0
-
-    local cache_file="$SANDBOX_IMAGE_INFO"
-    if [[ -f "$cache_file" ]]; then
-        local mtime age
-        mtime="$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)"
-        age=$(( $(date +%s) - mtime ))
-        [[ "$age" -lt 3600 ]] && return 0
+    if [[ "${NO_UPDATE_CHECK:-0}" -eq 1 ]]; then
+        log_debug "update check: off (--no-update-check)"
+        return 0
     fi
-
-    local latest=""
-    case "$IMAGE_AGENT" in
-        claude)
-            latest="$(curl -fsSL --max-time 3 https://registry.npmjs.org/@anthropic-ai/claude-code/latest 2>/dev/null \
-                | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')" || latest=""
-            ;;
-        opencode)
-            # Same endpoint opencode.ai/v2/install itself queries for its own latest version.
-            latest="$(curl -fsSL --max-time 3 https://opencode.ai/update/api/latest/cli/npm 2>/dev/null \
-                | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')" || latest=""
-            ;;
-        omp)
-            # Same endpoint omp.sh/install.sh's binary-install path itself queries.
-            latest="$(curl -fsSL --max-time 3 https://api.github.com/repos/can1357/oh-my-pi/releases/latest 2>/dev/null \
-                | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')" || latest=""
-            latest="${latest#v}"
-            ;;
-        *)
-            : # unknown agent (e.g. script mode's fallback) -- nothing to compare against
-            ;;
-    esac
-
-    printf 'Agent: %s\nDate: %s\nVersion available: %s\n' "$IMAGE_AGENT" "$(date +%s)" "$latest" > "$cache_file" \
-      2>/dev/null || true
-    [[ -n "$latest" ]] || return 0
-
-    local baked_version
-    baked_version="$(backend_agent_version "$IMAGE_AGENT" 2>/dev/null)" || baked_version=""
-    # Every agent's --version prints the semver somewhere in otherwise
-    # varying decoration ("2.1.281 (Claude Code)" for claude, "omp/1.2.3"
-    # for omp, "opencode v1.2.3" for opencode) -- pulling out the first
-    # dotted-numeric token is robust to all three instead of assuming a
-    # fixed field position (a trailing "(Claude Code)" parenthetical used
-    # to be picked as the "version" by a last-whitespace-field split).
-    baked_version="$(printf '%s' "$baked_version" | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -n1)" \
-      || baked_version=""
-    [[ -n "$baked_version" ]] || return 0
-    [[ "$baked_version" == "$latest" ]] && return 0
-
-    if [[ ! -r /dev/tty ]]; then
-        printf "note: a newer %s release is available (%s -> %s); pass --rebuild to update." "$IMAGE_AGENT" \
-          "$baked_version" "$latest" >&2
+    if ! backend_image_present; then
+        log_debug "update check: skipped, $SANDBOX_IMAGE is not built yet"
+        return 0
+    fi
+    if ! backend_available; then
+        log_debug "update check: skipped, $SANDBOX_BACKEND cannot be invoked"
         return 0
     fi
 
+    local cache_file="$SANDBOX_IMAGE_INFO" mtime age
+    if [[ -f "$cache_file" ]]; then
+        mtime="$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)"
+        age=$(( $(date +%s) - mtime ))
+        if [[ "$age" -lt 3600 ]]; then
+            log_debug "update check: skipped, the last one was ${age}s ago" \
+                "($cache_file: $(tr '\n' ' ' <"$cache_file" | sanitize_agent_display))"
+            return 0
+        fi
+    fi
+
+    local latest="" baked_version=""
+    latest="$(agent_upstream_version "$IMAGE_AGENT")" || latest=""
+    if [[ -n "$latest" ]]; then
+        baked_version="$(image_agent_version)" || baked_version=""
+    fi
+    agent_update_cache_write "$latest" "$baked_version"
+    log_info "update check: $IMAGE_AGENT ${baked_version:-unknown} in the image, ${latest:-unknown} upstream"
+    [[ -n "$latest" && -n "$baked_version" ]] || return 0
+    [[ "$baked_version" == "$latest" ]] && return 0
+
+    # -r alone is not a reliable predictor: /dev/tty is world-readable even
+    # with no controlling terminal, where opening it fails with ENXIO. So
+    # the prompt's own printf decides, and the note covers every run it
+    # could not reach.
     local reply
-    if printf 'A newer %s release is available (%s -> %s). Rebuild the image now? [y/N] ' \
+    if [[ -r /dev/tty ]] && printf 'A newer %s release is available (%s -> %s). Rebuild the image now? [y/N] ' \
           "$IMAGE_AGENT" "$baked_version" "$latest" 2>/dev/null >/dev/tty; then
         read -r reply </dev/tty 2>/dev/null || reply=""
         case "$reply" in
@@ -231,24 +311,57 @@ check_agent_update() {
                 REBUILD=1
                 ;;
         esac
+        return 0
+    fi
+    printf "note: a newer %s release is available (%s -> %s); pass --rebuild to update.\n" "$IMAGE_AGENT" \
+      "$baked_version" "$latest" >&2
+    return 0
+}
+
+# check_built_agent_version: after a build, compares the agent version the
+# new image holds with upstream's latest release. With the per-build id in
+# place they differ only when the build installed something other than the
+# current release (an installer resolving "latest" elsewhere, a release
+# published mid-build), so a difference warns, which holds the start
+# (functions/log.sh). The result also restarts the update-check cache's
+# hour. --no-update-check skips the network query.
+check_built_agent_version() {
+    local installed="" latest=""
+    installed="$(image_agent_version)" || installed=""
+    log_info "agent image: $SANDBOX_IMAGE (built, $IMAGE_AGENT ${installed:-version unknown})"
+    if [[ "${NO_UPDATE_CHECK:-0}" -eq 1 ]]; then
+        return 0
+    fi
+    latest="$(agent_upstream_version "$IMAGE_AGENT")" || latest=""
+    agent_update_cache_write "$latest" "$installed"
+    if [[ -n "$installed" && -n "$latest" && "$installed" != "$latest" ]]; then
+        log_warn "the $IMAGE_AGENT just built into $SANDBOX_IMAGE is $installed, but upstream's latest release is $latest." \
+            "Build id $SANDBOX_BUILD_ID (/etc/sandbox-engine-build-id in the image); -vv shows both queries."
     fi
     return 0
 }
 
 # build_images: builds the agent image on first use, or unconditionally
-# when REBUILD=1 (set by --rebuild; see functions/argv.sh). Requires
-# backend_image_ref (functions/apptainer.sh) to have set the image.
+# when REBUILD=1 (set by --rebuild, see functions/argv.sh, or by accepting
+# check_agent_update's prompt). Requires backend_image_ref
+# (functions/apptainer.sh) to have set the image.
 build_images() {
-    if [[ "$REBUILD" -eq 1 ]] || ! backend_image_present; then
-        backend_image_remove
-        generate_dockerfile
-        backend_build_image "$SANDBOX_DIR/agent" \
-            "USERNAME=${USER:-$(id -un)}" \
-            "UID=$(id -u)" \
-            "GID=$(id -g)" \
-            "AGENT=${IMAGE_AGENT:-$AGENT}"
-        log_info "agent image: $SANDBOX_IMAGE (built)"
+    local reason
+    if [[ "$REBUILD" -eq 1 ]]; then
+        reason="rebuild requested"
+    elif ! backend_image_present; then
+        reason="not built yet"
     else
         log_info "agent image: $SANDBOX_IMAGE (reused)"
+        return 0
     fi
+    backend_image_remove
+    generate_dockerfile
+    log_info "agent image: building $SANDBOX_IMAGE ($reason), build id $SANDBOX_BUILD_ID"
+    backend_build_image "$SANDBOX_DIR/agent" \
+        "USERNAME=${USER:-$(id -un)}" \
+        "UID=$(id -u)" \
+        "GID=$(id -g)" \
+        "AGENT=${IMAGE_AGENT:-$AGENT}"
+    check_built_agent_version
 }

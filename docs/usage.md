@@ -76,6 +76,10 @@ Dockerfile has to install it itself, for example with
 
 The image is `<agent>.<env-tag>.sif`, built on first use. The tag changes
 whenever the environment changes, and that change triggers a fresh build.
+Every build installs the agent's current release: from the template's first
+`RUN` on, no layer is taken from the builder's cache; the base stage (a
+preset's or your Dockerfile) can be. The image records its build id in
+`/etc/sandbox-engine-build-id`. See `apptainer.md`.
 
 ### `binds:` (extra mounts)
 
@@ -137,7 +141,10 @@ warnings does not wait. With no terminal, a run that warned refuses unless
 **Agent updates.** For an image that already exists, the run compares the
 agent's version inside the image with the latest upstream release, at most
 once an hour (cached in `<image>.info`). If upstream is newer, it asks whether
-to rebuild; without a terminal it prints a note. Failures are silent.
+to rebuild; without a terminal it prints a note. After every build it compares
+again and warns if the new image does not hold the latest release. `-v` prints
+the versions compared; `-vv` also each upstream query with its HTTP status,
+and why a check was skipped. Failures are otherwise silent.
 
 ## Worktree mode (`--worktree BRANCH`)
 
@@ -172,5 +179,5 @@ refuses. Interactive use only. See `worktree-mode.md` and
 ## Fact records
 
 `git-breakout.md` (the `.git` mask), `project-config-masking.md` (project and
-`$HOME` config), `apptainer.md` (the launch line), `worktree-mode.md`,
+`$HOME` config), `apptainer.md` (the launch line and the image build), `worktree-mode.md`,
 `commit-message-generation.md`, `parallelization.md`, `maintenance.md`.
