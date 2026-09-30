@@ -126,7 +126,10 @@ that run. Details: `project-config-masking.md`, "The patch channel".
   checkout. `.env` files are never mounted. See `project-config-masking.md`.
 - `/tmp`: a per-run host directory. `/` is the image, read-only. See
   `apptainer.md`.
-- **The network** is not restricted.
+- **The network** is not restricted. ONNX Runtime telemetry is switched off
+  with `ORT_DISABLE_TELEMETRY=1` in every container. omp's local models use
+  ONNX Runtime, which would otherwise report to Microsoft and write
+  `:memory:.ses` into the checkout.
 
 `$HOME/.sandbox-limitations.md`, inside the session, tells the agent the same
 things.

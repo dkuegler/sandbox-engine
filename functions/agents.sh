@@ -556,6 +556,18 @@ report_agent_patches() {
 }
 
 configure_agent() {
+    # ONNX Runtime >= 1.29 on Linux uploads telemetry to Microsoft's 1DS
+    # collector by default, and omp's local tiny-model worker loads it (so
+    # can anything else the session runs). With no writable cache directory
+    # under $HOME, its bundled 1DS SDK falls back to an in-memory store yet
+    # still writes that store's session file, ":memory:.ses", into the
+    # working directory -- the checkout. ORT_DISABLE_TELEMETRY=1 stops the
+    # uploader, the events, the device ID and that file for the process
+    # lifetime (docs/onnxruntime-telemetry.md). Set for every mode, script
+    # included, and unconditionally, so an APPTAINERENV_ORT_DISABLE_TELEMETRY
+    # exported on the host cannot switch it back on.
+    backend_forward_env ORT_DISABLE_TELEMETRY 1
+
     if [[ "$AGENT" != "script" ]]; then
         ensure_run_dir
         # Resolved BEFORE the limitations file is generated, so that file
