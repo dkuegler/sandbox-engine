@@ -311,7 +311,7 @@ bind_rw_covers() {
 # the very same run. `printf`/`mkdir` alone never narrow a mode past the
 # umask.
 bind_state_rw() {
-    local p="$1" kind="${2:-dir}" initial="${3:-}"
+    local p="$1" kind="${2:-dir}" initial="${3:-}" dst="${4:-}"
     if [[ ! -e "$p" && ! -L "$p" ]]; then
         if [[ "$kind" == dir ]]; then
             mkdir -p -- "$p" || return 1
@@ -322,7 +322,11 @@ bind_state_rw() {
             chmod 600 -- "$p" || return 1
         fi
     fi
-    BINDS+=(-B "$p")
+    if [[ -n "$dst" ]]; then
+        BINDS+=(-B "$p:$dst")
+    else
+        BINDS+=(-B "$p")
+    fi
 }
 
 # bind_never CREDENTIAL REASON: a path deliberately NOT passed into the

@@ -10,6 +10,21 @@ ARG GID=1000
 
 ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
+# $HOME is absent or read-only in the session (docs/apptainer.md); /tmp is the
+# one place every agent can write. Tools that would otherwise default into
+# $HOME/.cache, $HOME/.config, $HOME/.local or $HOME/.npm are pointed at it,
+# identically for every agent. XDG_CONFIG_HOME is deliberately left unset: the
+# agents' config binds sit at the default $HOME/.config paths. opencode's
+# data, cache and state binds are made at the XDG paths below
+# (functions/agents.sh). Tools that ignore XDG get their own variable.
+ENV XDG_CACHE_HOME=/tmp/.cache \
+    XDG_DATA_HOME=/tmp/.local/share \
+    XDG_STATE_HOME=/tmp/.local/state \
+    MPLCONFIGDIR=/tmp/.config/matplotlib \
+    UV_CACHE_DIR=/tmp/.cache/uv \
+    PIP_CACHE_DIR=/tmp/.cache/pip \
+    npm_config_cache=/tmp/.npm
+
 LABEL agent="${AGENT}"
 
 # Never served from the builder's cache: generate_dockerfile

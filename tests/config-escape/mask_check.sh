@@ -335,7 +335,7 @@ b5_binds="$(
     configure_agent >/dev/null 2>&1
     printf '%s\n' "${BINDS[@]}"
 )"
-if grep -qx -- "$RUN_DIR/opencode-state:$HOME/.local/state/opencode" <<<"$b5_binds" \
+if grep -qx -- "$RUN_DIR/opencode-state:$OPENCODE_STATE_DST" <<<"$b5_binds" \
     && ! grep -q -- "^$HOME/.local/state/opencode" <<<"$b5_binds"; then
     ok B5 "opencode's state directory (service.json) is per run, never the host's"
 else
@@ -346,10 +346,10 @@ fi
 # only the two credential files are the host's.
 b6_srcs="$(grep -v -- '^-B$' <<<"$b5_binds" | sed 's/:.*//')"
 b6_key="$(project_state_key)"
-if grep -qx -- "$HOME/.agent/opencode-share/$b6_key:$HOME/.local/share/opencode" <<<"$b5_binds" \
+if grep -qx -- "$HOME/.agent/opencode-share/$b6_key:$OPENCODE_DATA_DST" <<<"$b5_binds" \
     && [[ "$(grep -c -- "^$HOME/.local/share/opencode" <<<"$b6_srcs")" -eq 2 ]] \
-    && grep -qx -- "$HOME/.local/share/opencode/auth.json" <<<"$b6_srcs" \
-    && grep -qx -- "$HOME/.local/share/opencode/mcp-auth.json" <<<"$b6_srcs"; then
+    && grep -qx -- "$HOME/.local/share/opencode/auth.json:$OPENCODE_DATA_DST/auth.json" <<<"$b5_binds" \
+    && grep -qx -- "$HOME/.local/share/opencode/mcp-auth.json:$OPENCODE_DATA_DST/mcp-auth.json" <<<"$b5_binds"; then
     ok B6 "opencode's data directory is per project and sandbox-owned; only auth.json and mcp-auth.json are the host's"
 else
     bad B6 "the session could read or write the host's opencode data directory"

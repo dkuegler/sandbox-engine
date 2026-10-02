@@ -117,6 +117,14 @@ scan_opencode_api_keys() {
 # of accumulating copies of the note.
 LIMITATIONS_NOTICE_MARKER='<!-- sandbox-engine: sandboxed session -->'
 
+# In-session paths of opencode's data, cache and state directories: the
+# XDG homes the image sets (sandbox/agent/Dockerfile.template) plus
+# /opencode. Single definition, used by configure_agent's binds and by
+# tests/config-escape/mask_check.sh.
+OPENCODE_DATA_DST="/tmp/.local/share/opencode"
+OPENCODE_CACHE_DST="/tmp/.cache/opencode"
+OPENCODE_STATE_DST="/tmp/.local/state/opencode"
+
 # generate_limitations_file OUT: writes the lookup file everything except
 # the two-sentence pointer goes into, so the always-loaded instruction
 # file (CLAUDE.md/AGENTS.md) stays short. Static git-behavior facts (what
@@ -650,6 +658,12 @@ configure_agent() {
             RUN_CMD=(claude "${ARGS[@]}")
             ;;
         opencode)
+            # opencode locates its data, cache and state directories through
+            # the XDG variables, which the image points at /tmp for every
+            # agent (sandbox/agent/Dockerfile.template). The per-project
+            # data, cache and per-run state binds below therefore land under
+            # those, not under $HOME; only the config directory stays at
+            # $HOME/.config/opencode (XDG_CONFIG_HOME is unset).
             # ~/.config/opencode's DIRECTORY ENTRY itself has to be
             # writable, not just specific files in it: opencode writes
             # tui.json and service.json (below) with an atomic rename
@@ -699,10 +713,10 @@ configure_agent() {
             local oc_share
             oc_share="$HOME/.agent/opencode-share/$(project_state_key)"
             mkdir -p -- "$oc_share" && chmod 700 -- "$oc_share"
-            BINDS+=(-B "$oc_share:$HOME/.local/share/opencode")
+            BINDS+=(-B "$oc_share:$OPENCODE_DATA_DST")
             for p in auth.json mcp-auth.json; do
                 : >>"$oc_share/$p"
-                bind_state_rw "$HOME/.local/share/opencode/$p" file '{}'
+                bind_state_rw "$HOME/.local/share/opencode/$p" file '{}' "$OPENCODE_DATA_DST/$p"
             done
             # ~/.cache/opencode is where opencode caches the models.dev
             # provider catalog (models.json) and, per opencode's own docs,
@@ -738,7 +752,7 @@ configure_agent() {
             local oc_cache
             oc_cache="${TMPDIR:-/tmp}/sandbox-engine-cache/opencode/$(project_state_key)"
             mkdir -p -- "$oc_cache" && chmod 700 -- "$oc_cache"
-            BINDS+=(-B "$oc_cache:$HOME/.cache/opencode")
+            BINDS+=(-B "$oc_cache:$OPENCODE_CACHE_DST")
             # ~/.local/state/opencode is a fresh per-run directory, never
             # the host's. opencode registers its background server there
             # (service.json: pid, http://127.0.0.1:<port>, password;
@@ -750,7 +764,7 @@ configure_agent() {
             # rather than per project, so concurrent runs cannot attach to
             # each other's server either.
             mkdir -p -- "$RUN_DIR/opencode-state" && chmod 700 -- "$RUN_DIR/opencode-state"
-            BINDS+=(-B "$RUN_DIR/opencode-state:$HOME/.local/state/opencode")
+            BINDS+=(-B "$RUN_DIR/opencode-state:$OPENCODE_STATE_DST")
             # ~/.config/opencode/service.json is the SAME registry's second
             # copy, and needs no bind of its own now (unlike tui.json
             # above, it gets no deeper bind back to a real host file
