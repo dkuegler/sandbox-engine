@@ -435,6 +435,8 @@ host's paths bound into it one by one:
 | `~/.omp/agent/config.yml` | a plain per-run copy; at exit, `modelRoles`, `cycleOrder`, `dev.autoqaConsent` and `hideThinkingBlock` merge back, the rest is reported |
 | `~/.omp/agent/agent.db` (`-wal`, `-shm`), `blobs/`, `sessions/<this checkout>/` | the host's own, read-write — credentials and this checkout's sessions |
 | `~/.omp/agent/history.db` | a per-project database in `~/.agent/omp-history/` |
+| `~/.omp/agent/cache/tiny-models/` | the weights of omp's on-device models (session titles, memory, judgments, speech, dictation, word completion), shared by all projects and sessions in `~/.agent/omp-models/`; no host omp reads it, and the code that loads them (`cache/tiny-title-runtime/`, `tiny-mlx-runtime/`, `tts-runtime/`, `stt-runtime/`) stays per run |
+| `~/.omp/cache/fastembed/` | omp's embedding-model weights, shared in `~/.agent/omp-embeddings/`; the loader (`cache/fastembed-runtime/`) stays per run |
 | every other entry of the host's `~/.omp/agent` | read-only, including names a later omp version adds |
 | `.env`, `secret-placeholder.key`, `models.db`, `terminal-sessions/` | not bound: absent, or fresh per run; a host `.env` is announced as withheld |
 

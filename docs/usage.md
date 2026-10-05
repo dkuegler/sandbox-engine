@@ -204,6 +204,8 @@ See `worktree-mode.md` and `commit-message-generation.md`.
 | `${TMPDIR:-/tmp}/sandbox-engine.*` | per-run scratch, removed at exit, reaped on the next run if a run was killed |
 | `~/.agent/worktrees/` | worktree mode: worktrees, locks, pending commit messages, review log |
 | `~/.agent/omp-logs/`, `~/.agent/omp-history/` | omp logs and prompt history, per project |
+| `~/.agent/omp-models/` | omp's downloaded local model weights (`~/.omp/agent/cache/tiny-models`): session-title, memory and judge models, speech (Kokoro), dictation (Whisper, Parakeet) and word completion; shared by every project and session so each run does not download its own copy |
+| `~/.agent/omp-embeddings/` | omp's downloaded embedding-model weights (`~/.omp/cache/fastembed`, used by memory), shared likewise |
 | `~/.agent/opencode-share/` | opencode's data directory, per project |
 | `~/.agent/opencode-cache/` | opencode's cache directory (models.dev catalog etc.), per project |
 | `~/.agent/claude.json.last-session` | the last session's copy of `~/.claude.json`, when it changed |

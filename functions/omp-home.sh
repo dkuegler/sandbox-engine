@@ -31,6 +31,12 @@
 #     every other host entry                 read-only
 #     .env secret-placeholder.key models.db terminal-sessions/ cache/
 #                      not bound: absent, or fresh per run
+#     cache/tiny-models/                       every local model's weights
+#                      (session titles, memory, judgments, speech,
+#                      dictation, word completion), shared by all projects
+#                      in ~/.agent/omp-models/
+#     ~/.omp/cache/fastembed/                  embedding-model weights
+#                      (mnemopi), shared in ~/.agent/omp-embeddings/
 #
 # Anything the session creates under a new name lands in $RUN_DIR and goes
 # with it; omp_home_report_created names it at exit.
@@ -137,6 +143,23 @@ omp_home_prepare() {
     omp_home_bind_private "$HOME/.agent/omp-logs/$key" "$real/logs" || return 1
     omp_home_bind_private "$HOME/.agent/omp-history/$key" "$real/agent/.sandbox-history" || return 1
     ln -s .sandbox-history/history.db "$agent/history.db" || return 1
+
+    # Local model weights omp downloads: one directory shared by every
+    # project and session, so each run does not fetch its own copy.
+    # tiny-models/ holds the weights of every on-device model class: the
+    # title/memory/judge text models (ONNX or MLX), Kokoro speech, the
+    # Whisper and Parakeet dictation models, and word completion.
+    # Sandbox-owned, like the history above, and never the host's
+    # ~/.omp/agent/cache: no host omp reads it, so what a session leaves
+    # there cannot reach an unsandboxed process. The runtimes that load
+    # the weights (tiny-title-runtime/, tiny-mlx-runtime/, tts-runtime/,
+    # stt-runtime/ beside it, fastembed-runtime/ under ~/.omp/cache;
+    # npm- or pip-installed code) are deliberately NOT shared: code one
+    # session plants must not run in the next.
+    omp_home_bind_private "$HOME/.agent/omp-models" "$real/agent/cache/tiny-models" || return 1
+    # Embedding-model weights (mnemopi's fastembed): a separate omp cache
+    # root, same reasoning and same sandbox-owned, per-use-case directory.
+    omp_home_bind_private "$HOME/.agent/omp-embeddings" "$real/cache/fastembed" || return 1
 
     # config.yml (or an existing config.yaml): a plain per-run copy, the
     # launch state kept beside it for omp_config_merge. With no host file,

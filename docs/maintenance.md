@@ -74,8 +74,8 @@ claude's `~/.claude/projects`, `shell-snapshots`, `todos`, `statsig`,
 registry the CLI starts keeping there is writable by every run and read by the
 next unsandboxed one. Inside claude's per-run `$HOME`, a new config name is the
 opposite risk: creatable in the session, where claude may load it, until it
-gets a read-only bind or placeholder. The sandbox-owned per-project directories
-under `~/.agent/` (`omp-history`, `omp-logs`, `opencode-share`,
+gets a read-only bind or placeholder. The sandbox-owned directories
+under `~/.agent/` (`omp-history`, `omp-logs`, `omp-models`, `omp-embeddings`, `opencode-share`,
 `opencode-cache`) are read by no host CLI, so they do not carry that risk. The
 per-agent comment blocks in `configure_agent()` and the layout headers of
 `functions/omp-home.sh` and `functions/claude-home.sh` are the enumeration to

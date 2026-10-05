@@ -576,6 +576,18 @@ if [[ "$(readlink "$OMP_HOME_DIR/agent/history.db")" == .sandbox-history/history
 else
     bad O4 "history.db does not resolve to the per-project database"
 fi
+if omp_bound "$HOME/.agent/omp-models:$OMP/agent/cache/tiny-models" \
+    && omp_bound "$HOME/.agent/omp-embeddings:$OMP/cache/fastembed" \
+    && [[ -d "$OMP_HOME_DIR/agent/cache/tiny-models" ]] \
+    && [[ -d "$OMP_HOME_DIR/cache/fastembed" ]] \
+    && ! omp_bound_under "$OMP/agent/cache/tiny-title-runtime" \
+    && ! omp_bound_under "$OMP/agent/cache/tts-runtime" \
+    && ! omp_bound_under "$OMP/agent/cache/stt-runtime" \
+    && ! omp_bound_under "$OMP/cache/fastembed-runtime"; then
+    ok O4b "model weights are the shared sandbox-owned directories; the runtime code is not shared"
+else
+    bad O4b "a model weights bind is missing, or a runtime is shared"
+fi
 if [[ "$(omp_session_bucket "$HOME/projects/p")" == -projects-p \
     && "$(omp_session_bucket /usr/share)" == --usr-share-- \
     && "$(omp_session_bucket "$W")" == "-tmp-${W#"$(readlink -f "${TMPDIR:-/tmp}")"/}" ]]; then
