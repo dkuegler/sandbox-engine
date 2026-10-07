@@ -205,7 +205,7 @@ worktree_preflight() {
 #           read-only-masked in all three cases regardless of this
 #           choice (docs/worktree-mode.md has the full reasoning); "deny"
 #           withholds only the main checkout's untracked/ignored content
-#           (notes, .env, build output) that a worktree does not carry.
+#           (scratch, .env, build output) that a worktree does not carry.
 worktree_confirm_readonly_project() {
     local reply
     # -r alone is not a reliable predictor: /dev/tty exists and is
@@ -229,7 +229,7 @@ worktree_confirm_readonly_project() {
             "unmounted, while $PROJECT_DIR/.git -- and every nested repository's .git --" \
             "stays mounted read-only exactly as in the other two options, so the full" \
             "tracked history stays readable. What [n] withholds is the untracked and" \
-            "ignored content that exists only in the main checkout (notes, .env, build" \
+            "ignored content that exists only in the main checkout (scratch, .env, build" \
             "output) and that a worktree does not carry." \
             "" 2>/dev/null >/dev/tty; then
             if printf 'Mount the %s (main) working tree [r]ead-only, read-[w]rite, or do [n]ot mount it? ' \
@@ -254,7 +254,7 @@ worktree_confirm_readonly_project() {
                         echo "info: main checkout $PROJECT_DIR working tree NOT mounted by explicit denial;" >&2
                         echo "      the agent sees the worktree plus $PROJECT_DIR/.git, read-only (git itself" >&2
                         echo "      needs it), so tracked history stays readable. untracked/ignored files that" >&2
-                        echo "      exist only in the main checkout (notes, .env, build output) are not" >&2
+                        echo "      exist only in the main checkout (scratch, .env, build output) are not" >&2
                         echo "      reachable this session." >&2
                         return 0
                         ;;
@@ -601,7 +601,7 @@ worktree_generate_message() {
     prompt="$(printf '%s\n' \
         "Write a git commit message for the change below." \
         "Reply with the message only -- no preamble, no code fences, no commentary." \
-        "Use exactly this shape, and add an \"Additional Notes:\" block only if something" \
+        "Use exactly this shape, and add an \"Additional scratch:\" block only if something" \
         "genuinely does not fit under Issue or Solution:" \
         "" \
         "$(worktree_message_template)" \

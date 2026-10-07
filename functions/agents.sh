@@ -240,11 +240,11 @@ generate_limitations_file() {
                 echo "- \`$PROJECT_DIR\` (the main checkout) is **not mounted** this session --"
                 echo "  denied at the start of the run. Only its \`.git\` is reachable (read-only,"
                 echo "  needed because the worktree shares its object store). Anything untracked"
-                echo "  or \`.gitignore\`d in the main checkout -- local notes directories, \`.env\`"
+                echo "  or \`.gitignore\`d in the main checkout -- local scratch directories, \`.env\`"
                 echo "  files, build output, virtualenvs -- is not reachable this session at all."
             else
                 echo "- **A worktree holds only files git tracks.** Anything untracked or"
-                echo "  \`.gitignore\`d in the main checkout -- local notes directories,"
+                echo "  \`.gitignore\`d in the main checkout -- local scratch directories,"
                 echo "  \`.env\` files, build output, virtualenvs -- is NOT here. Look for it"
                 echo "  under \`$PROJECT_DIR\` (the main checkout) before concluding it does"
                 echo "  not exist."
@@ -346,7 +346,7 @@ bind_augmented_instructions() {
                     ;;
                 *)
                     echo "- Main checkout \`$PROJECT_DIR\` (ro). Worktrees hold only tracked"
-                    echo "  files -- untracked/gitignored paths (notes dirs, \`.env\`, build"
+                    echo "  files -- untracked/gitignored paths (scratch dirs, \`.env\`, build"
                     echo "  output) exist only there."
                     ;;
             esac

@@ -20,27 +20,27 @@ Instructions for AI agents working in this repository.
     targets resolve instead of producing spurious SC1091 warnings);
     otherwise `shellcheck` on every changed script. Fix all findings.
 
-## `notes/`
+## `scratch/`
 
-`notes/` is a deliberate user-agent communication and organization
+`scratch/` is a deliberate user-agent communication and organization
 directory (handoffs, open questions, task tracking, patches-in-flight).
 It is not part of the shipped project:
 
 - It is not committed.
-- Nothing outside `notes/` may reference it or depend on its contents
-  (no `notes/...` paths, no task-id tags like `T07` in code, comments,
+- Nothing outside `scratch/` may reference it or depend on its contents
+  (no `scratch/...` paths, no task-id tags like `T07` in code, comments,
   or docs shipped to users).
 
 ## `docs/`
 
 `docs/` is persistent, shipped documentation: once a finding or design
-decision lands there, it is retained (not deleted alongside the `notes/`
+decision lands there, it is retained (not deleted alongside the `scratch/`
 item that motivated it).
 
 - `docs/*` files must never reference anything in, or established only
-  in, `notes/` — no `notes/...` paths, no task-id (`T<n>`) or
-  question-id (`Q<n>`) tags, no "per the decision in notes/...".
+  in, `scratch/` — no `scratch/...` paths, no task-id (`T<n>`) or
+  question-id (`Q<n>`) tags, no "per the decision in scratch/...".
 - `docs/` must be self-contained: each page may reference `functions/`
   or `sandbox.sh` (the actual implementation) but nothing under
-  `notes/`. A reader with no access to `notes/` must be able to use
+  `scratch/`. A reader with no access to `scratch/` must be able to use
   `docs/` in full.
