@@ -78,12 +78,18 @@ verified and the recorded "Standing verification" result, and
   symlink; claude's per-run `$HOME` (`functions/claude-home.sh`) — the
   login is the host's, config is read-only with a read-only placeholder
   where the host has none, `~/.claude` is never bound whole, and a
-  directory override refuses the run; and omp's
+  directory override refuses the run; omp's
   per-run `~/.omp` (`functions/omp-home.sh`) — the host's natives,
   `run/` and logs are never bound, `config.yml` is a plain per-run
   copy, only `modelRoles`/`cycleOrder` merge back in the exact form
   omp writes, and a profile/directory override reaching the sandbox
-  refuses the run.
+  refuses the run; and the virtualenv masks
+  (`functions/python-env.sh`) — every root-level venv gets an empty
+  per-run directory unless git tracks files in it, a symlinked `.venv`
+  is never bound over, the `.git` walk and the deep config sweep bind
+  nothing inside a masked venv, a failed git read refuses, and a
+  sandbox-created `.venv` is removed only by the last live run using
+  it and never once something was written into it on the host.
 
 See [`project-config-masking.md`](project-config-masking.md) for the
 convention this suite enforces.

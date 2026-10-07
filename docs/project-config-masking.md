@@ -153,7 +153,10 @@ identical committed/clean rule to each match: a committed, clean `sub/AGENTS.md`
 is a read-only copy of its committed content, an uncommitted one is hidden.
 Root-level paths the table already covered are not bound twice, and neither is
 a match inside a table directory (`.claude/agents/AGENTS.md`): that directory's
-entry already decides its whole content.
+entry already decides its whole content. A match inside a masked virtualenv
+(`.venv/lib/.../pkg/AGENTS.md`, `functions/python-env.sh`) is skipped too: the
+session sees an empty per-run directory there, and a read-only placeholder
+nested in it would make that package's install fail with `EROFS`.
 
 Gitignored matches are included. An ignore rule is a statement about what git
 tracks, not about what an agent CLI loads, so it must not be a place to hide an

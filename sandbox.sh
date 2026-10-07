@@ -50,6 +50,8 @@ source "$FUNCTIONS_DIR/project-sandbox-config.sh"
 source "$FUNCTIONS_DIR/environment.sh"
 # shellcheck source=functions/binds.sh
 source "$FUNCTIONS_DIR/binds.sh"
+# shellcheck source=functions/python-env.sh
+source "$FUNCTIONS_DIR/python-env.sh"
 # shellcheck source=functions/omp-home.sh
 source "$FUNCTIONS_DIR/omp-home.sh"
 # shellcheck source=functions/claude-json.sh
@@ -145,6 +147,21 @@ EXTRA_BIND_RO=()
 RO_MASKED=()
 resolve_extra_binds
 
+# Host virtualenvs at the root of every mounted checkout: an empty per-run
+# directory over each (functions/python-env.sh). Before the .git walk and
+# the config mask, which bind nothing beneath them. Only the checkout the
+# agent works in gets a fresh .venv, and only when it has no venv at all.
+if [[ -n "${WORKTREE_DIR:-}" ]]; then
+    if [[ "$WORKTREE_PROJECT_MODE" != deny ]]; then
+        mask_project_venvs "$PROJECT_DIR" 0
+    fi
+    mask_project_venvs "$WORKTREE_DIR" 1
+else
+    mask_project_venvs "$PROJECT_DIR" 1
+fi
+# uv's cache: one host directory every sandbox run shares.
+bind_uv_cache
+
 # Every .git under the checkout and under read-write extra binds, read-only.
 mask_git_readonly
 
@@ -169,7 +186,7 @@ if [[ -z "${AGENT_CONFIG_BIND_START:-}" ]]; then
 fi
 # shellcheck disable=SC2034  # AGENT_CONFIG_BINDS is read by commit_msg_generate (functions/commit-message.sh)
 AGENT_CONFIG_BINDS=("${BINDS[@]:${AGENT_CONFIG_BIND_START:-0}}")
-log_info "masks: ${GIT_MASK_COUNT:-0} .git path(s) read-only, ${#RO_MASKED[@]} read-only config bind(s)"
+log_info "masks: ${GIT_MASK_COUNT:-0} .git path(s) read-only, ${#RO_MASKED[@]} read-only config bind(s), ${#VENV_MASKED[@]} per-run venv dir(s)"
 log_resolved_binds
 
 # GPU passthrough only when the host's GPU stack looks present.

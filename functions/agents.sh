@@ -193,6 +193,15 @@ generate_limitations_file() {
                 echo "- \`$p\` -- read-only."
             fi
         done
+        for p in ${VENV_MASKED[@]+"${VENV_MASKED[@]}"}; do
+            echo "- \`$p\` -- read-write, per run: an empty directory in place of the"
+            echo "  host's virtualenv. Build the environment here (\`uv sync\`, \`uv venv\`,"
+            echo "  \`python -m venv\`); it is discarded when the session ends."
+        done
+        # shellcheck disable=SC2153  # UV_CACHE_DST is set by functions/python-env.sh
+        if [[ -n "${UV_CACHE_HOST:-}" ]]; then
+            echo "- \`$UV_CACHE_DST\` -- uv's persistent, shared cache, read-write."
+        fi
         # claude's $HOME is a per-run directory (functions/claude-home.sh).
         if [[ "${AGENT:-}" == claude ]]; then
             echo "- Anything else you create under \`\$HOME\` is per-run scratch: it works"
@@ -245,7 +254,7 @@ generate_limitations_file() {
             else
                 echo "- **A worktree holds only files git tracks.** Anything untracked or"
                 echo "  \`.gitignore\`d in the main checkout -- local scratch directories,"
-                echo "  \`.env\` files, build output, virtualenvs -- is NOT here. Look for it"
+                echo "  \`.env\` files, build output -- is NOT here. Look for it"
                 echo "  under \`$PROJECT_DIR\` (the main checkout) before concluding it does"
                 echo "  not exist."
                 if [[ "${WORKTREE_PROJECT_MODE:-ro}" == ro ]]; then

@@ -63,8 +63,8 @@ The main checkout itself is mounted **read-only**, confirmed interactively on
 `tracked.txt`, `sub/n.txt`, `.gitignore`, an untracked `untracked.txt` and an
 ignored `ignored-artifact` produces a worktree holding only the three tracked
 entries. This is why the main checkout is mounted at all: untracked and
-ignored files (local scratch directories, `.env`, build output, virtualenvs)
-exist only there, and the agent is told so in its own instruction file
+ignored files (local scratch directories, `.env`, build output) exist only
+there, and the agent is told so in its own instruction file
 (`bind_augmented_instructions()`, `functions/agents.sh`).
 
 `M` — git in a worktree needs no main working tree, only `<main>/.git`. With

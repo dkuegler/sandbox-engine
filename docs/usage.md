@@ -133,6 +133,23 @@ that run. Details: `project-config-masking.md`, "The patch channel".
   only theme and onboarding state merge back at exit. claude runs with its
   own `CLAUDE_CODE_SANDBOXED` flag, so it never asks whether to trust the
   checkout. `.env` files are never mounted. See `project-config-masking.md`.
+- **Python virtualenvs** at the root of each mounted checkout (`.venv`, and
+  every root-level directory holding a `pyvenv.cfg`): an empty per-run
+  directory, read-write, instead of the host's. Build the environment in the
+  session (`uv sync`, `uv venv`, `python -m venv`); it is discarded at exit. A
+  host venv does not run in the image, and anything written into one would run
+  in your next host session unreviewed. Not masked, each with a warning: a
+  directory git tracks files in, and a symlinked `.venv`. A path a
+  `binds:`/`--bind` entry targets keeps that bind. Only the checkout the agent
+  works in, and only when it has no venv at all, gets an empty `.venv` created
+  on the host as the mount point; the last sandbox run using it removes it at
+  exit, and it is left in place if anything was written into it on the host.
+  Coordinating concurrent runs needs `flock(1)` (util-linux) on the host. See
+  `functions/python-env.sh`.
+- **uv's cache**: `~/.agent/uv-cache` on the host, read-write, shared by every
+  sandbox run of every project (`UV_CACHE_DIR` points there, and
+  `UV_LINK_MODE=copy`). Any session can change cached packages that later
+  sessions install. Bound even when the image has no uv.
 - `/tmp`: a per-run host directory. `/` is the image, read-only. See
   `apptainer.md`.
 - **The network** is not restricted. ONNX Runtime telemetry is switched off
@@ -190,6 +207,8 @@ See `worktree-mode.md` and `commit-message-generation.md`.
 | `~/.agent/opencode-share/` | opencode's data directory, per project |
 | `~/.agent/opencode-cache/` | opencode's cache directory (models.dev catalog etc.), per project |
 | `~/.agent/claude.json.last-session` | the last session's copy of `~/.claude.json`, when it changed |
+| `~/.agent/uv-cache/` | uv's cache, shared by every sandbox run of every project |
+| `~/.agent/venv-mounts/` | the `.venv` mount points sandbox runs created and the runs using each, so only the last one removes it |
 
 ## Fact records
 

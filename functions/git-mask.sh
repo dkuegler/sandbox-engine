@@ -155,6 +155,17 @@ git_dir_visible() {
     return 1
 }
 
+# find_path_pattern PATH: PATH as a `find -path` pattern matching only itself.
+find_path_pattern() {
+    local p="$1" out="" c i
+    for ((i = 0; i < ${#p}; i++)); do
+        c="${p:i:1}"
+        case "$c" in "\\"|'*'|'?'|'[') out+="\\" ;; esac
+        out+="$c"
+    done
+    printf '%s' "$out"
+}
+
 # mask_git_readonly: appends a read-only bind for every .git under the
 # project tree and every read-write extra bind (top level, submodules,
 # nested repositories) plus the real git directory each one points at.
@@ -185,6 +196,12 @@ git_dir_visible() {
 # several directories down, so it would not actually be safe, only
 # appear to be. There is no way to know "nothing changed" without a walk
 # at least as expensive as the one being avoided.
+#
+# A masked venv (VENV_MASKED, functions/python-env.sh) is pruned from the
+# walk. The session sees only an empty per-run directory there, so host
+# .git entries under it are unreachable, and a read-only bind nested in it
+# would land inside the session's own venv. Only paths actually masked are
+# pruned, so nothing unmasked is skipped.
 mask_git_readonly() {
     local entry real root start_ts end_ts elapsed j
     local -a masked=()
@@ -220,6 +237,14 @@ mask_git_readonly() {
     if [[ -n "${WORKTREE_DIR:-}" ]]; then
         roots+=("$WORKTREE_DIR")
     fi
+
+    local -a prune=()
+    local v
+    for v in ${VENV_MASKED[@]+"${VENV_MASKED[@]}"}; do
+        if [[ ${#prune[@]} -gt 0 ]]; then prune+=(-o); fi
+        prune+=(-path "$(find_path_pattern "$v")")
+    done
+    if [[ ${#prune[@]} -gt 0 ]]; then prune=(\( "${prune[@]}" \) -prune -o); fi
 
     for root in "${roots[@]}"; do
         start_ts="$(date +%s.%N)"
@@ -260,7 +285,7 @@ mask_git_readonly() {
                     echo "note: git dir $real lies outside the bound trees and is not mounted into the sandbox; pass --allow-external-gitdir to mount it read-only" >&2
                 fi
             fi
-        done < <(find "$root" -mindepth 1 -name .git -prune -print 2>/dev/null)
+        done < <(find "$root" -mindepth 1 ${prune[@]+"${prune[@]}"} -name .git -prune -print 2>/dev/null)
         end_ts="$(date +%s.%N)"
         elapsed="$(awk -v a="$start_ts" -v b="$end_ts" 'BEGIN { printf "%.3f", b - a }')"
         echo "git: scanned $root for .git entries in ${elapsed}s" >&2

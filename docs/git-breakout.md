@@ -15,9 +15,11 @@ configuration — not by a wrapper, allow-list, or the absence of a git binary.
 submodules, nested repos — plus the real gitdir a worktree/submodule `.git` *file*
 points at (`resolve_git_dir()`, `:62-81`). Apptainer sorts mounts shallowest-first,
 so these land after the read-write project bind. A gitdir outside every bound tree
-is left unmounted (unreachable) unless `--allow-external-gitdir`. The walk is
-uncached by design (`:115-125`): a `.git` the agent creates between runs must be
-masked on the next one.
+is left unmounted (unreachable) unless `--allow-external-gitdir`. A masked
+virtualenv (`functions/python-env.sh`) is pruned from the walk: the session
+sees an empty per-run directory there, so a `.git` under it on the host is
+unreachable. The walk is uncached by design (`:115-125`): a `.git` the agent
+creates between runs must be masked on the next one.
 
 **M** — live agent container mount table:
 

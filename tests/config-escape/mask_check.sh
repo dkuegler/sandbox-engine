@@ -41,7 +41,13 @@
 #     only modelRoles/cycleOrder merge back, only in the exact form omp
 #     itself writes, and a concurrent host-side change wins; an image
 #     missing the build-time native addons refuses; and a named profile
-#     or directory override reaching the sandbox refuses the run.
+#     or directory override reaching the sandbox refuses the run;
+#   - the virtualenv masks (functions/python-env.sh): every root-level
+#     venv gets an empty per-run directory unless git tracks files in it;
+#     a symlinked .venv is never bound over; the .git walk and the deep
+#     config sweep bind nothing inside a masked venv; a failed git read
+#     refuses; and a sandbox-created .venv is removed only by the last
+#     live run using it, never once the host wrote into it.
 #
 # What it cannot prove, and what needs apptainer: that the kernel actually
 # refuses writes through the read-only binds asserted here.
@@ -95,6 +101,12 @@ source "$REPO_ROOT/functions/omp-home.sh"
 source "$REPO_ROOT/functions/claude-json.sh"
 # shellcheck source=functions/claude-home.sh
 source "$REPO_ROOT/functions/claude-home.sh"
+# shellcheck source=functions/cleanup.sh
+source "$REPO_ROOT/functions/cleanup.sh"
+# shellcheck source=functions/git-mask.sh
+source "$REPO_ROOT/functions/git-mask.sh"
+# shellcheck source=functions/python-env.sh
+source "$REPO_ROOT/functions/python-env.sh"
 
 RUN_DIR="$W/run"
 mkdir -p "$RUN_DIR" || fail_setup "mkdir RUN_DIR"
@@ -721,6 +733,163 @@ O_ENV=PI_CODING_AGENT_DIR=/x o_refuses && o_fail=1
 [[ "$o_fail" -eq 0 ]] \
     && ok O6 "a named profile or directory override that reaches the sandbox refuses; the default profile, and host-only variables, run" \
     || bad O6 "profile/override refusal is wrong"
+
+# --- V: host virtualenv masks (functions/python-env.sh) -----------------
+# A host venv at a checkout's root is gitignored code the human's next host
+# session runs: the session gets an empty per-run directory over it instead,
+# never the host's. A .venv sandbox runs create as a mount point is shared
+# state between concurrent runs and goes only with the last live one. The
+# registry lives at $W/home/.agent/venv-mounts ($HOME is redirected above).
+# Registered release hooks never fire here (cleanup_all owns this suite's
+# EXIT trap): each case calls venv_mounts_release itself.
+# v_src_of DST: source of a read-write bind whose destination is DST.
+v_src_of() { local b; for b in "${BINDS[@]}"; do [[ "$b" == -B ]] && continue; [[ "$b" == *":$1" ]] && { printf '%s' "${b%%:*}"; return 0; }; done; printf ''; }
+v_host="${HOSTNAME:-$(uname -n)}"
+# v_fresh_run: the per-run state a new sandbox.sh starts with.
+v_fresh_run() { BINDS=() VENV_MASKED=() VENV_REGISTERED=(); }
+VREPO="$W/venvrepo"
+mkdir -p "$VREPO/tracked-env" "$VREPO/.venv/lib/pkg" "$VREPO/venv" "$VREPO/data" "$VREPO/sub"
+git init --quiet "$VREPO"
+printf 'x\n' >"$VREPO/f"
+printf 'home = /usr/bin\n' >"$VREPO/tracked-env/pyvenv.cfg"
+git -C "$VREPO" add f tracked-env/pyvenv.cfg
+git -C "$VREPO" commit --quiet -m "venv fixture"
+printf 'home = /usr/bin\n' >"$VREPO/.venv/pyvenv.cfg"
+printf 'package doc\n' >"$VREPO/.venv/lib/pkg/AGENTS.md"
+printf 'home = /usr/bin\n' >"$VREPO/venv/pyvenv.cfg"
+printf 'data\n' >"$VREPO/data/README"
+printf 'deep untracked plant\n' >"$VREPO/sub/CLAUDE.md"
+ln -s venv "$VREPO/linked"
+BINDS=() RO_MASKED=() VENV_MASKED=() SANDBOX_WARNINGS=() CFG_MASK_STATE=() CFG_MASK_PATH=() CFG_MASK_OWNER=()
+mask_project_venvs "$VREPO" 1 2>/dev/null
+mask_project_agent_config "$VREPO"
+
+v1_dot="$(v_src_of "$VREPO/.venv")" v1_venv="$(v_src_of "$VREPO/venv")"
+[[ "$v1_dot" == "$RUN_DIR/venvmask/"* && "$v1_venv" == "$RUN_DIR/venvmask/"* && "$v1_dot" != "$v1_venv" \
+   && -d "$v1_dot" && -d "$v1_venv" && -z "$(ls -A "$v1_dot")" && -z "$(ls -A "$v1_venv")" ]] \
+    && ok V1 "a root .venv and a root pyvenv.cfg directory each get their own empty per-run directory" \
+    || bad V1 "a host virtualenv was not masked by a fresh, empty per-run directory"
+[[ -z "$(v_src_of "$VREPO/tracked-env")" && -z "$(v_src_of "$VREPO/data")" && -z "$(v_src_of "$VREPO/linked")" ]] \
+   && printf '%s\n' ${SANDBOX_WARNINGS[@]+"${SANDBOX_WARNINGS[@]}"} | grep -q tracked-env \
+    && ok V2 "a git-tracked venv (warned about), a directory without pyvenv.cfg and a symlink to a venv are not masked" \
+    || bad V2 "tracked work, a plain directory or a symlinked venv was masked, or the tracked one went unwarned"
+# Only the checkout the agent works in may get a fresh .venv, and only one
+# with no venv at all.
+NOV="$W/novenv"
+git init --quiet "$NOV"
+ONLYV="$W/onlyvenv"
+mkdir -p "$ONLYV/venv"
+printf 'home = /usr/bin\n' >"$ONLYV/venv/pyvenv.cfg"
+v3=0
+v_fresh_run; mask_project_venvs "$NOV" 0 2>/dev/null
+[[ ! -e "$NOV/.venv" && ${#VENV_MASKED[@]} -eq 0 ]] || v3=1
+v_fresh_run; mask_project_venvs "$NOV" 1 2>/dev/null
+v3_canon="$(readlink -f "$NOV")/.venv"
+[[ -d "$NOV/.venv" && -n "$(v_src_of "$NOV/.venv")" ]] || v3=1
+[[ ${#VENV_REGISTERED[@]} -eq 1 && "${VENV_REGISTERED[0]}" == "$v3_canon" ]] || v3=1
+[[ -e "$(venv_registry_entry "$v3_canon")/users/$v_host.$$" ]] || v3=1
+# Without v_fresh_run: NOV's registration must survive for V8.
+BINDS=() VENV_MASKED=(); mask_project_venvs "$ONLYV" 1 2>/dev/null
+[[ -n "$(v_src_of "$ONLYV/venv")" && ! -e "$ONLYV/.venv" && ${#VENV_REGISTERED[@]} -eq 1 ]] || v3=1
+[[ "$v3" -eq 0 ]] \
+    && ok V3 "a .venv mount point is created and registered only with CREATE=1 in a checkout with no venv" \
+    || bad V3 "a .venv was created where it must not be, or not created and registered where it must"
+venv_mounts_release 2>/dev/null
+[[ ! -e "$NOV/.venv" && ${#VENV_REGISTERED[@]} -eq 0 \
+   && -z "$(find "$HOME/.agent/venv-mounts" -mindepth 1 -maxdepth 1 ! -name .lock)" ]] \
+    && ok V8 "the last run out removes the .venv it created, and its registry entry" \
+    || bad V8 "a sandbox-created .venv or its registry entry outlived the last run using it"
+LNV="$W/linkvenv"
+mkdir -p "$LNV" "$W/elsewhere-venv"
+printf 'home = /usr/bin\n' >"$W/elsewhere-venv/pyvenv.cfg"
+ln -s "$W/elsewhere-venv" "$LNV/.venv"
+v_fresh_run; SANDBOX_WARNINGS=(); mask_project_venvs "$LNV" 1 2>/dev/null
+[[ -L "$LNV/.venv" && ${#VENV_MASKED[@]} -eq 0 && ${#SANDBOX_WARNINGS[@]} -gt 0 ]] \
+    && ok V4 "a symlinked .venv is warned about, not bound over and not replaced" \
+    || bad V4 "a symlinked .venv was bound over, replaced, or passed without a warning"
+[[ "$(mask_state_of "$VREPO/.venv/lib/pkg/AGENTS.md")" == missing \
+   && "$(mask_state_of "$VREPO/sub/CLAUDE.md")" == hidden ]] \
+    && ok V5 "the deep config sweep binds nothing inside a masked venv, and still runs elsewhere" \
+    || bad V5 "an instruction file inside a masked venv got a nested bind, or the sweep stopped"
+# A nested .git inside a masked venv is unreachable in the session; a
+# read-only bind for it would land in the session's own venv. The [ in
+# the name proves the prune pattern is escaped.
+VG="$W/venv[git]"
+mkdir -p "$VG/.venv"
+git init --quiet "$VG"
+printf 'home = /usr/bin\n' >"$VG/.venv/pyvenv.cfg"
+git init --quiet "$VG/.venv/src/dep"
+# v6_binds MASK: BINDS after mask_git_readonly on VG, with the venv mask
+# applied first when MASK is 1.
+v6_binds() {
+    (
+        # shellcheck disable=SC2034  # subshell-local; read by mask_git_readonly
+        PROJECT_DIR="$VG" EXTRA_BIND_SRCS=() EXTRA_BIND_RO=() ALLOW_EXTERNAL_GITDIR=0 BINDS=() VENV_MASKED=()
+        if [[ "$1" -eq 1 ]]; then mask_project_venvs "$VG" 1 2>/dev/null; fi
+        mask_git_readonly 2>/dev/null
+        printf '%s\n' "${BINDS[@]}"
+    )
+}
+v6_on="$(v6_binds 1)" v6_off="$(v6_binds 0)"
+grep -qxF -- "$VG/.git:$VG/.git:ro" <<<"$v6_on" \
+   && ! grep -qxF -- "$VG/.venv/src/dep/.git:$VG/.venv/src/dep/.git:ro" <<<"$v6_on" \
+   && grep -qxF -- "$VG/.venv/src/dep/.git:$VG/.venv/src/dep/.git:ro" <<<"$v6_off" \
+    && ok V6 "the .git walk prunes exactly the masked venvs (glob characters in the path escaped)" \
+    || bad V6 "the .git walk bound inside a masked venv, or skipped a .git it should mask"
+(
+    # shellcheck disable=SC2317  # invoked indirectly, as the `git` shadow inside this subshell
+    git() { [[ "$*" == *"ls-files --cached"* ]] && return 1; command git "$@"; }
+    v_fresh_run
+    mask_project_venvs "$VREPO" 1
+) >/dev/null 2>&1 \
+    && bad V7 "a failed tracked-file read was taken as an answer" \
+    || ok V7 "a failed tracked-file read refuses the run"
+# Concurrent runs in one checkout share a sandbox-created .venv.
+NOC="$W/concurrent"
+git init --quiet "$NOC"
+v_fresh_run; mask_project_venvs "$NOC" 1 2>/dev/null
+v_entry="$(venv_registry_entry "$(readlink -f "$NOC")/.venv")"
+sleep 300 &
+v_live=$!
+: >"$v_entry/users/$v_host.$v_live"
+venv_mounts_release 2>/dev/null
+[[ -d "$NOC/.venv" && ! -e "$v_entry/users/$v_host.$$" && -e "$v_entry/users/$v_host.$v_live" ]] \
+    && ok V9 "a live concurrent user keeps a sandbox-created .venv; this run's own record goes" \
+    || bad V9 "a run removed a .venv another live run still mounts over, or kept its own record"
+kill "$v_live"
+wait "$v_live" 2>/dev/null
+# The foreign user's pid is dead HERE: only its host makes it count as live.
+: >"$v_entry/users/other-host.example.$v_live"
+v_fresh_run; mask_project_venvs "$NOC" 1 2>/dev/null
+v10_src="$(v_src_of "$NOC/.venv")"
+v10_reg="${VENV_REGISTERED[*]-}"
+venv_mounts_release 2>/dev/null
+[[ -n "$v10_src" && "$v10_reg" == "$(readlink -f "$NOC")/.venv" && -d "$NOC/.venv" \
+   && ! -e "$v_entry/users/$v_host.$v_live" ]] \
+    && ok V10 "a new run joins a sandbox-created .venv; a foreign-host user keeps it; a dead same-host user is pruned" \
+    || bad V10 "a run did not join, removed a .venv a foreign host still uses, or kept a dead user"
+rm -f "$v_entry/users/other-host.example.$v_live"
+v_fresh_run; mask_project_venvs "$NOC" 1 2>/dev/null
+venv_mounts_release 2>/dev/null
+[[ ! -e "$NOC/.venv" && ! -e "$v_entry" ]] \
+    && ok V11 "the last live run removes a leftover sandbox-created .venv and its entry" \
+    || bad V11 "a leftover sandbox-created .venv or its entry survived the last live run"
+HUM="$W/humanvenv"
+mkdir -p "$HUM/.venv"
+v_fresh_run; mask_project_venvs "$HUM" 1 2>/dev/null
+v12_src="$(v_src_of "$HUM/.venv")" v12_reg=${#VENV_REGISTERED[@]}
+venv_mounts_release 2>/dev/null
+[[ -n "$v12_src" && "$v12_reg" -eq 0 && -d "$HUM/.venv" ]] \
+    && ok V12 "a pre-existing empty .venv is masked and never removed" \
+    || bad V12 "a .venv the sandbox did not create was registered or removed"
+NOF="$W/filledvenv"
+git init --quiet "$NOF"
+v_fresh_run; mask_project_venvs "$NOF" 1 2>/dev/null
+: >"$NOF/.venv/host-file"
+venv_mounts_release 2>/dev/null
+[[ -e "$NOF/.venv/host-file" && ! -e "$(venv_registry_entry "$(readlink -f "$NOF")/.venv")" ]] \
+    && ok V13 "a sandbox-created .venv filled on the host is never deleted; its entry goes" \
+    || bad V13 "a filled .venv was deleted, or its registry entry outlived the run"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

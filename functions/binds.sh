@@ -800,7 +800,12 @@ mask_project_agent_config() {
     # table already covered are skipped rather than bound twice, and so is
     # anything inside a table directory: that entry already decides its
     # whole content, and a second bind nested in it could land in an
-    # empty placeholder that has no mount point for it.
+    # empty placeholder that has no mount point for it. Anything inside a
+    # masked venv (VENV_MASKED, functions/python-env.sh) is skipped too:
+    # the session sees an empty per-run directory there, and a nested
+    # read-only placeholder (a package's site-packages/pkg/AGENTS.md)
+    # would land inside the session's venv and make that package's
+    # install fail with EROFS.
     local deep="$RUN_DIR/cfgmask-snap/deep-paths"
     if ! config_deep_instruction_paths "$dir" "$deep"; then
         printf '%s%s\n' "sandbox: cannot enumerate the deep instruction files of $dir -- " \
@@ -812,6 +817,9 @@ mask_project_agent_config() {
         under=0
         for d in ${table_dirs[@]+"${table_dirs[@]}"}; do
             [[ "$rel" == "$d"/* ]] && { under=1; break; }
+        done
+        for d in ${VENV_MASKED[@]+"${VENV_MASKED[@]}"}; do
+            [[ "$dir/$rel" == "$d"/* ]] && { under=1; break; }
         done
         [[ "$under" -eq 1 ]] && continue
         seen["$rel"]=1
