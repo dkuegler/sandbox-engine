@@ -111,6 +111,45 @@ renders untracked files with `git diff --no-index` instead, which never opens
 the object database for writing, so a rejected run leaves the main
 repository's objects and index byte-for-byte unchanged.
 
+## Commit message file
+
+The agent writes its proposed message to `$HOME/.sandbox-commit-message` inside
+the container. That path is a single-file read-write bind of
+`~/.agent/worktrees/<project>-<hash>/.commit-message-<branch digest>` on the
+host, beside the lock: outside the worktree, so the message cannot be swept
+into the commit it describes, and its directory is never bound, so the bind
+reaches no other host file (`worktree_message_file_ensure()`,
+`functions/worktree.sh`; the bind is in `configure_agent()`,
+`functions/agents.sh`).
+
+The file belongs to the worktree, not to one run (`M`, `worktree_check.sh`
+W3c, W6b, W12f, W13c):
+
+| event | message file |
+| --- | --- |
+| worktree created | emptied: anything there was left by an earlier worktree on that branch name |
+| re-run from the reject menu, or resumed by a later `--worktree` run after keep or a crash | kept as the earlier session left it |
+| commit lands | deleted |
+| discard | deleted |
+
+A carried-over message can be stale, so the agent is told the file may already
+hold an earlier session's message and to revise it, and the review labels a
+message whose bytes did not change during the session under review as
+`written by the agent in an earlier session, unchanged in this one` (`M`, W9b,
+W9c). The file's hash is taken as each session starts
+(`worktree_message_snapshot()`).
+
+**A symlink or any other non-regular file at the host path refuses the run.**
+A bind follows a symlinked source to its target (`D`; same reasoning as
+`project-config-masking.md`), so a link there would bind whatever it names
+read-write into the container, and emptying it at creation would truncate that
+target. Checked when the worktree is prepared and again immediately before the
+bind, since the image build runs in between (`M`, W6c: refused, the target's
+content and mode unchanged).
+
+Carrying the message forward opens no new channel into the next session: that
+session already reads everything the previous one left in the worktree (`D`).
+
 ## Branch names
 
 `M` — `git check-ref-format` is not sufficient validation on its own. It
@@ -246,7 +285,7 @@ flock -n lock.file -c true && echo "released once the child is gone"
 
 ## Status of the container-side half
 
-`M` — the read-only binds are produced, verified host-side (42/42,
+`M` — the read-only binds are produced, verified host-side (49/49,
 `worktree_check.sh`). `M` — the assertions can fail: the negative control
 fails all seven worktree assertions with no mask. `D` — that the kernel
 refuses writes through these particular binds from inside a live container

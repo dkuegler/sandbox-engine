@@ -35,7 +35,9 @@ expected to *fail* its assertions (see below).
   stale and foreign-host takeover), that the writable worktree cannot
   reopen a path to the main repository's history, diff rendering and
   commit-message generation (including per-agent flag/tool lockdown),
-  and the host-side commit landing on `agent/<branch>`.
+  the agent's message file across sessions (kept on resume, emptied on
+  create, labelled when unchanged, deleted on commit and discard, a
+  symlink refused), and the host-side commit landing on `agent/<branch>`.
 - **`sanitize_check.sh`** — the credential/URL sanitizer
   (`sanitize_git_config`/`redact_urls`/`sanitize_gitdir_metadata`,
   `functions/git-mask.sh`) against real fixtures: project, submodule,

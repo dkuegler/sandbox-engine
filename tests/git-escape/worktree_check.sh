@@ -19,6 +19,10 @@
 #   - rendering a diff state writes nothing into the main repository;
 #   - the host-side commit lands on agent/<branch> in the main repository;
 #   - discarding never silently deletes a branch carrying real commits;
+#   - the agent's commit-message file survives a resumed run, is never
+#     inherited by a new worktree, refuses to be a symlink, is labelled at
+#     the gate when a session left it unchanged, and goes away once the
+#     commit lands or the worktree is discarded;
 #   - the commit-message fallback is generated INSIDE the sandbox, with
 #     the agent's own tools disabled and with neither the project checkout
 #     nor the worktree mounted (it is fed an agent-authored diff, so both
@@ -148,6 +152,10 @@ TWIN_WT_DIR="$(cat "$W/twin_dir" 2>/dev/null)"
     || bad W2b "unexpected ref '$MAIN_WT_REF'"
 
 # --- W3: create ----------------------------------------------------------
+# A message left by an earlier worktree on this branch name (landed and
+# cleaned up by hand) must not be offered as the new worktree's message.
+mkdir -p "$(dirname "$WORKTREE_MSG_HOST")"
+printf 'Stale title\n' > "$WORKTREE_MSG_HOST"
 worktree_prepare >/dev/null 2>&1 || bad W3 "worktree_prepare failed to create the worktree"
 [[ -d "$WORKTREE_DIR" ]] \
     && git -C "$W/main" show-ref --verify --quiet "refs/heads/$WORKTREE_REF" \
@@ -156,6 +164,10 @@ worktree_prepare >/dev/null 2>&1 || bad W3 "worktree_prepare failed to create th
 [[ -f "$WORKTREE_DIR/tracked.txt" && ! -e "$WORKTREE_DIR/ignored" ]] \
     && ok W3b "the worktree is a checkout of HEAD (tracked content present)" \
     || bad W3b "the worktree does not look like a HEAD checkout"
+[[ -f "$WORKTREE_MSG_HOST" && ! -L "$WORKTREE_MSG_HOST" && ! -s "$WORKTREE_MSG_HOST" \
+    && "$(stat -c %a "$WORKTREE_MSG_HOST")" == 600 ]] \
+    && ok W3c "create: the message file starts empty and private; a stale one is not inherited" \
+    || bad W3c "create left the message file missing, non-empty or not 0600: $WORKTREE_MSG_HOST"
 
 # --- W4: a second concurrent run is refused while the first holds the lock
 # This is the gap git's own exclusivity check does not cover: it guards
@@ -209,11 +221,32 @@ rm -rf "$WORKTREE_LOCK"
 
 # --- W6: resume ----------------------------------------------------------
 WORKTREE_LOCK_HELD=0
+printf 'Earlier title\n\nIssue:\ne\n\nSolution:\ne\n' > "$WORKTREE_MSG_HOST"
 resume_out="$(worktree_prepare 2>&1)"; resume_rc=$?
 [[ "$resume_rc" -eq 0 && "$resume_out" == *resuming* ]] \
     && ok W6 "resume: an existing worktree+branch pair is reattached, not recreated" \
     || bad W6 "resume failed (rc=$resume_rc): $resume_out"
 worktree_lock_release
+grep -q 'Earlier title' "$WORKTREE_MSG_HOST" \
+    && ok W6b "resume: the earlier session's commit message is kept for the resumed one" \
+    || bad W6b "resume lost the earlier session's commit message"
+
+# --- W6c: a symlinked message file is refused, never followed ------------
+# It is bound read-write into the container and a bind follows a symlinked
+# source, so a link here would hand the agent the file it points at.
+# "reset" is the destructive variant: following the link would also empty
+# the target.
+mv "$WORKTREE_MSG_HOST" "$W/msg.saved"
+printf 'host file\n' > "$W/victim"
+chmod 644 "$W/victim"
+ln -s "$W/victim" "$WORKTREE_MSG_HOST"
+w6c_out="$( (worktree_message_file_ensure reset) 2>&1 )"; w6c_rc=$?
+[[ "$w6c_rc" -ne 0 && "$w6c_out" == *"not a regular file"* \
+    && "$(cat "$W/victim")" == "host file" && "$(stat -c %a "$W/victim")" == 644 ]] \
+    && ok W6c "a symlinked message file refuses the run and its target is untouched" \
+    || bad W6c "a symlinked message file was followed or accepted (rc=$w6c_rc): $w6c_out"
+rm -f "$WORKTREE_MSG_HOST"
+mv "$W/msg.saved" "$WORKTREE_MSG_HOST"
 
 # --- W7: the security assertion ------------------------------------------
 # Every path a worktree's history is reachable through must be masked
@@ -297,7 +330,6 @@ grep -q 'build junk' "$W/diff_state.txt" \
     || ok W8d "the diff state omits .gitignore'd content, matching what the commit will contain"
 
 # --- W9: the agent's own message is used verbatim, fallback untouched ----
-WORKTREE_MSG_HOST="$W/agent-msg"
 printf 'Agent title\n\nIssue:\nx\n\nSolution:\ny\n' > "$WORKTREE_MSG_HOST"
 # A generator that would be a hard failure if it ran at all.
 mkdir -p "$W/bin"
@@ -310,6 +342,20 @@ if grep -q 'Agent title' "$W/msg.final" && ! grep -q 'GENERATOR-RAN' "$W/msg.fin
 else
     bad W9 "agent-written message was not used verbatim"
 fi
+
+# --- W9b: a carried-over message is used, and labelled when unchanged ----
+# The file outlives sessions, so the gate must say when the message is an
+# earlier session's that the session under review never touched.
+worktree_message_snapshot
+worktree_resolve_message "$W/msg.final" "$W/diff_state.txt" >/dev/null 2>&1
+[[ "$WORKTREE_MSG_SOURCE" == *"earlier session"* ]] && grep -q 'Agent title' "$W/msg.final" \
+    && ok W9b "a message no session revised is still used, labelled as an earlier session's" \
+    || bad W9b "carried-over message mishandled: source='$WORKTREE_MSG_SOURCE'"
+printf 'Revised title\n\nIssue:\nx\n\nSolution:\ny\n' > "$WORKTREE_MSG_HOST"
+worktree_resolve_message "$W/msg.final" "$W/diff_state.txt" >/dev/null 2>&1
+[[ "$WORKTREE_MSG_SOURCE" == "written by the agent" ]] && grep -q 'Revised title' "$W/msg.final" \
+    && ok W9c "a message the session revised is labelled as written by the agent" \
+    || bad W9c "revised message mislabelled: source='$WORKTREE_MSG_SOURCE'"
 
 # --- W10: empty agent file -> generation INSIDE the sandbox --------------
 # The diff handed to the generator is agent-authored text. Generating on
@@ -501,6 +547,7 @@ fi
 
 # --- W12: the approved commit lands on agent/<branch> in the MAIN repo ---
 printf 'Test commit\n\nIssue:\ni\n\nSolution:\ns\n' > "$W/msg.final"
+printf 'Test commit\n' > "$WORKTREE_MSG_HOST"
 before_sha="$(git -C "$W/main" rev-parse "refs/heads/$WORKTREE_REF" 2>/dev/null)"
 worktree_commit "$W/msg.final" >/dev/null 2>&1
 after_sha="$(git -C "$W/main" rev-parse "refs/heads/$WORKTREE_REF" 2>/dev/null)"
@@ -524,8 +571,12 @@ master_now="$(git -C "$W/main" rev-parse "refs/heads/$master_ref" 2>/dev/null)"
 [[ "$master_now" == "$before_sha" ]] \
     && ok W12e "the main branch $master_ref is untouched by the commit" \
     || bad W12e "the main branch moved"
+[[ ! -e "$WORKTREE_MSG_HOST" ]] \
+    && ok W12f "a landed commit deletes the spent message file" \
+    || bad W12f "the committed message is still offered to the next session: $WORKTREE_MSG_HOST"
 
 # --- W13: discard refuses to drop a branch carrying real commits ---------
+printf 'Rejected title\n' > "$WORKTREE_MSG_HOST"
 worktree_discard >/dev/null 2>&1
 [[ ! -d "$WORKTREE_DIR" ]] \
     && ok W13 "discard removed the worktree" \
@@ -533,6 +584,9 @@ worktree_discard >/dev/null 2>&1
 git -C "$W/main" show-ref --verify --quiet "refs/heads/$WORKTREE_REF" \
     && ok W13b "discard KEPT a branch holding unmerged commits instead of deleting it" \
     || bad W13b "discard deleted a branch carrying commits -- silent data loss"
+[[ ! -e "$WORKTREE_MSG_HOST" ]] \
+    && ok W13c "discard deletes the message file along with the worktree" \
+    || bad W13c "discard left the message file behind: $WORKTREE_MSG_HOST"
 
 # --- W14: the refuse cases, which must never guess -----------------------
 # branch present, worktree gone (a landed run, or one moved by hand).

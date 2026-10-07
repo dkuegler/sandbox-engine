@@ -20,7 +20,13 @@
 #   WORKTREE_DIR           $HOME/.agent/worktrees/<project-key>/<branch>
 #   WORKTREE_PROJECT_MODE  ro|rw|deny -- how the main checkout is exposed
 #                          (see worktree_confirm_readonly_project)
-#   WORKTREE_MSG_HOST      host path of the agent's commit-message file
+#   WORKTREE_MSG_HOST      host path of the agent's commit-message file,
+#                          kept beside the worktree across sessions until a
+#                          commit lands or the worktree is discarded
+#   WORKTREE_MSG_START_HASH
+#                          hash of that file as the current agent session
+#                          started (worktree_message_snapshot), so the gate
+#                          can name a message this session left unchanged
 #   WORKTREE_REJECT_ACTION keep|discard|rerun, set by the reject menu
 #   WORKTREE_DIFF_STATE_HASH
 #                          hash of the diff state, recorded by
@@ -108,7 +114,7 @@ worktree_validate_branch() {
 # container starts, so a repository that cannot support the flow is
 # refused in the first second rather than after a full agent session.
 worktree_preflight() {
-    local top raw common key
+    local top raw common key bkey
     if ! command -v git >/dev/null 2>&1; then
         worktree_fail "no git binary on the host" \
             "the branch, worktree, review and commit steps all run host-side."
@@ -169,7 +175,8 @@ worktree_preflight() {
     # worktree: the worktree is bound into the container, its parent is
     # not, so the agent can neither read nor forge this. Keyed by a digest
     # of the branch name so "feat/x" and "feat-x" cannot share a lock.
-    WORKTREE_LOCK="$HOME/.agent/worktrees/$key/.lock-$(printf '%s' "$WORKTREE_BRANCH" | sha256sum | cut -c1-12)"
+    bkey="$(printf '%s' "$WORKTREE_BRANCH" | sha256sum | cut -c1-12)"
+    WORKTREE_LOCK="$HOME/.agent/worktrees/$key/.lock-$bkey"
     # Persistent log of rendered pre-review tree state: appended on every
     # pass (initial render, pre-commit recheck) so a hash mismatch can be
     # diffed after the fact. Lives beside the worktree, never inside it --
@@ -177,7 +184,15 @@ worktree_preflight() {
     # read nor forge this log, and it survives a kept/rejected worktree.
     WORKTREE_PREREVIEW_STATE_LOG="$HOME/.agent/worktrees/$key/.state-render.log"
     WORKTREE_PROJECT_MODE=ro
-    WORKTREE_MSG_HOST=""
+    # The agent's proposed commit message belongs to the worktree, not to
+    # one run: a re-run from the reject menu, or a later run resuming a
+    # kept or crashed worktree, starts from what the earlier session wrote.
+    # Beside the worktree like the lock, keyed the same way; only this one
+    # file is bound into the container (configure_agent, functions/agents.sh),
+    # never its directory. No ref component may start with ".", so no
+    # branch's worktree directory can take this name.
+    WORKTREE_MSG_HOST="$HOME/.agent/worktrees/$key/.commit-message-$bkey"
+    WORKTREE_MSG_START_HASH=""
     # Agent-created config candidates are decided per file at the approval
     # gate; these are the outcome arrays, defined from the start so
     # worktree_commit is behavior-identical when it is reached without a
@@ -345,6 +360,43 @@ worktree_lock_release() {
     fi
 }
 
+# worktree_message_file_ensure [reset]: make WORKTREE_MSG_HOST a private
+# regular file, creating it if absent and emptying it on "reset". It is
+# bound read-write into the container, and a bind follows a symlinked
+# source to its target, so a link here would hand the agent write access
+# to whatever it names: anything but a regular file refuses the run rather
+# than being followed, replaced or guessed about. Its directory is never
+# bound, so nothing inside the container can plant one; this is the guard
+# against everything outside it. Runs again right before the bind, because
+# the image build sits between worktree_prepare and configure_agent.
+worktree_message_file_ensure() {
+    local f="${WORKTREE_MSG_HOST:?worktree_preflight sets WORKTREE_MSG_HOST}"
+    # -L first: -f follows a link and would accept a link to a regular file.
+    if [[ -L "$f" ]] || { [[ -e "$f" ]] && [[ ! -f "$f" ]]; }; then
+        worktree_fail "$f is not a regular file" \
+            "it holds the agent's proposed commit message and is bound read-write into" \
+            "the container, so a link or special file there is never followed." \
+            "Inspect it and remove it yourself; the next run creates a fresh one."
+    fi
+    if [[ "${1:-}" == reset || ! -e "$f" ]]; then
+        (umask 077 && : >"$f") || worktree_fail "could not create $f"
+    fi
+    chmod 600 "$f" || worktree_fail "could not make $f private"
+}
+
+# worktree_message_file_remove: the message file's lifecycle ends with the
+# worktree's work -- a landed commit or a discard. Never fails its caller:
+# by then the commit has landed or the worktree is gone, so a leftover is
+# reported rather than fatal. rm on a link removes the link, never its
+# target.
+worktree_message_file_remove() {
+    local f="${WORKTREE_MSG_HOST:-}"
+    [[ -n "$f" ]] || return 0
+    rm -f -- "$f" 2>/dev/null \
+        || echo "worktree: could not remove the spent commit message $f; remove it yourself" >&2
+    return 0
+}
+
 # worktree_prepare: the branch-collision policy, evaluated before the
 # container runs.
 #
@@ -366,6 +418,11 @@ worktree_lock_release() {
 # additionally atomic on git's side, so the worst case was a confusing
 # error rather than damage -- but a lock taken after the read it is
 # supposed to protect is not a lock.
+#
+# The agent's commit-message file follows the same policy: RESUME keeps
+# it, so the resumed session starts from the message the earlier one
+# wrote; CREATE empties it, because anything left there belonged to an
+# earlier worktree on this branch name, whose work is no longer here.
 worktree_prepare() {
     local ref_exists=0 dir_exists=0 checked_out sha where
     worktree_lock_acquire
@@ -383,6 +440,7 @@ worktree_prepare() {
                 "repair or remove it yourself:" \
                 "  git -C $WORKTREE_REPO_ROOT worktree remove --force $WORKTREE_DIR"
         fi
+        worktree_message_file_ensure
         echo "worktree: resuming $WORKTREE_REF in $WORKTREE_DIR (left by an earlier run)" >&2
         return 0
     fi
@@ -407,6 +465,7 @@ worktree_prepare() {
     fi
 
     mkdir -p "$(dirname "$WORKTREE_DIR")"
+    worktree_message_file_ensure reset
     # git's own exclusivity check lives here: if HEAD's branch, or
     # agent/<branch>, is already checked out elsewhere, this refuses rather
     # than racing.
@@ -634,18 +693,36 @@ worktree_placeholder_message() {
     chmod 600 "$out"
 }
 
+# worktree_message_snapshot: hash the agent's message file as an agent
+# session starts. The file outlives sessions, so "written by the agent" no
+# longer tells the human whether the message was written for the change
+# under review; worktree_resolve_message compares against this hash to
+# name a message this session left untouched. An unreadable file records
+# no hash, which only ever drops that note, never adds it.
+worktree_message_snapshot() {
+    WORKTREE_MSG_START_HASH="$(sha256sum -- "${WORKTREE_MSG_HOST:-}" 2>/dev/null | cut -d' ' -f1)" \
+        || WORKTREE_MSG_START_HASH=""
+}
+
 # worktree_resolve_message OUT STATE: agent-written file if it has
 # content, sandboxed generation if not. STATE is the summarized diff
 # state of the repo (worktree_render_state's output) handed to the
 # generator when one is needed. Sets WORKTREE_MSG_SOURCE, which the
 # approval gate shows the human -- "who wrote this message" is part of what
-# is being approved.
+# is being approved, and so is "when": a message whose bytes match
+# worktree_message_snapshot's hash was carried over from an earlier
+# session and may not describe what that session added.
 worktree_resolve_message() {
     local out="$1" state="$2" src="${WORKTREE_MSG_HOST:-}"
     if [[ -n "$src" && -f "$src" ]] && grep -q '[^[:space:]]' "$src" 2>/dev/null; then
         cp "$src" "$out"
         chmod 600 "$out"
-        WORKTREE_MSG_SOURCE="written by the agent"
+        if [[ -n "${WORKTREE_MSG_START_HASH:-}" \
+            && "$(sha256sum -- "$out" | cut -d' ' -f1)" == "$WORKTREE_MSG_START_HASH" ]]; then
+            WORKTREE_MSG_SOURCE="written by the agent in an earlier session, unchanged in this one"
+        else
+            WORKTREE_MSG_SOURCE="written by the agent"
+        fi
         return 0
     fi
     echo "worktree: the agent left ~/$WORKTREE_MSG_NAME empty; generating a message in the sandbox" >&2
@@ -960,6 +1037,9 @@ worktree_commit() {
         worktree_fail "git commit failed in $WORKTREE_DIR" \
             "the worktree is intact; nothing was committed."
     fi
+    # The message has landed. A later session on this worktree (kept for
+    # its ignored leftovers) starts from an empty file, not from this one.
+    worktree_message_file_remove
 }
 
 # worktree_print_next_steps: pushing is the human's action, always. Name
@@ -1059,6 +1139,7 @@ worktree_discard() {
         rm -rf "$WORKTREE_DIR"
     fi
     git -C "$WORKTREE_REPO_ROOT" worktree prune
+    worktree_message_file_remove
     if git -C "$WORKTREE_REPO_ROOT" branch -d "$WORKTREE_REF" >/dev/null 2>&1; then
         echo "worktree: discarded $WORKTREE_DIR and deleted $WORKTREE_REF" >&2
         return 0
@@ -1080,7 +1161,8 @@ worktree_report_keep() {
         echo "    inspect: git -C $WORKTREE_DIR status"
         echo "    resume:  re-run with --worktree $WORKTREE_BRANCH"
         echo "    drop:    git -C $WORKTREE_REPO_ROOT worktree remove --force $WORKTREE_DIR &&"
-        echo "             git -C $WORKTREE_REPO_ROOT branch -D $WORKTREE_REF"
+        echo "             git -C $WORKTREE_REPO_ROOT branch -D $WORKTREE_REF &&"
+        echo "             rm -f $WORKTREE_MSG_HOST"
         echo
     } >&2
 }

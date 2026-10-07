@@ -258,8 +258,10 @@ generate_limitations_file() {
             echo "  is deliberate. A human reviews your change on the host after this"
             echo "  session exits and commits it there."
             echo "- **Write your proposed commit message to \`\$HOME/$WORKTREE_MSG_NAME\`**"
-            echo "  before you finish. It starts empty and is read back on the host. Use"
-            echo "  exactly this shape:"
+            echo "  before you finish. It is read back on the host and kept across runs on"
+            echo "  this worktree until a commit lands, so it may already hold an earlier"
+            echo "  session's message: revise that to describe the whole uncommitted change"
+            echo "  rather than replacing it with this session's part. Use exactly this shape:"
             echo
             worktree_message_template | sed 's/^/      /'
             echo
@@ -351,7 +353,8 @@ bind_augmented_instructions() {
                     ;;
             esac
             echo "- No commits: \`.git\` is read-only. Put the commit message in"
-            echo "  \`\$HOME/$WORKTREE_MSG_NAME\`; a human applies it on the host."
+            echo "  \`\$HOME/$WORKTREE_MSG_NAME\`, revising any message an earlier run left"
+            echo "  there; a human applies it on the host."
         } >>"$out"
     fi
     chmod 600 "$out"
@@ -591,15 +594,14 @@ configure_agent() {
         # --worktree mode: the one file in this whole sandbox the agent is
         # given read-WRITE for a purpose other than editing the project --
         # its own proposed commit message, read back on the host after the
-        # container exits (functions/worktree.sh). It lives in RUN_DIR, so
-        # remove_run_dir()/reap_orphaned_run_dirs() (functions/run-dir.sh)
-        # already own its lifecycle, and it is mounted under $HOME rather
-        # than in the worktree so it cannot end up inside the commit it
-        # describes.
+        # container exits (functions/worktree.sh). It is mounted under $HOME
+        # rather than in the worktree so it cannot end up inside the commit
+        # it describes. Its host copy sits beside the worktree and outlives
+        # this run, so the next session on this worktree starts from it;
+        # worktree_message_file_ensure() re-checks it immediately before the
+        # bind, because a symlinked bind source would be followed.
         if [[ -n "${WORKTREE_DIR:-}" ]]; then
-            WORKTREE_MSG_HOST="$RUN_DIR/commit-message"
-            : >"$WORKTREE_MSG_HOST"
-            chmod 600 "$WORKTREE_MSG_HOST"
+            worktree_message_file_ensure
             BINDS+=(-B "$WORKTREE_MSG_HOST:$HOME/$WORKTREE_MSG_NAME")
         fi
     fi
@@ -607,10 +609,11 @@ configure_agent() {
     # Everything appended to BINDS from here on is this agent's own
     # config/credential state, and nothing else: the project dir, the
     # worktree, the extra binds and the .git masks were all added by
-    # sandbox.sh before this function was called, and the two run-specific
-    # files above were added just now. sandbox.sh slices BINDS at this
-    # index into AGENT_CONFIG_BINDS, which is the whole bind set the
-    # sandboxed commit-message generator gets (functions/commit-message.sh)
+    # sandbox.sh before this function was called, and the limitations and
+    # commit-message files above were added just now. sandbox.sh slices
+    # BINDS at this index into AGENT_CONFIG_BINDS, which is the whole bind
+    # set the sandboxed commit-message generator gets
+    # (functions/commit-message.sh)
     # -- so a per-agent config bind added to the case below is carried
     # there automatically rather than having to be remembered twice.
     # shellcheck disable=SC2034  # AGENT_CONFIG_BIND_START is read by sandbox.sh after configure_agent returns

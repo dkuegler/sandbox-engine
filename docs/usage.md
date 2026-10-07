@@ -171,10 +171,13 @@ either the one the agent wrote to `$HOME/.sandbox-commit-message`, or one
 generated in a second, isolated container. Nothing is committed without your
 explicit approval, and nothing is pushed: an approved change becomes a commit
 on `agent/BRANCH`, and the run prints the push command. Rejecting offers to
-keep the worktree, re-run the agent in it, or discard it. Branch collisions are
-never guessed: a matching worktree and branch resume, and anything else
-refuses. Interactive use only. See `worktree-mode.md` and
-`commit-message-generation.md`.
+keep the worktree, re-run the agent in it, or discard it. The agent's message
+file belongs to the worktree: a re-run, or a later `--worktree BRANCH` that
+resumes a kept or crashed worktree, starts from the message the earlier
+session wrote, and the review says when a session left it unchanged. A commit
+or a discard deletes it. Branch collisions are never guessed: a matching
+worktree and branch resume, and anything else refuses. Interactive use only.
+See `worktree-mode.md` and `commit-message-generation.md`.
 
 ## Host state outside the checkout
 
@@ -182,7 +185,7 @@ refuses. Interactive use only. See `worktree-mode.md` and
 | --- | --- |
 | `$SANDBOX_ENGINE_IMAGE_DIR` (`~/.apptainer/images`) | images and their update-check cache |
 | `${TMPDIR:-/tmp}/sandbox-engine.*` | per-run scratch, removed at exit, reaped on the next run if a run was killed |
-| `~/.agent/worktrees/` | worktree mode: worktrees, locks, review log |
+| `~/.agent/worktrees/` | worktree mode: worktrees, locks, pending commit messages, review log |
 | `~/.agent/omp-logs/`, `~/.agent/omp-history/` | omp logs and prompt history, per project |
 | `~/.agent/opencode-share/` | opencode's data directory, per project |
 | `~/.agent/opencode-cache/` | opencode's cache directory (models.dev catalog etc.), per project |

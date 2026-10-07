@@ -218,6 +218,9 @@ fi
 WORKTREE_DIFF_STATE="$RUN_DIR/diff_state.txt"
 WORKTREE_MSG_FINAL="$RUN_DIR/commit-message.final"
 while true; do
+    # The message file outlives sessions; the gate names one this session
+    # left untouched.
+    worktree_message_snapshot
     log_argv "$SANDBOX_BACKEND argv" "${EXEC_ARGV[@]}"
     CONTAINER_RC=0
     "${EXEC_ARGV[@]}" || CONTAINER_RC=$?
@@ -253,8 +256,8 @@ while true; do
     worktree_reject_menu
     case "$WORKTREE_REJECT_ACTION" in
         rerun)
-            # Fresh message file, so the gate never shows a stale message.
-            : >"${WORKTREE_MSG_HOST:-/dev/null}"
+            # The message file is kept: the next session revises it, and
+            # the gate says so if it does not.
             echo "worktree: re-running the agent in $WORKTREE_DIR" >&2
             ;;
         discard)
