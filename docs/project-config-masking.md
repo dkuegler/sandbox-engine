@@ -669,8 +669,7 @@ sandbox: agent-config masking (the session sees a known config path's committed 
     <paths>
   hidden, not committed (the session sees nothing at these paths):
     <paths>
-  not present at launch, not bound (the agent may create files there; anything it creates is surfaced when the run ends):
-    <paths>
+  <N> config path(s) were not masked because they did not exist at launch
 ```
 
 It doubles as the plant tripwire: a config file that appeared in a checkout

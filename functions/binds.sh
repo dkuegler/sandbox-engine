@@ -857,10 +857,6 @@ report_config_masking() {
                 hidden)
                     label="hidden, not committed (the session sees nothing at these paths):"
                     ;;
-                unbound)
-                    label="not present at launch, not bound (the agent may create files"
-                    label+=" there; anything it creates is surfaced when the run ends):"
-                    ;;
             esac
             local -a lines=()
             for row in "${!CFG_MASK_STATE[@]}"; do
@@ -879,7 +875,11 @@ report_config_masking() {
                     fi
                 fi
             done
-            if [[ ${#lines[@]} -gt 0 ]]; then
+            if [[ ${#lines[@]} -eq 0 ]]; then
+                continue
+            elif [[ "$state" == unbound ]]; then
+                echo "  ${#lines[@]} config path(s) were not masked because they did not exist at launch"
+            else
                 echo "  $label"
                 printf '    %s\n' "${lines[@]}"
             fi
@@ -887,8 +887,8 @@ report_config_masking() {
         if [[ -n "${WORKTREE_DIR:-}" ]]; then
             echo "  (worktree mode: files the agent created at the unbound [worktree]" \
                 "paths are decided individually at the approval gate)"
-            # The unbound heading says the agent MAY create files there;
-            # for the main checkout that depends on how it is mounted.
+            # Whether the agent may create files at the unbound [main]
+            # paths depends on how the main checkout is mounted.
             case "${WORKTREE_PROJECT_MODE:-ro}" in
                 rw)
                     echo "  (the main checkout is mounted read-write this run: files the agent" \
