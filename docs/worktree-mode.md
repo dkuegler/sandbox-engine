@@ -91,6 +91,17 @@ commit message, requires an explicit `y` on `/dev/tty`, and only then runs
 `git add -A` + `git commit` with the host's own identity. There is no flag,
 environment variable or unattended path that skips the approval.
 
+The review is color-coded when stderr is a terminal (`NO_COLOR` or
+`TERM=dumb` turns it off; a redirected, logged run is plain text). Colors are
+applied after the agent-authored text is sanitized, so agent output cannot
+inject escape sequences. Immediately above the commit question,
+`worktree_print_change_summary()` lists every path the commit would carry
+with its full path (`status -uall`, so an untracked directory is expanded
+into its files). Gitignored paths are neither listed nor asked about: `git
+add -A` never stages them, and after an approved commit the worktree is
+removed together with whatever ignored content it holds. Anything not
+ignored that survives the commit still blocks the removal.
+
 Nothing is pushed. No forge credential and no real remote URL enters the
 container for this feature, and no host-side step here contacts a remote; an
 approved run prints the `git push` command for the human to run.

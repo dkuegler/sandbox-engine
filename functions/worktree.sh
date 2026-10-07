@@ -561,7 +561,7 @@ worktree_render_state() {
         # only thing standing between that and the human, so a review
         # that is quietly missing a section is worse than no review at
         # all.
-        if ! git -C "$WORKTREE_DIR" -c core.quotePath=false status --porcelain; then
+        if ! git -C "$WORKTREE_DIR" -c core.quotePath=false status --porcelain -uall; then
             worktree_fail "cannot read the status of $WORKTREE_DIR" \
                 "the worktree remains intact and nothing was committed."
         fi
@@ -734,6 +734,119 @@ worktree_resolve_message() {
     WORKTREE_MSG_SOURCE="placeholder (agent file empty, generation failed)"
 }
 
+# worktree_use_color: color only when the review is going to a terminal and
+# the user has not opted out (https://no-color.org). A logged run (stderr
+# redirected to a file) keeps plain text, so the audit trail has no escapes.
+# Colors are applied strictly AFTER sanitize_agent_display: that filter
+# strips ESC, so agent-authored text can never smuggle in its own sequences.
+worktree_use_color() {
+    [[ -t 2 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]
+}
+
+# worktree_colorize_state: stdin -> stdout, the rendered state
+# (worktree_render_state's format) with color. Status letters, "# ..."
+# section headers, and diff headers/hunks/added/removed lines each get a
+# color; nothing is added or dropped, so the text is the same modulo escapes.
+# File-content lines are told from diff headers by tracking whether a hunk
+# has started: inside a hunk a removed line "-- x" is content, not a header.
+worktree_colorize_state() {
+    if ! worktree_use_color; then
+        cat
+        return
+    fi
+    awk '
+    BEGIN {
+        E = sprintf("%c", 27)
+        R = E "[0m"; B = E "[1m"; RED = E "[31m"; GRN = E "[32m"
+        YEL = E "[33m"; MAG = E "[35m"; CYN = E "[36m"
+        sec = ""; hunk = 0
+    }
+    /^# status$/                { sec = "status"; hunk = 0; print B CYN $0 R; next }
+    /^# diff of tracked files/  { sec = "diff";   hunk = 0; print B CYN $0 R; next }
+    /^# new file: /             { sec = "diff";   hunk = 0; print B CYN $0 R; next }
+    sec == "status" {
+        if ($0 == "") { sec = ""; print; next }
+        x = substr($0, 1, 1); y = substr($0, 2, 1)
+        if (x == "?" || y == "?")      c = MAG
+        else if (x == "D" || y == "D") c = RED
+        else if (x == "A")             c = GRN
+        else                           c = YEL
+        print c $0 R; next
+    }
+    sec == "diff" {
+        if ($0 ~ /^diff --git /) { hunk = 0; print B $0 R; next }
+        if (!hunk) {
+            if ($0 ~ /^@@/) { hunk = 1; print CYN $0 R; next }
+            print B $0 R; next
+        }
+        if ($0 ~ /^@@/)      { print CYN $0 R; next }
+        if ($0 ~ /^\+/)      { print GRN $0 R; next }
+        if ($0 ~ /^-/)       { print RED $0 R; next }
+        print; next
+    }
+    { print }
+    '
+}
+
+# worktree_print_change_summary: the last thing shown before the commit
+# question -- every path the commit would carry, one line each, with its
+# FULL path. `-uall` is what makes that true: git's default collapses an
+# untracked directory into "dir/", which names no file and hides what is in
+# it. Gitignored paths are not listed: `git add -A` never stages them, so
+# they are not a difference the commit makes (status omits them by default).
+#
+# -z, captured to a file with the status checked, for the same reasons as
+# worktree_render_state: C-quoted paths name no file, and a failed read
+# must not look like "no changes".
+worktree_print_change_summary() {
+    local list="${RUN_DIR:?RUN_DIR must exist before the summary is rendered}/summary-status.z"
+    local rec x y path orig label c qp n=0
+    local R="" B="" RED="" GRN="" YEL="" MAG="" CYN=""
+    if worktree_use_color; then
+        R=$'\033[0m' B=$'\033[1m' RED=$'\033[31m' GRN=$'\033[32m'
+        YEL=$'\033[33m' MAG=$'\033[35m' CYN=$'\033[36m'
+    fi
+    if ! git -C "$WORKTREE_DIR" -c core.quotePath=false status --porcelain -z -uall >"$list"; then
+        worktree_fail "cannot list the changed files in $WORKTREE_DIR" \
+            "the worktree is intact and nothing was committed."
+    fi
+    {
+        echo
+        printf '%s--- files this commit would contain (gitignored paths excluded) ---%s\n' "$B$CYN" "$R"
+        while IFS= read -r -d '' rec; do
+            x="${rec:0:1}" y="${rec:1:1}" path="${rec:3}" orig=""
+            # A rename/copy record is followed by one more field: the old path.
+            if [[ "$x" == [RC] || "$y" == [RC] ]]; then
+                IFS= read -r -d '' orig || break
+            fi
+            if [[ "$x" == "?" ]]; then
+                label="new     " c="$MAG"
+            elif [[ "$x" == D || "$y" == D ]]; then
+                label="deleted " c="$RED"
+            elif [[ "$x" == A ]]; then
+                label="added   " c="$GRN"
+            elif [[ "$x" == R || "$y" == R ]]; then
+                label="renamed " c="$CYN"
+            else
+                label="modified" c="$YEL"
+            fi
+            printf -v qp '%q' "$path"
+            if [[ -n "$orig" ]]; then
+                printf -v orig '%q' "$orig"
+                qp="$orig -> $qp"
+            fi
+            printf '  %s%s  %s%s\n' "$c" "$label" "$qp" "$R"
+            n=$((n + 1))
+        done <"$list"
+        if [[ "$n" -eq 0 ]]; then
+            echo "  (none: only config-shaped or gitignored paths, decided above)"
+        else
+            printf '  %s%d file(s)%s\n' "$B" "$n" "$R"
+        fi
+        echo
+    } >&2
+}
+
 # worktree_approval_gate MSG STATE: mandatory. No flag, no environment
 # variable and no answer other than an explicit "y" commits anything, and
 # there is no unattended path at all -- a missing TTY refuses.
@@ -756,7 +869,7 @@ worktree_approval_gate() {
         sanitize_agent_display <"$msg"
         echo
         echo "--- change ($total lines) ---"
-        head -n "$WORKTREE_GATE_DIFF_LINES" "$state" | sanitize_agent_display
+        head -n "$WORKTREE_GATE_DIFF_LINES" "$state" | sanitize_agent_display | worktree_colorize_state
         if [[ "$total" -gt "$WORKTREE_GATE_DIFF_LINES" ]]; then
             echo
             echo "... truncated. Full change:"
@@ -891,6 +1004,7 @@ worktree_approval_gate() {
             fi
         done
     fi
+    worktree_print_change_summary
     if [[ -r /dev/tty ]]; then
         if printf 'Commit this onto %s in %s? [y/N] ' "$WORKTREE_REF" "$WORKTREE_REPO_ROOT" 2>/dev/null >/dev/tty; then
             read -r reply </dev/tty 2>/dev/null || reply=""
@@ -1065,13 +1179,12 @@ worktree_print_next_steps() {
 }
 
 # worktree_after_commit: the post-commit safety check. Everything not
-# ignored is in the commit by construction (git add -A above), so what can
-# still be in the worktree is .gitignore'd content -- reproducible by
-# definition, but not this script's to delete unasked. Anything NOT ignored
-# surviving a commit is an anomaly, so that case refuses removal outright
-# rather than asking.
+# ignored is in the commit by construction (git add -A above), so anything
+# NOT ignored surviving a commit is an anomaly: that case refuses removal
+# outright. Gitignored content is reproducible by definition and is not
+# reported or asked about; it is removed with the worktree.
 worktree_after_commit() {
-    local sha leftovers ignored count size reply
+    local sha leftovers
     sha="$(git -C "$WORKTREE_DIR" rev-parse --short HEAD 2>/dev/null)" || sha="?"
     echo "worktree: committed $sha onto $WORKTREE_REF in $WORKTREE_REPO_ROOT" >&2
 
@@ -1085,42 +1198,13 @@ worktree_after_commit() {
         return 0
     fi
 
-    ignored="$(git -C "$WORKTREE_DIR" status --porcelain --ignored 2>/dev/null | sed -n 's/^!! //p')" || ignored=""
-    if [[ -n "$ignored" ]]; then
-        count="$(printf '%s\n' "$ignored" | wc -l | tr -d '[:space:]')"
-        size="$(du -sh "$WORKTREE_DIR" 2>/dev/null | cut -f1)"
-        reply=""
-        {
-            echo
-            echo "The commit is in. $WORKTREE_DIR still holds $count ignored entr(y|ies) (${size:-size unknown} total):"
-            printf '%s\n' "$ignored" | head -n 20 | sed 's/^/    /'
-            echo
-        } >&2
-        if [[ -r /dev/tty ]]; then
-            if printf 'Remove the worktree and that ignored content? [y/N] ' 2>/dev/null >/dev/tty; then
-                read -r reply </dev/tty 2>/dev/null || reply=""
-            fi
-        fi
-        case "$reply" in
-            [yY]*)
-                if ! git -C "$WORKTREE_REPO_ROOT" worktree remove --force "$WORKTREE_DIR"; then
-                    echo "worktree: could not remove $WORKTREE_DIR; it is left in place" >&2
-                    worktree_print_next_steps
-                    return 0
-                fi
-                ;;
-            *)
-                echo "worktree: keeping $WORKTREE_DIR" >&2
-                worktree_print_next_steps
-                return 0
-                ;;
-        esac
-    else
-        if ! git -C "$WORKTREE_REPO_ROOT" worktree remove "$WORKTREE_DIR"; then
-            echo "worktree: could not remove $WORKTREE_DIR; it is left in place" >&2
-            worktree_print_next_steps
-            return 0
-        fi
+    # Gitignored content (e.g. a notes/ directory holding the patch channel's
+    # run directory) is not part of the commit and not worth a question:
+    # --force removes it along with the worktree.
+    if ! git -C "$WORKTREE_REPO_ROOT" worktree remove --force "$WORKTREE_DIR"; then
+        echo "worktree: could not remove $WORKTREE_DIR; it is left in place" >&2
+        worktree_print_next_steps
+        return 0
     fi
     git -C "$WORKTREE_REPO_ROOT" worktree prune
     echo "worktree: removed $WORKTREE_DIR ($WORKTREE_REF kept)" >&2
