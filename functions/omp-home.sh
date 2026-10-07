@@ -402,6 +402,62 @@ omp_config_with_block() {
     '
 }
 
+# dev.autoqaConsent is one key inside the dev block. omp_config_autoqa FILE
+# prints its line; omp_config_dev_rest FILE prints dev without it; and
+# omp_config_with_autoqa FILE LINE prints FILE with that line set, creating
+# dev when FILE has none. The line goes in through the environment, because
+# awk -v would interpret backslash escapes in a quoted value.
+omp_config_autoqa() {
+    omp_config_block "$1" dev | grep -m1 '^  autoqaConsent: .' || true
+}
+omp_config_dev_rest() {
+    local r
+    r="$(omp_config_block "$1" dev | grep -v '^  autoqaConsent: ')"
+    [[ "$r" == "dev:" ]] || printf '%s\n' "$r"
+}
+omp_config_with_autoqa() {
+    grep -v '^$' -- "$1" | L="$2" awk '
+        NR == 1 && $0 == "{}" { next }
+        /^[^ ]/ { indev = 0; if ($0 == "dev:") { indev = 1; done = 1; print; print ENVIRON["L"]; next } }
+        indev && /^  autoqaConsent: / { next }
+        { print }
+        END { if (!done) { print "dev:"; print ENVIRON["L"] } }
+    '
+}
+
+# omp_config_merge_autoqa COPY ORIG REAL REAL_BAD: merge the session's
+# dev.autoqaConsent into REAL, under the same rules as a whole key. Status 0
+# merged; 1 skipped, the reason on stdout; 2 nothing to do.
+omp_config_merge_autoqa() {
+    local a_orig a_now tmp newf="$RUN_DIR/omp-config.new"
+    a_orig="$(omp_config_autoqa "$2")"
+    a_now="$(omp_config_autoqa "$1")"
+    [[ "$a_orig" != "$a_now" ]] || return 2
+    [[ -n "$a_now" ]] || { echo "removed by the session; not merged"; return 1; }
+    [[ ! -L "$3" && -f "$3" ]] || { echo "$3 is missing or a symlink"; return 1; }
+    [[ -z "$4" ]] || { echo "$3 is not in the form omp writes ($4)"; return 1; }
+    [[ "$(omp_config_autoqa "$3")" == "$a_orig" ]] \
+        || { echo "changed on the host during the run; the host's value stays"; return 1; }
+    if ! omp_config_with_autoqa "$3" "$a_now" >"$newf" \
+        || ! omp_config_standard "$newf" >/dev/null \
+        || [[ "$(omp_config_autoqa "$newf")" != "$a_now" ]] \
+        || [[ "$(omp_config_dev_rest "$3")" != "$(omp_config_dev_rest "$newf")" ]] \
+        || ! omp_config_others_equal "$3" "$newf" dev; then
+        echo "the rewrite would have touched more than this key"
+        return 1
+    fi
+    tmp="$(mktemp "${3%/*}/.sandbox-config.XXXXXX")" || { echo "could not write beside $3"; return 1; }
+    if ! { cp -p -- "$3" "$tmp" && cat -- "$newf" >"$tmp" && mv -f -- "$tmp" "$3"; }; then
+        rm -f -- "$tmp"
+        echo "could not replace $3"
+        return 1
+    fi
+    # A worktree re-run starts from what was just merged.
+    if omp_config_with_autoqa "$2" "$a_now" >"$2.next"; then
+        mv -f -- "$2.next" "$2"
+    fi
+}
+
 # omp_config_block_mergeable KEY BLOCK: BLOCK is exactly the shape omp
 # writes for KEY -- "modelRoles:" with "  <role>: <model>" lines, or
 # "cycleOrder:" with "  - <model>" lines, or the empty form, "  {}" or
@@ -411,6 +467,8 @@ omp_config_block_mergeable() {
     local key="$1" line first=1 items=0 empty
     local id='[A-Za-z0-9][A-Za-z0-9._/:@+-]*'
     case "$key" in
+        # One single-line value, any value (the file passed omp_config_standard).
+        hideThinkingBlock) [[ "$2" == "hideThinkingBlock: "?* && "$2" != *$'\n'* ]]; return ;;
         modelRoles) empty="  {}" ;;
         cycleOrder) empty="  []" ;;
         *) return 1 ;;
@@ -448,7 +506,8 @@ omp_config_others_equal() {
 }
 
 # omp_config_merge: of everything the session saved to its config copy,
-# only modelRoles and cycleOrder reach the host's real file, and only when
+# only modelRoles, cycleOrder, hideThinkingBlock and dev.autoqaConsent
+# reach the host's real file, and only when
 # the session changed the key, the new value passes
 # omp_config_block_mergeable, and the real file still holds what it held
 # at launch for that key -- a change made on the host meanwhile wins and
@@ -519,7 +578,10 @@ omp_config_merge() {
         if [[ "$s_orig" == "$s_now" ]]; then
             continue
         fi
-        if [[ "$key" != modelRoles && "$key" != cycleOrder ]]; then
+        if [[ "$key" == dev && "$(omp_config_dev_rest "$orig")" == "$(omp_config_dev_rest "$copy")" ]]; then
+            continue # only dev.autoqaConsent changed: merged below
+        fi
+        if [[ "$key" != modelRoles && "$key" != cycleOrder && "$key" != hideThinkingBlock ]]; then
             others+=("$key")
             continue
         fi
@@ -565,6 +627,13 @@ omp_config_merge() {
         fi
         merged+=("$key")
     done < <({ omp_config_keys "$orig"; omp_config_keys "$copy"; } | LC_ALL=C sort -u)
+    # dev.autoqaConsent is merged on its own line, so the host's other dev
+    # keys survive; the rest of dev is never merged (see the loop above).
+    if bad="$(omp_config_merge_autoqa "$copy" "$orig" "$real" "$real_bad")"; then
+        merged+=("dev.autoqaConsent")
+    elif [[ $? -eq 1 ]]; then
+        skipped+=("dev.autoqaConsent: $bad")
+    fi
 
     if [[ ${#merged[@]} -gt 0 ]]; then
         printf '%s\n' "sandbox: omp settings merged back into $real: ${merged[*]}" >&2
@@ -577,8 +646,8 @@ omp_config_merge() {
     fi
     if [[ ${#others[@]} -gt 0 ]]; then
         {
-            printf '%s\n' "sandbox: the omp session also changed these settings; only modelRoles and"
-            printf '%s\n' "  cycleOrder are ever merged back, so they stay in the run. Its values:"
+            printf '%s\n' "sandbox: the omp session also changed these settings; only modelRoles,"
+            printf '%s\n' "  cycleOrder, hideThinkingBlock and dev.autoqaConsent are merged back, so the rest stay in the run. Its values:"
             for key in "${others[@]}"; do
                 oldv="$(omp_config_block "$orig" "$key")"
                 ov="$(omp_config_block "$copy" "$key")"
