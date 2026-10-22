@@ -84,6 +84,8 @@ export GIT_COMMITTER_NAME=probe GIT_COMMITTER_EMAIL=probe@invalid
 # omp-home assertions below write into $HOME/.claude.json, $HOME/.omp and
 # $HOME/.agent, and this suite must never touch the real ones.
 HOME="$W/home"
+# The host-side claude directory override is the J10 case only.
+unset CLAUDE_CONFIG_DIR
 mkdir -p "$HOME" || fail_setup "mkdir fake HOME"
 
 # --- load the real implementation ----------------------------------------
@@ -511,6 +513,42 @@ j9=0
 [[ "$j9" -eq 0 ]] \
     && ok J9 "a forwarded CLAUDE_CONFIG_DIR or CLAUDE_SECURESTORAGE_CONFIG_DIR refuses the run; none forwarded starts" \
     || bad J9 "a claude directory override reached the container, or the check refused a clean run"
+# A host CLAUDE_CONFIG_DIR: the host's files are read from it -- and
+# ~/.claude.json from the .claude.json inside it -- while the session sees
+# them at ~/.claude and ~/.claude.json as always; ~/.claude itself is never
+# a source. An empty or relative value refuses the run.
+j10=0
+rm -rf "$HOME/.claude" "$HOME/.claude.json"
+C="$W/ssd/claude-config"
+mkdir -p "$C/agents"; printf '{}\n' >"$C/settings.json"
+printf '%s\n' '{"theme":"light"}' >"$C/.claude.json"
+export CLAUDE_CONFIG_DIR="$C/"
+rm -rf "$RUN_DIR/claude-home"
+BINDS=() RO_MASKED=() CLAUDE_HOME_DIR="" CLAUDE_JSON_COPY=""
+{ claude_home_prepare && claude_json_prepare; } || j10=1
+# shellcheck disable=SC2153  # set by claude_home_prepare (functions/claude-home.sh)
+[[ "$CLAUDE_HOST_DIR" == "$C" && "$CLAUDE_HOST_JSON" == "$C/.claude.json" ]] || j10=1
+j_has "$C/.credentials.json:$HOME/.claude/.credentials.json" && [[ -f "$C/.credentials.json" ]] || j10=1
+j_has "$C/projects:$HOME/.claude/projects" && [[ -d "$C/projects" ]] || j10=1
+j_has "$C/settings.json:$HOME/.claude/settings.json:ro" || j10=1
+j_has "$C/agents:$HOME/.claude/agents:ro" || j10=1
+j_has "$RUN_DIR/claude-home/.claude/hooks:$HOME/.claude/hooks:ro" || j10=1
+[[ ! -e "$C/hooks" && ! -e "$HOME/.claude" && ! -e "$HOME/.claude.json" ]] || j10=1
+cmp -s "$CLAUDE_JSON_COPY" "$C/.claude.json" || j10=1
+for b in "${BINDS[@]}"; do
+    [[ "$b" == "$HOME/.claude"* || "$b" == "$C" || "$b" == "$C:"* ]] && j10=1
+done
+printf '%s\n' '{"theme":"dark"}' >"$CLAUDE_JSON_COPY"
+claude_json_finish 2>/dev/null
+[[ "$(claude_json_value "$C/.claude.json" theme)" == '"dark"' && ! -e "$C/.claude.json.lock" ]] || j10=1
+( CLAUDE_CONFIG_DIR="" claude_home_host_paths ) >/dev/null 2>&1 && j10=1
+( CLAUDE_CONFIG_DIR="rel/dir" claude_home_host_paths ) >/dev/null 2>&1 && j10=1
+( CLAUDE_CONFIG_DIR="/" claude_home_host_paths ) >/dev/null 2>&1 && j10=1
+unset CLAUDE_CONFIG_DIR
+rm -rf "$C" "$CLAUDE_JSON_LAST"
+[[ "$j10" -eq 0 ]] \
+    && ok J10 "a host CLAUDE_CONFIG_DIR is the source of every claude bind and of ~/.claude.json; the session still sees ~/.claude; an empty or relative value refuses" \
+    || bad J10 "a host CLAUDE_CONFIG_DIR was ignored, bound whole, exposed at the wrong path, or accepted while empty or relative"
 rm -rf "$HOME/.claude" "$HOME/.claude.json" "$RUN_DIR/claude-home"
 # shellcheck disable=SC2034  # CLAUDE_HOME_DIR is read by claude_json_prepare (functions/claude-json.sh)
 BINDS=() RO_MASKED=() CLAUDE_HOME_DIR="" CLAUDE_JSON_COPY=""

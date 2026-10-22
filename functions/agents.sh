@@ -284,12 +284,12 @@ generate_limitations_file() {
     chmod 600 "$out"
 }
 
-# bind_augmented_instructions REAL: overlay REAL (a host instruction file
-# such as CLAUDE.md/AGENTS.md -- may not exist yet) with a read-only copy
-# that additionally points at the generated limitations lookup file,
+# bind_augmented_instructions REAL [DST]: overlay REAL (a host instruction
+# file such as CLAUDE.md/AGENTS.md -- may not exist yet) with a read-only
+# copy that additionally points at the generated limitations lookup file,
 # unless REAL already carries the same marker. A sanitized copy bound over
-# the real path, so the host's own instruction content survives untouched
-# underneath the appended note.
+# DST (default: REAL itself), so the host's own instruction content
+# survives untouched underneath the appended note.
 #
 # Worktree mode appends a second, run-specific block naming the two paths
 # and the commit-message file. That block is deliberately NOT behind the
@@ -309,7 +309,7 @@ generate_limitations_file() {
 # agent's first tool call, move it into generate_limitations_file()
 # instead of re-trimming it here.
 bind_augmented_instructions() {
-    local real="$1" out
+    local real="$1" dst="${2:-$1}" out
     # An instruction file the host does not have is bound anyway -- the
     # notice is worth more than the absent file -- but only where that
     # bind cannot reach the host: where a read-write bind of a host
@@ -317,8 +317,8 @@ bind_augmented_instructions() {
     # missing file in that real directory to mount over it. There the
     # overlay is skipped and the limitations file is still mounted at
     # $HOME/.sandbox-limitations.md; only the pointer to it is lost.
-    if [[ ! -e "$real" && ! -L "$real" ]] && bind_rw_covers "$real"; then
-        log_warn "not creating $real just to add the sandbox notice;" \
+    if [[ ! -e "$real" && ! -L "$real" ]] && bind_rw_covers "$dst"; then
+        log_warn "not creating $dst just to add the sandbox notice;" \
             "the agent's limitations are still at \$HOME/.sandbox-limitations.md"
         return 0
     fi
@@ -367,7 +367,7 @@ bind_augmented_instructions() {
         } >>"$out"
     fi
     chmod 600 "$out"
-    BINDS+=(-B "$out:$real:ro")
+    BINDS+=(-B "$out:$dst:ro")
 }
 
 # --- the patch channel ---------------------------------------------------
@@ -645,7 +645,7 @@ configure_agent() {
             # CLAUDE.md is the always-loaded instruction file: overlaid
             # with a copy of itself plus a pointer at the generated
             # limitations lookup file, rather than a plain read-only bind.
-            bind_augmented_instructions "$HOME/.claude/CLAUDE.md"
+            bind_augmented_instructions "$CLAUDE_HOST_DIR/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
             # claude's own flag for running inside a sandbox: the workspace
             # counts as trusted, so there is no trust dialog and nothing is
             # recorded for it. Committed project permission rules then
