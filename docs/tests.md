@@ -77,8 +77,10 @@ verified and the recorded "Standing verification" result, and
   claude's own shape, never over a host-side change or through a
   symlink; claude's per-run `$HOME` (`functions/claude-home.sh`) — the
   login is the host's, config is read-only with a read-only placeholder
-  where the host has none, `~/.claude` is never bound whole, and a
-  directory override refuses the run; omp's
+  where the host has none, `~/.claude` is never bound whole, a
+  forwarded directory override refuses the run, and a host
+  `CLAUDE_CONFIG_DIR` is the source of every claude bind while the
+  session still sees `~/.claude`; omp's
   per-run `~/.omp` (`functions/omp-home.sh`) — the host's natives,
   `run/` and logs are never bound, `config.yml` is a plain per-run
   copy, only `modelRoles`/`cycleOrder` merge back in the exact form

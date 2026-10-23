@@ -235,7 +235,7 @@ CLAUDE_JSON_SKIPPED=()
 # plain file, so claude's lock, temporary file and rename all land in the
 # per-run home (functions/claude-home.sh). The real file is never bound.
 claude_json_prepare() {
-    local real="$HOME/.claude.json"
+    local real="$CLAUDE_HOST_JSON"
     [[ -n "${CLAUDE_HOME_DIR:-}" && -d "$CLAUDE_HOME_DIR" ]] || return 1
     CLAUDE_JSON_COPY="$CLAUDE_HOME_DIR/.claude.json"
     CLAUDE_JSON_ORIG="$RUN_DIR/claude.json.orig"
@@ -311,7 +311,7 @@ claude_json_rewrite_ok() {
 # holds only the merged keys. A killed run never gets here, so it merges
 # nothing.
 claude_json_merge() {
-    local real="$HOME/.claude.json" lock="$HOME/.claude.json.lock" key s_orig s_now tries=0
+    local real="$CLAUDE_HOST_JSON" lock="$CLAUDE_HOST_JSON.lock" key s_orig s_now tries=0
     local -a pending=()
     for key in "${CLAUDE_JSON_MERGE_KEYS[@]}"; do
         s_orig="$(claude_json_value "$CLAUDE_JSON_ORIG" "$key")" || s_orig=$'\001ambiguous'
@@ -351,7 +351,7 @@ claude_json_merge() {
 # claude_json_merge_locked KEY...: the part of claude_json_merge that runs
 # while it holds claude's lock on the real file.
 claude_json_merge_locked() {
-    local real="$HOME/.claude.json" key s_orig s_now h_now tmp
+    local real="$CLAUDE_HOST_JSON" key s_orig s_now h_now tmp
     local snap="$RUN_DIR/claude.json.host" newf="$RUN_DIR/claude.json.new" step="$RUN_DIR/claude.json.step"
     local -a merged=()
     if [[ -f "$real" ]]; then
@@ -390,7 +390,7 @@ claude_json_merge_locked() {
     # Written beside the real file and renamed over it, so a reader never
     # sees half a file; cp -p carries an existing file's mode over, and a
     # new one keeps mktemp's 0600.
-    if ! tmp="$(mktemp "$HOME/.claude.json.sandbox-merge.XXXXXX")"; then
+    if ! tmp="$(mktemp "$CLAUDE_HOST_JSON.sandbox-merge.XXXXXX")"; then
         claude_json_skip_all "could not write beside $real" "${merged[@]}"
         return 0
     fi

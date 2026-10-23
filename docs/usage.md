@@ -130,7 +130,10 @@ that run. Details: `project-config-masking.md`, "The patch channel".
 - **The agent's global config**, read-only. Writable state is bound path by
   path. omp gets a per-run `~/.omp`; claude a per-run `$HOME`, where its
   login is your own `~/.claude/.credentials.json` and of its `~/.claude.json`
-  only theme and onboarding state merge back at exit. claude runs with its
+  only theme and onboarding state merge back at exit. If you set
+  `CLAUDE_CONFIG_DIR` on the host, those files are taken from that directory
+  (and `.claude.json` from inside it) instead; the session still sees them at
+  `~/.claude` and `~/.claude.json`. claude runs with its
   own `CLAUDE_CODE_SANDBOXED` flag, so it never asks whether to trust the
   checkout. `.env` files are never mounted. See `project-config-masking.md`.
 - **Python virtualenvs** at the root of each mounted checkout (`.venv`, and
