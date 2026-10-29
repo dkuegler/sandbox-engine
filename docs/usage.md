@@ -73,6 +73,11 @@ run by an interpreter shellcheck did not check it against.
 Only the `uv`, `shell` and `latex` bases include uv. A custom image or
 Dockerfile has to install it itself, for example with
 `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/`.
+With those three presets, the agent's instruction file (`AGENTS.md`, or
+`CLAUDE.md` for claude) also tells it to manage Python packages and
+environments with uv. The line comes from the preset name, not from
+inspecting the image, so a custom image or Dockerfile does not get it, even
+one that installs uv (`resolve_environment()`, `functions/environment.sh`).
 
 The `uv` preset (and only it: not `shell`, `latex` or a custom base) also
 carries uv-managed CPython 3.10 through 3.14 in `/opt/uv-python`

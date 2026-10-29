@@ -10,7 +10,14 @@ sanitize_tag() {
 
 # resolve_environment: merges CLI_ENV_* over ENV_* (sandbox.yml), then
 # derives ENV_MODE (image|dockerfile|preset), BASE_IMAGE, CUSTOM_DOCKERFILE,
-# and ENV_TAG (used in the built SIF's filename).
+# ENV_TAG (used in the built SIF's filename) and ENV_HAS_UV.
+#
+# ENV_HAS_UV=1 only for the uv, shell and latex presets, whose bundled
+# Dockerfiles install uv; it adds the uv line to the agent's instruction
+# overlay (bind_augmented_instructions, functions/agents.sh). Derived from
+# the preset name, not by asking the image: an image or Dockerfile of the
+# project's own (environment.image/dockerfile) gets 0 even if it has uv.
+# The agent template (sandbox/agent/Dockerfile.template) installs no uv.
 resolve_environment() {
     log_debug "resolve_environment inputs: ENV_IMAGE=$ENV_IMAGE CLI_ENV_IMAGE=$CLI_ENV_IMAGE ENV_DOCKERFILE=$ENV_DOCKERFILE CLI_ENV_DOCKERFILE=$CLI_ENV_DOCKERFILE ENV_PRESET=$ENV_PRESET CLI_ENV_PRESET=$CLI_ENV_PRESET ENV_PYTHON_VERSION=$ENV_PYTHON_VERSION CLI_ENV_PYTHON_VERSION=$CLI_ENV_PYTHON_VERSION"
     ENV_IMAGE="${CLI_ENV_IMAGE:-$ENV_IMAGE}"
@@ -21,6 +28,8 @@ resolve_environment() {
 
     CUSTOM_DOCKERFILE=""
     BASE_IMAGE=""
+    # shellcheck disable=SC2034  # ENV_HAS_UV is read by bind_augmented_instructions (functions/agents.sh)
+    ENV_HAS_UV=0
 
     if [[ -n "$ENV_IMAGE" ]]; then
         ENV_MODE="image"
@@ -59,6 +68,7 @@ resolve_environment() {
                 # is fixed, so python_version does not apply to this preset.
                 ENV_MODE="dockerfile"
                 CUSTOM_DOCKERFILE="$SANDBOX_DIR/uv/Dockerfile"
+                ENV_HAS_UV=1
                 ;;
             python) BASE_IMAGE="python:${ENV_PYTHON_VERSION}-slim-bookworm"; ENV_TAG="preset-python-py$(sanitize_tag "$ENV_PYTHON_VERSION")" ;;
             shell)
@@ -69,6 +79,7 @@ resolve_environment() {
                 # environment.dockerfile paths.
                 ENV_MODE="dockerfile"
                 CUSTOM_DOCKERFILE="$SANDBOX_DIR/shell/Dockerfile"
+                ENV_HAS_UV=1
                 ;;
             latex)
                 # Same bundled/trusted dockerfile-splice pattern as
@@ -79,6 +90,7 @@ resolve_environment() {
                 # name (e.g. to combine with a fork of that file).
                 ENV_MODE="dockerfile"
                 CUSTOM_DOCKERFILE="$SANDBOX_DIR/latex/Dockerfile"
+                ENV_HAS_UV=1
                 ;;
             *)
                 echo "environment.preset '$ENV_PRESET' (from sandbox.yml/--environment): unknown, expected uv|python|shell|latex" >&2

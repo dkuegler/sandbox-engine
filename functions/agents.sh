@@ -299,6 +299,11 @@ generate_limitations_file() {
 # not after it thinks to read a lookup file. Most importantly it says
 # where to look for the untracked/ignored files a worktree does not have.
 #
+# An image with uv (ENV_HAS_UV, set from the preset by resolve_environment
+# in functions/environment.sh) appends a two-line uv block the same way:
+# a fact about this run's image, so it is not behind the marker check.
+# The text is fixed here; nothing read from the image goes into it.
+#
 # Kept terse on purpose: every line here loads into every session's system
 # prompt, unlike generate_limitations_file()'s output (read only on
 # demand, agents.sh:157-166). Verbosity here was reviewed and trimmed
@@ -364,6 +369,14 @@ bind_augmented_instructions() {
             echo "- No commits: \`.git\` is read-only. Put the commit message in"
             echo "  \`\$HOME/$WORKTREE_MSG_NAME\`, revising any message an earlier run left"
             echo "  there; a human applies it on the host."
+        } >>"$out"
+    fi
+    if [[ "${ENV_HAS_UV:-0}" -eq 1 ]]; then
+        {
+            echo
+            echo "$LIMITATIONS_NOTICE_MARKER uv"
+            echo "This image has uv: manage Python packages and environments with it"
+            echo "(\`uv add\`, \`uv sync\`, \`uv run\`, \`uv pip install\`)."
         } >>"$out"
     fi
     chmod 600 "$out"
