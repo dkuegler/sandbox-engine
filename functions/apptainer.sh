@@ -32,6 +32,8 @@
 #   backend_agent_version AGENT               prints AGENT --version from SANDBOX_IMAGE
 #   backend_image_has_path PATH               does PATH exist in SANDBOX_IMAGE? 0 yes,
 #                                             1 no, 2 the image could not be asked
+#   backend_image_has_command CMD             does CMD resolve on SANDBOX_IMAGE's PATH?
+#                                             0 yes, 1 no, 2 the image could not be asked
 
 # shellcheck disable=SC2034  # read by sandbox.sh and functions/*.sh
 SANDBOX_BACKEND=apptainer
@@ -200,20 +202,34 @@ backend_agent_version() {
     "${APPTAINER_EXEC[@]}" --cwd / "$SANDBOX_IMAGE" "$1" --version
 }
 
-# backend_image_has_path PATH: does PATH exist inside SANDBOX_IMAGE itself?
-# Returns 0 yes, 1 no, 2 the image could not be asked. Contained and
-# unbound like backend_agent_version: the answer has to describe the image,
-# not whatever the host's apptainer.conf would mount into it. "No" gets its
+# apptainer_image_ask CMD...: runs CMD... (a POSIX sh command line, as
+# separate words) inside SANDBOX_IMAGE itself. Returns 0 when it succeeds, 1
+# when it fails, 2 when the image could not be asked. Contained and unbound
+# like backend_agent_version: the answer has to describe the image, not
+# whatever the host's apptainer.conf would mount into it. "Fails" gets its
 # own exit status because a container that failed to start is no evidence
-# that PATH is missing.
-backend_image_has_path() {
+# about the image.
+apptainer_image_ask() {
     local rc=0
-    # shellcheck disable=SC2016  # "$1" is the inner sh's positional, deliberately not expanded here
+    # shellcheck disable=SC2016  # "$@" is the inner sh's argv, deliberately not expanded here
     "${APPTAINER_EXEC[@]}" --cwd / "$SANDBOX_IMAGE" \
-        sh -c 'test -e "$1" || exit 100' _ "$1" >/dev/null 2>&1 || rc=$?
+        sh -c '"$@" || exit 100' _ "$@" >/dev/null 2>&1 || rc=$?
     case "$rc" in
         0) return 0 ;;
         100) return 1 ;;
         *) return 2 ;;
     esac
+}
+
+# backend_image_has_path PATH: does PATH exist inside SANDBOX_IMAGE?
+backend_image_has_path() {
+    apptainer_image_ask test -e "$1"
+}
+
+# backend_image_has_command CMD: does CMD resolve on SANDBOX_IMAGE's PATH,
+# for the user the session runs as? --containall drops the host's
+# environment, so PATH is the image's own, as it is for the agent; a binary
+# off that PATH, or in a directory this user cannot search, is not found.
+backend_image_has_command() {
+    apptainer_image_ask command -v "$1"
 }

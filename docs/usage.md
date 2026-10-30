@@ -73,11 +73,14 @@ run by an interpreter shellcheck did not check it against.
 Only the `uv`, `shell` and `latex` bases include uv. A custom image or
 Dockerfile has to install it itself, for example with
 `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/`.
-With those three presets, the agent's instruction file (`AGENTS.md`, or
-`CLAUDE.md` for claude) also tells it to manage Python packages and
-environments with uv. The line comes from the preset name, not from
-inspecting the image, so a custom image or Dockerfile does not get it, even
-one that installs uv (`resolve_environment()`, `functions/environment.sh`).
+Whenever the agent can run uv in the image, its instruction file
+(`AGENTS.md`, or `CLAUDE.md` for claude) also tells it to manage Python
+packages and environments with uv. Every run asks the image itself:
+`command -v uv`, as the session's user, on the image's own `PATH`
+(`detect_image_uv()`, `functions/environment.sh`). Neither the preset name
+nor the Dockerfile's text decides, so a custom image or Dockerfile that
+installs uv gets the line too, however it installs it, and a uv that is off
+that `PATH` or in a directory the session's user cannot enter does not.
 
 The `uv` preset (and only it: not `shell`, `latex` or a custom base) also
 carries uv-managed CPython 3.10 through 3.14 in `/opt/uv-python`

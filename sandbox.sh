@@ -119,6 +119,8 @@ backend_image_ref "$IMAGE_AGENT" "$ENV_TAG"
 check_agent_update || true
 
 build_images
+# Whether the agent can run uv in this image: asked of the image itself.
+detect_image_uv
 
 # Worktree mode: the worktree is the writable checkout; the main checkout
 # is mounted as chosen on the TTY, so the agent's changes land where the

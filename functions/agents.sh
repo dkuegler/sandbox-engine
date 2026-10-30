@@ -299,10 +299,11 @@ generate_limitations_file() {
 # not after it thinks to read a lookup file. Most importantly it says
 # where to look for the untracked/ignored files a worktree does not have.
 #
-# An image with uv (ENV_HAS_UV, set from the preset by resolve_environment
-# in functions/environment.sh) appends a two-line uv block the same way:
-# a fact about this run's image, so it is not behind the marker check.
-# The text is fixed here; nothing read from the image goes into it.
+# An image the agent can run uv in (ENV_HAS_UV, asked of the image by
+# detect_image_uv in functions/environment.sh) appends a two-line uv block
+# the same way: a fact about this run's image, so it is not behind the
+# marker check. The text is fixed here; nothing read from the image goes
+# into it.
 #
 # Kept terse on purpose: every line here loads into every session's system
 # prompt, unlike generate_limitations_file()'s output (read only on
