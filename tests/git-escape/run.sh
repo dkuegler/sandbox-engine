@@ -23,32 +23,6 @@ NEGATIVE=0
 # shellcheck source=tests/lib/report.sh
 source "$SCRIPT_DIR/../lib/report.sh"
 
-# Warnings this script prints on purpose:
-#   - git, while building the fixture: the bare submodule source is still
-#     empty when it is cloned (it is filled through that clone, below).
-#   - sandbox.sh (plain mode only), once per bind outside the project dir:
-#     both are requested on purpose, see the --allow-external-binds note
-#     at the launch below.
-#   - sandbox.sh, only when an earlier sandbox run died before cleaning up:
-#     it reaps that run's directory, and the warning gate then reports the
-#     count and continues because of --ignore-warnings (functions/run-dir.sh,
-#     functions/log.sh).
-EMPTY_CLONE_WARNING="warning: You appear to have cloned an empty repository."
-if [[ "$NEGATIVE" -eq 1 ]]; then
-    expect_warnings "$EMPTY_CLONE_WARNING"
-else
-    expect_warnings "$EMPTY_CLONE_WARNING" \
-        "warning: bind (--bind) '<work>/extra' is outside the project dir <work>/repo
-  (allowed by --allow-external-binds, mounted read-write)" \
-        "warning: bind (--bind) '<work>/wt' is outside the project dir <work>/repo
-  (allowed by --allow-external-binds, mounted read-write)" \
-        -- \
-        "sandbox: reaping orphaned run directory: <run-dir> (owner pid <pid> is gone)
-sandbox: this run produced <n> warning line(s):
-    reaping orphaned run directory: <run-dir> (owner pid <pid> is gone)
-sandbox: no terminal to confirm on; --ignore-warnings was passed, continuing."
-fi
-
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/git-escape.XXXXXX")"
 # shellcheck disable=SC2317  # invoked by the EXIT trap below
 cleanup() { rm -rf "$WORK"; }
@@ -87,14 +61,16 @@ git -C "$FIXTURE" remote add origin "https://$SECRET_PROJECT/proj.git"
 # Submodule, with its own distinct credentialed origin -- proves the
 # sanitizer is not accidentally scoped to the project's top-level .git
 # only. The bare source must have a real commit before `submodule add`
-# clones it, or git reports "cloned an empty repository" and leaves no
-# gitdir for the submodule to have its own config in.
+# clones it, or that clone leaves no gitdir for the submodule to have its
+# own config in. The commit is made in a fresh repository and pushed by
+# path: cloning the still-empty bare repository instead would make git
+# warn "You appear to have cloned an empty repository".
 git init --quiet --bare "$WORK/subsrc.git"
-git clone --quiet "$WORK/subsrc.git" "$WORK/subtmp"
+git init --quiet "$WORK/subtmp"
 echo x > "$WORK/subtmp/x"
 git -C "$WORK/subtmp" -c user.name=probe -c user.email=probe@invalid add x
 git -C "$WORK/subtmp" -c user.name=probe -c user.email=probe@invalid commit --quiet -m subinit
-git -C "$WORK/subtmp" push --quiet origin HEAD:master
+git -C "$WORK/subtmp" push --quiet "$WORK/subsrc.git" HEAD:master
 rm -rf "$WORK/subtmp"
 git -C "$FIXTURE" -c protocol.file.allow=always submodule add --quiet "$WORK/subsrc.git" sub
 git -C "$FIXTURE" add sub .gitmodules
@@ -183,9 +159,16 @@ echo "=== git-escape suite, project dir $FIXTURE"
 # gate still waits for a human, by design. So sandbox.sh runs in a new
 # session (setsid) with no controlling terminal, where opening /dev/tty
 # fails and every /dev/tty prompt takes its documented unattended path --
-# the same whether this suite runs in CI or from a human's terminal. The
-# warning text and the external-bind notice still print to stderr; the
-# assertions decide pass or fail.
+# the same whether this suite runs in CI or from a human's terminal.
+#
+# sandbox.sh's stderr is captured rather than shown: check_warnings
+# (tests/lib/report.sh) then requires it to warn about exactly the two
+# external binds above, so any other warning -- a new one, or a bind
+# apptainer skips -- fails the suite instead of scrolling past. The only
+# warning allowed besides those comes from state outside this suite: an
+# earlier sandbox run that died without cleaning up leaves its run
+# directory behind, and this run reaps it (functions/run-dir.sh). The
+# captured stderr is printed when the check or the probe fails.
 #
 # A new session is also outside the terminal's foreground process group,
 # so Ctrl-C no longer reaches sandbox.sh on its own. Run in the
@@ -196,10 +179,11 @@ echo "=== git-escape suite, project dir $FIXTURE"
 # background job and its children, so a forwarded INT would be dropped.
 # SIGTERM still runs sandbox.sh's EXIT trap, so it cleans up as it would
 # for an interactive Ctrl-C.
+SANDBOX_STDERR="$WORK/sandbox.stderr"
 setsid -w "$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" --bind "$WORK/wt:rw" \
     --ignore-warnings --allow-external-binds script \
     --project-dir "$FIXTURE" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA" "$WORK/wt" \
-    </dev/null &
+    </dev/null 2>"$SANDBOX_STDERR" &
 sandbox_pid=$!
 trap 'kill -TERM -- "-$sandbox_pid" 2>/dev/null || true' INT TERM HUP
 rc=0
@@ -210,4 +194,21 @@ while :; do
     kill -0 "$sandbox_pid" 2>/dev/null || break
 done
 trap - INT TERM HUP
+
+# ERE matching PATH literally (temp dirs carry '.', which must not match anything).
+ere_quote() { sed 's/[][\.*^$(){}+?|]/\\&/g' <<<"$1"; }
+warn_bind() {
+    printf "^warning: bind \\\\(--bind\\\\) '%s' is outside the project dir %s\$" \
+        "$(ere_quote "$1")" "$(ere_quote "$FIXTURE")"
+}
+if check_warnings WARN "$SANDBOX_STDERR" \
+    "$(warn_bind "$EXTRA")" "$(warn_bind "$WORK/wt")" \
+    -- '^reaping orphaned run directory: .* \(owner pid [0-9]+ is gone\)$'; then
+    if [[ "$rc" -ne 0 ]]; then
+        echo "sandbox.sh exited $rc; its stderr:"
+        sed 's/^/  | /' "$SANDBOX_STDERR"
+    fi
+else
+    rc=1
+fi
 exit "$rc"

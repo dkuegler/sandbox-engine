@@ -39,27 +39,24 @@ that failed but should have passed, passed but should have failed, or
 were expected to fail but never ran, and the script exits non-zero.
 A normal run expects every assertion to pass; `run.sh --negative` is a
 meta-test that expects a fixed list to *fail* (see below). The shared
-`ok`/`bad`/`report_summary`/`expect_warnings`/`expect_failures` helpers
+`ok`/`bad`/`report_summary`/`check_warnings`/`expect_failures` helpers
 are `tests/lib/report.sh`.
 
-A script that prints warnings on purpose announces them before it runs,
-with variable parts as `<placeholders>`:
+Warnings are asserted, not just printed. `run.sh` captures
+`sandbox.sh`'s stderr instead of showing it, and its `WARN` assertion
+(`check_warnings`) requires exactly the expected warnings: one per bind
+outside the project dir, which the suite requests on purpose. A warning
+counts if its line starts with `warning:`/`WARNING:`/`error:`/`ERROR:`
+(git, apptainer, `functions/binds.sh`) or if it is listed by the warning
+gate (`sandbox: this run produced N warning line(s):`, every `log_warn`).
+The one warning allowed besides those is the reaping of a run directory
+an earlier, killed run left behind, which depends on state outside the
+suite. Any other warning, or a missing expected one, fails `WARN`, which
+then prints the mismatches and the whole captured stderr; so does a
+failing probe. The other scripts are expected to print no warnings.
+Their fixtures are built so git has nothing to warn about.
 
-```
-The following test expects 1 WARNING(S):
-=== STDERR ===
-warning: You appear to have cloned an empty repository.
-===
-```
-
-Lines under `=== and possibly (depends on state outside this test) ===`
-appear only in some runs, e.g. when an earlier sandbox run died
-before cleaning up and this one reaps its run directory. A warning
-not announced is unexpected and worth reading. The announcement is
-documentation only; the assertions alone decide pass or fail. Scripts
-that print no banner expect no warnings.
-
-A negative control (`run.sh --negative`) likewise announces the `FAIL`
+A negative control (`run.sh --negative`) announces the `FAIL`
 lines it will print, one per expected ID, before the first assertion:
 
 ```
@@ -71,9 +68,8 @@ FAIL A2a ...
 === (indented lines after a FAIL are its details) ===
 ```
 
-That list is the same one the summary checks, so unlike the warning
-banner it is enforced. A `FAIL` in a run with no failure banner is a real
-failure.
+That list is the same one the summary checks, so it is enforced. A
+`FAIL` in a run with no failure banner is a real failure.
 
 ## tests/git-escape/ — git write containment
 

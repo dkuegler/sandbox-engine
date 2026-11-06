@@ -41,19 +41,15 @@ export GIT_COMMITTER_NAME=probe GIT_COMMITTER_EMAIL=probe@invalid
 
 fail_setup() { echo "PREFLIGHT: $*" >&2; exit 99; }
 
-# The bare submodule source is still empty when it is cloned (it is filled
-# through that clone), so git says so; the clone itself succeeds.
-expect_warnings "warning: You appear to have cloned an empty repository."
-
-# --- fixture: submodule source (populated before use, see run.sh's own
-# comment on this same false-empty-clone trap) --------------------------
+# --- fixture: submodule source (populated before use and without cloning
+# it while empty; see run.sh's own comment on the same fixture) ----------
 mkdir -p "$W/subsrc.git" || fail_setup "mkdir subsrc.git"
 git init -q --bare "$W/subsrc.git" || fail_setup "init bare subsrc.git"
-git clone -q "$W/subsrc.git" "$W/subtmp" || fail_setup "clone subsrc.git"
+git init -q "$W/subtmp" || fail_setup "init subtmp"
 echo x > "$W/subtmp/x"
 git -C "$W/subtmp" add x
 git -C "$W/subtmp" commit -q -m subinit || fail_setup "commit into subtmp"
-git -C "$W/subtmp" push -q origin HEAD:master || fail_setup "push subtmp -> subsrc.git"
+git -C "$W/subtmp" push -q "$W/subsrc.git" HEAD:master || fail_setup "push subtmp -> subsrc.git"
 rm -rf "$W/subtmp"
 
 # --- fixture: main project, credentialed origin -------------------------

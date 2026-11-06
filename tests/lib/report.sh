@@ -5,8 +5,8 @@
 #   bad ID TEXT      record a failing assertion and print its line
 #   report_summary   print the expected and the tested result side by
 #                    side; returns 0 exactly when they match
-#   expect_warnings  announce, before a run, the warnings it will print
-#                    on purpose (see below)
+#   check_warnings   assert that a captured stderr log holds exactly the
+#                    expected warnings (see below)
 #   expect_failures  announce, before a run, the assertions EXPECTED_FAIL
 #                    says must fail (see below)
 #
@@ -78,36 +78,73 @@ report_summary() {
     return "$rc"
 }
 
-# expect_warnings LINE... [-- MAYBE_LINE...]: print, before the run, the
-# warning lines it will print on purpose, so a reader of the log can tell
-# an intended warning from a regression without reading the script. Each
-# LINE is one warning, shown as it appears with its variable parts
-# (temporary paths, pids, counts) as <placeholders>; the count is the
-# number of LINEs. Lines after "--" depend on state outside the test (a
-# leftover from an earlier run) and may or may not appear. This only
-# documents: nothing checks the actual output against it, so the
-# assertions alone still decide pass or fail.
-expect_warnings() {
-    local -a always=() maybe=()
-    while [[ $# -gt 0 && "$1" != "--" ]]; do always+=("$1"); shift; done
+# warning_lines LOG: the warnings in a captured stderr log, one per line.
+# Two sources, which between them cover every warning path sandbox.sh
+# has:
+#   - a line starting "warning:"/"WARNING:"/"error:"/"ERROR:" -- git,
+#     apptainer, and sandbox.sh's own direct prints (functions/binds.sh);
+#     only that first line, not an indented continuation;
+#   - each entry of the warning gate's re-printed list after "sandbox:
+#     this run produced N warning line(s):" (confirm_warnings,
+#     functions/log.sh), which is every log_warn of the run. The first
+#     print of a log_warn is not matched, so each counts once.
+warning_lines() {
+    awk '
+        /^(warning|WARNING|error|ERROR):/ { print; next }
+        /^sandbox: this run produced [0-9]+ warning line\(s\):$/ { gate = 1; next }
+        gate && /^    / { sub(/^    /, ""); print; next }
+        { gate = 0 }
+    ' "$1"
+}
+
+# check_warnings ID LOG REQUIRED_ERE... [-- OPTIONAL_ERE...]: one assertion
+# that LOG's warnings (warning_lines) are exactly the expected ones. Each
+# REQUIRED_ERE must match exactly one warning; an OPTIONAL_ERE may match
+# any number, for warnings caused by state outside the test (a run directory
+# an earlier, killed run left behind). Any warning neither matches is a
+# failure, so a new warning breaks the suite instead of scrolling past.
+# On failure the mismatches are printed as indented detail lines, then
+# the whole log, since the warnings only make sense in context.
+check_warnings() {
+    local id="$1" log="$2" w re i matched
+    shift 2
+    local -a required=() optional=() warnings=() problems=() hits=()
+    while [[ $# -gt 0 && "$1" != "--" ]]; do required+=("$1"); shift; done
     [[ $# -gt 0 ]] && shift
-    maybe=("$@")
-    echo "The following test expects ${#always[@]} WARNING(S):"
-    echo "=== STDERR ==="
-    [[ ${#always[@]} -gt 0 ]] && printf '%s\n' "${always[@]}"
-    if [[ ${#maybe[@]} -gt 0 ]]; then
-        echo "=== and possibly (depends on state outside this test) ==="
-        printf '%s\n' "${maybe[@]}"
+    optional=("$@")
+    mapfile -t warnings < <(warning_lines "$log")
+    for i in "${!required[@]}"; do hits[i]=0; done
+    for w in ${warnings[@]+"${warnings[@]}"}; do
+        matched=0
+        for i in "${!required[@]}"; do
+            if [[ "$w" =~ ${required[i]} ]]; then hits[i]=$((hits[i] + 1)); matched=1; break; fi
+        done
+        if [[ "$matched" -eq 0 ]]; then
+            for re in ${optional[@]+"${optional[@]}"}; do
+                if [[ "$w" =~ $re ]]; then matched=1; break; fi
+            done
+        fi
+        [[ "$matched" -eq 1 ]] || problems+=("unexpected: $w")
+    done
+    for i in "${!required[@]}"; do
+        [[ "${hits[i]}" -eq 1 ]] || problems+=("expected once, seen ${hits[i]}x: ${required[i]}")
+    done
+    if [[ ${#problems[@]} -eq 0 ]]; then
+        ok "$id" "exactly the expected warnings (${#warnings[@]}: ${#required[@]} required, $((${#warnings[@]} - ${#required[@]})) optional)"
+        return 0
     fi
-    echo "==="
+    bad "$id" "the warnings differ from the expected ones"
+    printf '  ..%s\n' "${problems[@]}"
+    echo "  ..captured stderr:"
+    sed 's/^/  | /' "$log"
+    return 1
 }
 
 # expect_failures: print, before the assertions run, the FAIL lines a
 # negative control prints on purpose, one per EXPECTED_FAIL ID. Prints
 # nothing when EXPECTED_FAIL is empty, so a normal run stays quiet and a
-# FAIL there is never pre-announced. Unlike expect_warnings this is also
-# checked: report_summary compares the IDs that actually failed against
-# the same list.
+# FAIL there is never pre-announced. The list is also enforced:
+# report_summary compares the IDs that actually failed against it.
 expect_failures() {
     [[ ${#EXPECTED_FAIL[@]} -gt 0 ]] || return 0
     echo "The following test expects ${#EXPECTED_FAIL[@]} FAILURE(S):"
