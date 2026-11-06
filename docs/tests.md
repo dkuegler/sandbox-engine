@@ -39,7 +39,41 @@ that failed but should have passed, passed but should have failed, or
 were expected to fail but never ran, and the script exits non-zero.
 A normal run expects every assertion to pass; `run.sh --negative` is a
 meta-test that expects a fixed list to *fail* (see below). The shared
-`ok`/`bad`/`report_summary` helpers are `tests/lib/report.sh`.
+`ok`/`bad`/`report_summary`/`expect_warnings`/`expect_failures` helpers
+are `tests/lib/report.sh`.
+
+A script that prints warnings on purpose announces them before it runs,
+with variable parts as `<placeholders>`:
+
+```
+The following test expects 1 WARNING(S):
+=== STDERR ===
+warning: You appear to have cloned an empty repository.
+===
+```
+
+Lines under `=== and possibly (depends on state outside this test) ===`
+appear only in some runs, e.g. when an earlier sandbox run died
+before cleaning up and this one reaps its run directory. A warning
+not announced is unexpected and worth reading. The announcement is
+documentation only; the assertions alone decide pass or fail. Scripts
+that print no banner expect no warnings.
+
+A negative control (`run.sh --negative`) likewise announces the `FAIL`
+lines it will print, one per expected ID, before the first assertion:
+
+```
+The following test expects 21 FAILURE(S):
+=== STDOUT ===
+FAIL A1 ...
+FAIL A2a ...
+...
+=== (indented lines after a FAIL are its details) ===
+```
+
+That list is the same one the summary checks, so unlike the warning
+banner it is enforced. A `FAIL` in a run with no failure banner is a real
+failure.
 
 ## tests/git-escape/ — git write containment
 

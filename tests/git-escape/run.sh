@@ -20,6 +20,34 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/fixtures.sh"
 NEGATIVE=0
 [[ "${1:-}" == "--negative" ]] && NEGATIVE=1
+# shellcheck source=tests/lib/report.sh
+source "$SCRIPT_DIR/../lib/report.sh"
+
+# Warnings this script prints on purpose:
+#   - git, while building the fixture: the bare submodule source is still
+#     empty when it is cloned (it is filled through that clone, below).
+#   - sandbox.sh (plain mode only), once per bind outside the project dir:
+#     both are requested on purpose, see the --allow-external-binds note
+#     at the launch below.
+#   - sandbox.sh, only when an earlier sandbox run died before cleaning up:
+#     it reaps that run's directory, and the warning gate then reports the
+#     count and continues because of --ignore-warnings (functions/run-dir.sh,
+#     functions/log.sh).
+EMPTY_CLONE_WARNING="warning: You appear to have cloned an empty repository."
+if [[ "$NEGATIVE" -eq 1 ]]; then
+    expect_warnings "$EMPTY_CLONE_WARNING"
+else
+    expect_warnings "$EMPTY_CLONE_WARNING" \
+        "warning: bind (--bind) '<work>/extra' is outside the project dir <work>/repo
+  (allowed by --allow-external-binds, mounted read-write)" \
+        "warning: bind (--bind) '<work>/wt' is outside the project dir <work>/repo
+  (allowed by --allow-external-binds, mounted read-write)" \
+        -- \
+        "sandbox: reaping orphaned run directory: <run-dir> (owner pid <pid> is gone)
+sandbox: this run produced <n> warning line(s):
+    reaping orphaned run directory: <run-dir> (owner pid <pid> is gone)
+sandbox: no terminal to confirm on; --ignore-warnings was passed, continuing."
+fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/git-escape.XXXXXX")"
 # shellcheck disable=SC2317  # invoked by the EXIT trap below

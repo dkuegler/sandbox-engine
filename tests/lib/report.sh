@@ -5,6 +5,10 @@
 #   bad ID TEXT      record a failing assertion and print its line
 #   report_summary   print the expected and the tested result side by
 #                    side; returns 0 exactly when they match
+#   expect_warnings  announce, before a run, the warnings it will print
+#                    on purpose (see below)
+#   expect_failures  announce, before a run, the assertions EXPECTED_FAIL
+#                    says must fail (see below)
 #
 # ok()/bad() are plain printf+counter calls that cannot themselves fail,
 # which is what lets every suite use `cmd && ok ... || bad ...` without
@@ -72,4 +76,42 @@ report_summary() {
         rc=1
     fi
     return "$rc"
+}
+
+# expect_warnings LINE... [-- MAYBE_LINE...]: print, before the run, the
+# warning lines it will print on purpose, so a reader of the log can tell
+# an intended warning from a regression without reading the script. Each
+# LINE is one warning, shown as it appears with its variable parts
+# (temporary paths, pids, counts) as <placeholders>; the count is the
+# number of LINEs. Lines after "--" depend on state outside the test (a
+# leftover from an earlier run) and may or may not appear. This only
+# documents: nothing checks the actual output against it, so the
+# assertions alone still decide pass or fail.
+expect_warnings() {
+    local -a always=() maybe=()
+    while [[ $# -gt 0 && "$1" != "--" ]]; do always+=("$1"); shift; done
+    [[ $# -gt 0 ]] && shift
+    maybe=("$@")
+    echo "The following test expects ${#always[@]} WARNING(S):"
+    echo "=== STDERR ==="
+    [[ ${#always[@]} -gt 0 ]] && printf '%s\n' "${always[@]}"
+    if [[ ${#maybe[@]} -gt 0 ]]; then
+        echo "=== and possibly (depends on state outside this test) ==="
+        printf '%s\n' "${maybe[@]}"
+    fi
+    echo "==="
+}
+
+# expect_failures: print, before the assertions run, the FAIL lines a
+# negative control prints on purpose, one per EXPECTED_FAIL ID. Prints
+# nothing when EXPECTED_FAIL is empty, so a normal run stays quiet and a
+# FAIL there is never pre-announced. Unlike expect_warnings this is also
+# checked: report_summary compares the IDs that actually failed against
+# the same list.
+expect_failures() {
+    [[ ${#EXPECTED_FAIL[@]} -gt 0 ]] || return 0
+    echo "The following test expects ${#EXPECTED_FAIL[@]} FAILURE(S):"
+    echo "=== STDOUT ==="
+    printf 'FAIL %s ...\n' "${EXPECTED_FAIL[@]}"
+    echo "=== (indented lines after a FAIL are its details) ==="
 }

@@ -99,10 +99,20 @@ redact_urls() {
 # ".git" or resolved *from* one, and "worktrees/<name>/" is neither.
 # Terminates after one level: a per-worktree metadata directory has no
 # worktrees/ of its own.
+#
+# Runs once per REALDIR within one mask_git_readonly pass, which owns the
+# `sanitized` set this reads and fills (bash dynamic scope). A worktree's
+# metadata dir is reached both by the worktrees/ walk below and by
+# resolving that worktree's own ".git" file; sanitizing it twice would bind
+# two overlays onto the same destination, which apptainer resolves by
+# keeping the first and warning "destination is already in the mount point
+# list".
 sanitize_gitdir_metadata() {
     local realdir="$1"
     local -a rels=(config config.worktree FETCH_HEAD logs/HEAD)
     local rel src out wt
+    [[ -z "${sanitized[$realdir]+x}" ]] || return 0
+    sanitized[$realdir]=1
     ensure_run_dir
     GIT_SANITIZE_IDX=$((${GIT_SANITIZE_IDX:-0} + 1))
     for rel in "${rels[@]}"; do
@@ -209,12 +219,13 @@ mask_git_readonly() {
     # e.g. a worktree's own checkout root resolves its ".git" file to
     # <main>/.git/worktrees/<name>/, which the main checkout's root ALSO
     # reaches by recursing into it from <main>/.git directly
-    # (sanitize_gitdir_metadata's own worktrees/ walk). Without this set,
-    # both paths independently mask-and-sanitize the identical directory:
-    # harmless (both binds are read-only over the same destination, and
-    # apptainer keeps the first and warns "destination is already in the
-    # mount point list" on the second), but wasted work and log noise.
+    # (sanitize_gitdir_metadata's own worktrees/ walk). `seen` keeps each
+    # path to one read-only bind; `sanitized` (filled by
+    # sanitize_gitdir_metadata) keeps each gitdir to one set of sanitized
+    # overlays, including the ones that walk reaches without passing here.
     declare -A seen=()
+    # shellcheck disable=SC2034  # read and filled by sanitize_gitdir_metadata (dynamic scope)
+    declare -A sanitized=()
     local -a roots=("$PROJECT_DIR")
     local -a extra_srcs=(${EXTRA_BIND_SRCS[@]+"${EXTRA_BIND_SRCS[@]}"})
     local -a extra_ro=(${EXTRA_BIND_RO[@]+"${EXTRA_BIND_RO[@]}"})

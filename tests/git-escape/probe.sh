@@ -57,6 +57,7 @@ export GIT_COMMITTER_NAME=probe GIT_COMMITTER_EMAIL=probe@invalid
 # this probe on the host; inside the container --containall drops the host
 # environment, so a normal run always expects every assertion to pass.
 read -r -a EXPECTED_FAIL <<< "${EXPECT_FAIL:-}"
+expect_failures
 chk()  { if [[ "$3" == "$4" ]]; then ok "$1" "$2"; else bad "$1" "$2 (want '$4', got '$3')"; fi; }
 
 # --- A5: the agent acquires its own git ----------------------------------
