@@ -51,25 +51,37 @@ counts if its line starts with `warning:`/`WARNING:`/`error:`/`ERROR:`
 gate (`sandbox: this run produced N warning line(s):`, every `log_warn`).
 The one warning allowed besides those is the reaping of a run directory
 an earlier, killed run left behind, which depends on state outside the
-suite. Any other warning, or a missing expected one, fails `WARN`, which
-then prints the mismatches and the whole captured stderr; so does a
-failing probe. The other scripts are expected to print no warnings.
-Their fixtures are built so git has nothing to warn about.
+suite. Every warning seen is listed under the `WARN` line, pass or fail,
+tagged `required:`, `allowed:` or `unexpected:`, plus a `missing ...`
+line per required warning that did not appear exactly once. Any
+unexpected or missing one fails `WARN`, which then also prints the
+whole captured stderr; so does a failing probe. The other scripts are
+expected to print no warnings. Their fixtures are built so git has
+nothing to warn about.
 
-A negative control (`run.sh --negative`) announces the `FAIL`
-lines it will print, one per expected ID, before the first assertion:
+Every assertion line reads `STATUS ID [NOTE] MESSAGE`. An assertion
+expected to fail carries its expectation inline, so a line can be
+interpreted without knowing the test: `FAIL A1 (expected) ...` is a
+wanted failure, `ok A1 (expected FAIL) ...` an assertion that should
+have failed but did not. A plain `FAIL` is always a real failure.
+
+A negative control (`run.sh --negative`) also announces the `FAIL`
+lines it will print, one per expected ID, before the first assertion,
+then prints the assertions' actual output as a separate block:
 
 ```
 The following test expects 21 FAILURE(S):
-=== STDOUT ===
+=== STDOUT (expected)
 FAIL A1 ...
 FAIL A2a ...
 ...
-=== (indented lines after a FAIL are its details) ===
+=== STDOUT (measured; indented lines are details of the line above)
+FAIL A1     (expected) ...
+...
+===
 ```
 
-That list is the same one the summary checks, so it is enforced. A
-`FAIL` in a run with no failure banner is a real failure.
+That list is the same one the summary checks, so it is enforced.
 
 ## tests/git-escape/ — git write containment
 

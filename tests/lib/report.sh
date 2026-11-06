@@ -12,7 +12,10 @@
 #
 # ok()/bad() are plain printf+counter calls that cannot themselves fail,
 # which is what lets every suite use `cmd && ok ... || bad ...` without
-# SC2015's "C also runs if A succeeds but B fails" hazard.
+# SC2015's "C also runs if A succeeds but B fails" hazard. Each line says
+# against what it was judged: an assertion listed in EXPECTED_FAIL is
+# printed as "FAIL ID (expected) ..." or "ok   ID (expected FAIL) ...", so
+# a reader never has to know the list to tell a wanted FAIL from a bug.
 #
 # EXPECTED_FAIL: the assertion IDs this run is expected to fail, a shell
 # array. Empty -- every normal run -- means every assertion is expected to
@@ -25,8 +28,18 @@
 
 PASS=0 FAIL=0
 PASSED_IDS=() FAILED_IDS=() EXPECTED_FAIL=()
-ok()  { printf 'ok   %-6s %s\n' "$1" "$2"; PASS=$((PASS+1)); PASSED_IDS+=("$1"); }
-bad() { printf 'FAIL %-6s %s\n' "$1" "$2"; FAIL=$((FAIL+1)); FAILED_IDS+=("$1"); }
+# _expect_tag ID OUTCOME: the inline note for ID's line -- empty when the
+# assertion is expected to pass, else whether OUTCOME (ok|FAIL) matched.
+_expect_tag() {
+    local e
+    for e in ${EXPECTED_FAIL[@]+"${EXPECTED_FAIL[@]}"}; do
+        [[ "$e" == "$1" ]] || continue
+        if [[ "$2" == FAIL ]]; then printf '(expected) '; else printf '(expected FAIL) '; fi
+        return 0
+    done
+}
+ok()  { printf 'ok   %-6s %s%s\n' "$1" "$(_expect_tag "$1" ok)" "$2"; PASS=$((PASS+1)); PASSED_IDS+=("$1"); }
+bad() { printf 'FAIL %-6s %s%s\n' "$1" "$(_expect_tag "$1" FAIL)" "$2"; FAIL=$((FAIL+1)); FAILED_IDS+=("$1"); }
 
 # _report_line LABEL PASSED FAILED ID...: one "N passed, M failed" line,
 # with the failing IDs appended when there are any.
@@ -60,6 +73,8 @@ report_summary() {
         fi
     done
 
+    # Closes the "=== STDOUT (measured)" block expect_failures opened.
+    [[ ${#EXPECTED_FAIL[@]} -eq 0 ]] || echo "==="
     echo
     _report_line expected: "$((total - ${#EXPECTED_FAIL[@]}))" "${#EXPECTED_FAIL[@]}" "${EXPECTED_FAIL[@]}"
     _report_line tested: "$PASS" "$FAIL" "${FAILED_IDS[@]}"
@@ -103,12 +118,14 @@ warning_lines() {
 # any number, for warnings caused by state outside the test (a run directory
 # an earlier, killed run left behind). Any warning neither matches is a
 # failure, so a new warning breaks the suite instead of scrolling past.
-# On failure the mismatches are printed as indented detail lines, then
-# the whole log, since the warnings only make sense in context.
+# Every warning seen is listed as an indented detail line saying how it
+# was judged (required, allowed, unexpected), pass or fail, so the reader
+# sees which warnings were wanted without reading the test. On failure the
+# missing ones follow, then the whole log, since warnings need context.
 check_warnings() {
     local id="$1" log="$2" w re i matched
     shift 2
-    local -a required=() optional=() warnings=() problems=() hits=()
+    local -a required=() optional=() warnings=() problems=() hits=() seen=()
     while [[ $# -gt 0 && "$1" != "--" ]]; do required+=("$1"); shift; done
     [[ $# -gt 0 ]] && shift
     optional=("$@")
@@ -119,36 +136,48 @@ check_warnings() {
         for i in "${!required[@]}"; do
             if [[ "$w" =~ ${required[i]} ]]; then hits[i]=$((hits[i] + 1)); matched=1; break; fi
         done
-        if [[ "$matched" -eq 0 ]]; then
-            for re in ${optional[@]+"${optional[@]}"}; do
-                if [[ "$w" =~ $re ]]; then matched=1; break; fi
-            done
+        if [[ "$matched" -eq 1 ]]; then
+            seen+=("required:   $w")
+            continue
         fi
-        [[ "$matched" -eq 1 ]] || problems+=("unexpected: $w")
+        for re in ${optional[@]+"${optional[@]}"}; do
+            if [[ "$w" =~ $re ]]; then matched=1; break; fi
+        done
+        if [[ "$matched" -eq 1 ]]; then
+            seen+=("allowed:    $w")
+        else
+            seen+=("unexpected: $w")
+            problems+=("$w")
+        fi
     done
     for i in "${!required[@]}"; do
-        [[ "${hits[i]}" -eq 1 ]] || problems+=("expected once, seen ${hits[i]}x: ${required[i]}")
+        [[ "${hits[i]}" -eq 1 ]] && continue
+        problems+=("${required[i]}")
+        seen+=("missing (want once, seen ${hits[i]}x): ${required[i]}")
     done
     if [[ ${#problems[@]} -eq 0 ]]; then
-        ok "$id" "exactly the expected warnings (${#warnings[@]}: ${#required[@]} required, $((${#warnings[@]} - ${#required[@]})) optional)"
+        ok "$id" "exactly the expected warnings (${#warnings[@]}: ${#required[@]} required, $((${#warnings[@]} - ${#required[@]})) allowed)"
+        [[ ${#seen[@]} -eq 0 ]] || printf '  ..%s\n' "${seen[@]}"
         return 0
     fi
     bad "$id" "the warnings differ from the expected ones"
-    printf '  ..%s\n' "${problems[@]}"
+    printf '  ..%s\n' "${seen[@]}"
     echo "  ..captured stderr:"
     sed 's/^/  | /' "$log"
     return 1
 }
 
 # expect_failures: print, before the assertions run, the FAIL lines a
-# negative control prints on purpose, one per EXPECTED_FAIL ID. Prints
-# nothing when EXPECTED_FAIL is empty, so a normal run stays quiet and a
-# FAIL there is never pre-announced. The list is also enforced:
-# report_summary compares the IDs that actually failed against it.
+# negative control prints on purpose, one per EXPECTED_FAIL ID, as an
+# "expected" block, then open the "measured" block the assertions print
+# into (report_summary closes it). Prints nothing when EXPECTED_FAIL is
+# empty, so a normal run stays quiet and a FAIL there is never
+# pre-announced. The list is also enforced: report_summary compares the
+# IDs that actually failed against it.
 expect_failures() {
     [[ ${#EXPECTED_FAIL[@]} -gt 0 ]] || return 0
     echo "The following test expects ${#EXPECTED_FAIL[@]} FAILURE(S):"
-    echo "=== STDOUT ==="
+    echo "=== STDOUT (expected)"
     printf 'FAIL %s ...\n' "${EXPECTED_FAIL[@]}"
-    echo "=== (indented lines after a FAIL are its details) ==="
+    echo "=== STDOUT (measured; indented lines are details of the line above)"
 }
