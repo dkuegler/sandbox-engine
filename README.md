@@ -250,15 +250,41 @@ with them in mind.
   not hidden: every committed version of every branch is readable. In
   `--worktree` mode, choosing `n` (main checkout not mounted) hides
   untracked and ignored files but not history.
-- **`git push` works** to any remote the agent can reach with credentials
-  it has. No host forge credentials are mounted. The gate protects your
-  local repository, not remote services.
+- **`git push` is not blocked, only disarmed.** A push writes to the
+  remote, not to `.git`, so the read-only mask does not stop it: it
+  succeeds and only the local `refs/remotes/*` update fails
+  (`docs/git-breakout.md`). What stops a push to your real remote is
+  that the agent has neither its address nor a credential for it:
+  - every `.git` file git reads for remotes (`config`, `config.worktree`,
+    `FETCH_HEAD`, `logs/HEAD`) is overlaid with a read-only sanitized
+    copy (`functions/git-mask.sh`). `url`/`pushurl` become
+    `REDACTED-BY-SANDBOX`, and `[credential]`, `[http …]`, `[url …]` and
+    `[include…]` sections are dropped, so `git remote -v` shows a
+    placeholder while `git log origin/master` still works;
+  - no forge credential is mounted: `$HOME` is not bound, so there is no
+    `~/.ssh`, `~/.gitconfig`, `~/.git-credentials` or `~/.config/gh`, and
+    `--containall` starts from a clean environment, so `SSH_AUTH_SOCK`
+    and forge tokens are not inherited.
+
+  The push still lands if the agent is given a URL that needs no
+  credential (anonymously writable, or token in the URL), if a credential
+  reaches it some other way (a forwarded environment variable, a
+  `--bind`), or if the remote is a local path inside a bound tree. The
+  gate protects your local repository, not remote services.
 - **The default mode writes into your working tree.** Uncommitted work in
   the checkout can be changed or deleted by the agent. Use `--worktree`
   when that matters.
-- **Shared caches are shared.** `~/.agent/uv-cache` is read-write for
-  every run of every project, so one session can poison packages that a
-  later session installs.
+- **Shared folders are shared.** These host directories are bound
+  read-write into every run of every project, so one session can plant
+  content a later session, in any project, consumes:
+  - `~/.agent/uv-cache`: uv's package cache (`/tmp/.cache/uv` in the
+    session). A poisoned wheel installs in later sessions.
+  - `~/.agent/omp-models` and `~/.agent/omp-embeddings`: omp's on-device
+    model and embedding weights. The code that loads them stays per run.
+
+  Per project, and shared by both modes and every worktree of that
+  repository: `~/.agent/omp-history/<key>`, `~/.agent/omp-logs/<key>` and
+  `~/.agent/opencode-share/<key>`.
 - **`--worktree` is interactive only.** The approval prompt needs a
   terminal.
 - **Agent installs are not pinned.** Every image build installs the
