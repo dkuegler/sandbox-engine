@@ -7,8 +7,8 @@ to re-establish it. `usage.md` is the user reference.
 
 | document | subject |
 | --- | --- |
-| [`usage.md`](usage.md) | the user reference: invocation and options, `sandbox.yml`, what the session sees, the start-up prompts, worktree mode, host state |
-| [`apptainer.md`](apptainer.md) | apptainer behaviour the launch line and the image build rely on: `$HOME` absent unless bound, `/tmp` limits, `EBUSY` on renaming onto a bind, `EROFS` for claude's lock and temporary files beside a bound file, nested mount points under a bound directory, no gVisor through apptainer, `dockerfile:` builds served from docker's layer cache with `--build-arg` dropped, and the per-build id that keeps the agent install out of that cache |
+| [`usage.md`](usage.md) | the user reference: invocation and options, `sandbox.yml`, building images on another machine, what the session sees, the start-up prompts, worktree mode, host state |
+| [`apptainer.md`](apptainer.md) | apptainer behaviour the launch line and the image build rely on: `$HOME` absent unless bound, `/tmp` limits, `EBUSY` on renaming onto a bind, `EROFS` for claude's lock and temporary files beside a bound file, nested mount points under a bound directory, no gVisor through apptainer, `dockerfile:` builds served from docker's layer cache with `--build-arg` dropped, the per-build id that keeps the agent install out of that cache, and which build client and daemon a build reaches (`BUILDKIT_HOST`, `DOCKER_HOST`, the replaced `DOCKER_CONFIG`, `ssh` under `--fakeroot`) |
 | [`git-breakout.md`](git-breakout.md) | the git boundary: what the read-only `.git` mask enforces, measured behaviour of git against it, what is not contained, reproduction |
 | [`commit-message-generation.md`](commit-message-generation.md) | the `--worktree` message fallback: why it runs inside the sandbox, which model each agent uses, and which of the run's own flags propagate |
 | [`parallelization.md`](parallelization.md) | how claude-code, omp and opencode handle concurrent sessions, and why opencode's server mode does not survive `--containall` unmodified |

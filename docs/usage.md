@@ -126,6 +126,60 @@ still-running sandbox process, so a run that never writes a patch leaves
 nothing behind. If the directory is not gitignored, the channel is off for
 that run. Details: `project-config-masking.md`, "The patch channel".
 
+## Building images on another machine
+
+`apptainer build` turns the generated Dockerfile into an image with a
+`buildctl` or `docker` client on this host. The BuildKit or Docker daemon
+that the client talks to can run on another machine. `sandbox.sh` takes no
+option for this. It inherits the builder variables from the shell you start
+it in. See `apptainer.md`, "Which builder a build reaches", for the
+mechanism.
+
+| client on `PATH` | used when | daemon address |
+| --- | --- | --- |
+| `buildctl` | `DOCKER_BUILDKIT` is unset or empty | `BUILDKIT_HOST`; default `/run/buildkit/buildkitd.sock` |
+| `docker` | there is no `buildctl`, or `DOCKER_BUILDKIT` is set to any value | `DOCKER_HOST` |
+
+Forward the remote daemon's socket to a socket of your own over SSH, then
+point the client at it:
+
+```sh
+# BuildKit (buildkitd on build-host, your user allowed on its socket)
+ssh -fN -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
+    -L "$XDG_RUNTIME_DIR/buildkitd.sock:/run/buildkit/buildkitd.sock" build-host
+export BUILDKIT_HOST="unix://$XDG_RUNTIME_DIR/buildkitd.sock"
+
+# Docker (your user in the docker group on build-host)
+ssh -fN -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
+    -L "$XDG_RUNTIME_DIR/docker.sock:/var/run/docker.sock" build-host
+export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
+export DOCKER_BUILDKIT=1    # only needed if buildctl is also installed here
+
+./sandbox.sh --rebuild omp
+```
+
+If `$XDG_RUNTIME_DIR` is unset, use any directory only you can enter. ssh
+creates the local socket owner-only (its `StreamLocalBindMask` default).
+The build host's sshd must allow socket forwarding
+(`AllowStreamLocalForwarding`, on by default). Do not use the following:
+
+- **`ssh://` in `BUILDKIT_HOST` or `DOCKER_HOST`.** The build runs under
+  `--fakeroot` as uid 0 of a user namespace, so `ssh` looks for its config,
+  keys and `known_hosts` in `/root/.ssh`, not yours.
+- **`docker context use`.** apptainer runs `docker build` with a temporary
+  `DOCKER_CONFIG` that holds no contexts, but it runs `docker save` with
+  yours. The two commands can reach different daemons. Use `DOCKER_HOST`.
+- **A `tcp://` `BUILDKIT_HOST`.** apptainer passes `buildctl` no TLS flags,
+  so the connection is plaintext and unauthenticated. A Docker daemon over
+  TCP needs `DOCKER_TLS_VERIFY=1` and an explicit `DOCKER_CERT_PATH`,
+  because the default certificate path is the replaced `DOCKER_CONFIG`.
+- **A buildx builder that is not the daemon's own (`docker` driver).**
+  `docker save` needs the image in the daemon's image store.
+
+The build daemon decides what every session of that image runs: treat it
+as part of the sandbox. It receives the generated Dockerfile, which in
+`dockerfile` mode includes your project Dockerfile's text.
+
 ## What the session sees
 
 - **The project**, read-write, and every `.git` in it read-only. Remote URLs and

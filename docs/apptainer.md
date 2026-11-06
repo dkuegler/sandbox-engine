@@ -229,3 +229,65 @@ later one (packages, agent install) miss the cache; the base stage before it
 (a preset's or a custom Dockerfile) stays cacheable. The id stays in the image
 as `/etc/sandbox-engine-build-id`, and `docker buildx du` then lists one new
 install-layer record per build, with usage count 1.
+
+## Which builder a build reaches, and how it can be remote
+
+`D` — apptainer 1.5.3 source, read 2026-11-06; nothing in this section has
+been exercised against a remote daemon.
+
+**Client selection** (`buildImage`, `conveyorPacker_buildkit.go`). If
+`buildctl` is on `PATH` and `DOCKER_BUILDKIT` is empty or unset, the build
+runs `buildctl build`. If `buildctl` is missing, or `DOCKER_BUILDKIT` has any
+non-empty value (including `0`), it runs `docker build` and then
+`docker save`. If neither binary is on `PATH`, the build fails with
+`neither "buildctl" nor "docker" could be found in the PATH`.
+
+**The host environment reaches the client.** `--fakeroot` re-executes the
+build in a user namespace, with `Envs: os.Environ()`
+(`fakerootExec`, `cmd/internal/cli/build_linux.go`). Both clients inherit
+the calling shell's environment. `backend_build_image`
+(`functions/apptainer.sh`) neither sets nor clears any builder variable, so
+`BUILDKIT_HOST` and `DOCKER_HOST` exported before `sandbox.sh` reach the
+client unchanged.
+
+**`buildctl` path.** The daemon address comes from `--buildkit-host`
+(`cmd/internal/cli/apptainer.go`, env key `BUILDKIT_HOST`). When that is
+empty and `BUILDKIT_HOST` is unset, the build requires
+`/run/buildkit/buildkitd.sock` to exist. `buildkitBuild` passes no `--tls*`
+flag, and `buildctl` reads TLS settings only from flags
+(`cmd/buildctl/main.go`, moby/buildkit). A `tcp://` `BUILDKIT_HOST` therefore
+connects in plaintext and unauthenticated. `BUILDKIT_HOST` also accepts
+`unix://` and the connection helpers `ssh://`, `docker-container://`,
+`podman-container://`, `nerdctl-container://` and `kube-pod://`
+(`client/connhelper/`, moby/buildkit).
+
+**`docker` path.** `buildImage` sets `DOCKER_CONFIG` to a temporary
+directory. That directory holds only a registry-auth `config.json` and
+symlinks to `~/.docker/cli-plugins` and `~/.docker/buildx`. It has no
+`contexts/` directory, so a context chosen with `docker context use` (stored
+in `~/.docker/config.json`) does not apply to `docker build`. `docker save`
+runs with the unmodified environment, so it would see that context, and the
+two commands could then reach different daemons. `DOCKER_HOST` is read from
+the environment by both commands. The docker CLI defaults `DOCKER_CERT_PATH`
+to the config directory (`InstallFlags`, `cli/flags/options.go`,
+docker/cli). Under the replaced `DOCKER_CONFIG`, a TLS connection finds no
+certificates unless `DOCKER_CERT_PATH` is set. `docker save` requires the
+built image to be in the daemon's image store. A buildx builder with a
+non-`docker` driver does not put it there unless it loads the image.
+
+**`ssh://` addresses run inside the fakeroot namespace.** Both clients
+implement `ssh://` by executing the `ssh` binary, which inside the build runs
+as uid 0 of the user namespace. OpenSSH locates `~/.ssh` (config,
+`known_hosts`, keys) through the passwd entry of the current uid, not
+`$HOME`. The namespace's uid 0 resolves to `/root`, so the user's own SSH
+configuration and host keys are not found. An `ssh -L` forward to a local
+Unix socket, started by the user before the build, avoids this: the client
+then connects through `unix://`, and the namespace's uid 0 maps to the
+socket owner's uid.
+
+**What the builder receives and returns.** The build context is
+`sandbox/agent/`, which holds the generated `Dockerfile`. In `dockerfile`
+mode, that file embeds the project Dockerfile's text. The builder returns
+the image every session of that `<agent>.<env-tag>.sif` then runs. A builder
+that is not trustworthy, or a connection that is not authenticated,
+therefore decides the content of the sandbox's root filesystem.
