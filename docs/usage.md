@@ -29,6 +29,7 @@ before the agent name they belong to `sandbox.sh`, after it to the agent.
 | `--allow-external-gitdir` | mount, read-only, a git dir that a worktree or submodule `.git` file points to outside every bound tree |
 | `--ignore-warnings` | start a run that warned even when there is no terminal to confirm on |
 | `--worktree BRANCH` | run in a throwaway worktree on `agent/BRANCH` (below) |
+| `--start-point COMMIT` | with `--worktree`: create `agent/BRANCH` from `COMMIT` instead of `HEAD` |
 | `--commit-model MODEL` | model for the generated commit message in worktree mode |
 | `--rebuild` | rebuild the image even if it exists |
 | `--no-update-check` | skip the agent-version check |
@@ -243,7 +244,14 @@ and why a check was skipped. Failures are otherwise silent.
 ## Worktree mode (`--worktree BRANCH`)
 
 The agent works in `~/.agent/worktrees/<project>-<hash>/BRANCH`, a worktree on
-`agent/BRANCH`. On the terminal you choose how the main checkout is mounted:
+`agent/BRANCH`. A new `agent/BRANCH` starts from the main checkout's `HEAD`, or
+from `--start-point COMMIT`: git's `<start-point>`, so any commit-ish works
+(`main`, `origin/main`, `v1.2`, a SHA, `HEAD~3`). It is resolved to a commit
+before the image build and that commit is used, so a ref moving meanwhile
+changes nothing. Only local refs count: nothing is fetched. `--start-point`
+without `--worktree`, or with an `agent/BRANCH` that already exists, refuses
+the run; an existing branch is never moved. On the terminal you choose how
+the main checkout is mounted:
 read-only (`r`), read-write (`w`), or working tree not mounted (`n`; its `.git`
 stays readable). Its `.git` stays read-only in every case, so the agent cannot
 commit.

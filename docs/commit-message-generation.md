@@ -358,7 +358,7 @@ the environment this was written in.
 ## Reproduction
 
 ```
-./tests/git-escape/worktree_check.sh
+./tests/worktree/worktree_check.sh
 ```
 
 Assertions `W10`–`W10l` cover: generation goes through `apptainer exec` against

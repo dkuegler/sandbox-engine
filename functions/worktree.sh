@@ -16,6 +16,9 @@
 # Globals published for sandbox.sh / functions/agents.sh:
 #   WORKTREE_BRANCH        the --worktree argument, verbatim (never invented)
 #   WORKTREE_REF           "agent/$WORKTREE_BRANCH"
+#   WORKTREE_START_SHA     the commit --start-point resolved to, pinned in
+#                          preflight; empty when the flag was not given and
+#                          a new branch starts from HEAD
 #   WORKTREE_REPO_ROOT     the main repository's top level (== PROJECT_DIR)
 #   WORKTREE_DIR           $HOME/.agent/worktrees/<project-key>/<branch>
 #   WORKTREE_PROJECT_MODE  ro|rw|deny -- how the main checkout is exposed
@@ -109,6 +112,74 @@ worktree_validate_branch() {
     fi
 }
 
+# worktree_resolve_start_point: --start-point is git's <start-point> for
+# the new agent/<branch>: any commit-ish (branch, remote-tracking ref,
+# tag, SHA, HEAD~3, ...), defaulting to HEAD when absent. Resolved here,
+# once, to a full SHA, and that SHA -- not the name -- is what
+# worktree_prepare hands to `git worktree add`: the image build sits
+# between the two, and a ref that moves meanwhile must not change what
+# the agent is started on. Local refs only; nothing is fetched.
+#
+# Validated in layers, each sufficient on its own for what it guards:
+# an empty value and a leading "-" are refused before git sees the value
+# (the same reasoning as worktree_validate_branch, and independent of the
+# git version); --end-of-options is the second guard against option
+# parsing; ^{commit} peels an annotated tag to its commit and refuses a
+# tree or blob. Only the resulting SHA is passed on.
+worktree_resolve_start_point() {
+    local sp="${WORKTREE_START_POINT:-}"
+    WORKTREE_START_SHA=""
+    [[ "${WORKTREE_START_POINT_SET:-0}" -eq 1 ]] || return 0
+    if [[ -z "$sp" ]]; then
+        worktree_fail "--start-point needs a commit" \
+            "omit the flag to start from HEAD."
+    fi
+    case "$sp" in
+        -*)
+            worktree_fail "start point '$sp' starts with '-'" \
+                "the host-side git commands this feature runs would read it as an option."
+            ;;
+    esac
+    WORKTREE_START_SHA="$(git -C "$WORKTREE_REPO_ROOT" rev-parse --verify --quiet \
+        --end-of-options "$sp^{commit}" 2>/dev/null)" || WORKTREE_START_SHA=""
+    if [[ -z "$WORKTREE_START_SHA" ]]; then
+        worktree_fail "start point '$sp' does not name a commit in $WORKTREE_REPO_ROOT" \
+            "local refs only: a remote branch needs a \`git fetch\` first."
+    fi
+    if git -C "$WORKTREE_REPO_ROOT" show-ref --verify --quiet "refs/heads/$WORKTREE_REF"; then
+        worktree_refuse_start_point_on_existing
+    fi
+}
+
+# worktree_refuse_start_point_on_existing: --start-point only shapes a
+# branch this run creates. On an existing agent/<branch> -- a resume, or
+# one of the refuse cases -- honouring it would mean moving or recreating
+# the branch, and ignoring it would run the agent on code the caller did
+# not ask for, so neither happens. Same as git's own `-b` on an existing
+# name. Called early from preflight (fail before the prompt) and again
+# under the lock in worktree_prepare, which is authoritative.
+worktree_refuse_start_point_on_existing() {
+    local sha
+    sha="$(git -C "$WORKTREE_REPO_ROOT" rev-parse --short "refs/heads/$WORKTREE_REF" 2>/dev/null)" || sha="unknown"
+    worktree_fail "--start-point given, but branch $WORKTREE_REF already exists (at $sha)" \
+        "a start point applies only to a branch this run creates; an existing one is" \
+        "never moved. Drop --start-point to resume or inspect it, or pick a new" \
+        "--worktree branch."
+}
+
+# worktree_start_point_label: what the confirmation prompt shows as the
+# start point. Display only, sampled before the lock: worktree_prepare is
+# the authority on create vs. resume.
+worktree_start_point_label() {
+    if git -C "$WORKTREE_REPO_ROOT" show-ref --verify --quiet "refs/heads/$WORKTREE_REF"; then
+        echo "existing $WORKTREE_REF, kept as it is"
+    elif [[ -n "${WORKTREE_START_SHA:-}" ]]; then
+        echo "$WORKTREE_START_POINT (${WORKTREE_START_SHA:0:12})"
+    else
+        echo "HEAD ($(git -C "$WORKTREE_REPO_ROOT" rev-parse --short=12 --verify --quiet HEAD 2>/dev/null || echo 'no commit'))"
+    fi
+}
+
 # worktree_preflight: validate the flag and the repository, and derive
 # every path this feature uses. Runs before the image build and before any
 # container starts, so a repository that cannot support the flow is
@@ -199,6 +270,7 @@ worktree_preflight() {
     # gate pass (tests, crash resume).
     WORKTREE_CONFIG_EXCLUDE=()
     WORKTREE_CONFIG_DELETE=()
+    worktree_resolve_start_point
 }
 
 # worktree_confirm_readonly_project: worktree mode changes this sandbox's
@@ -234,6 +306,7 @@ worktree_confirm_readonly_project() {
             "--worktree $WORKTREE_BRANCH" \
             "  worktree (read-write): $WORKTREE_DIR" \
             "  branch:                $WORKTREE_REF" \
+            "  start point:           $(worktree_start_point_label)" \
             "  main checkout:         $PROJECT_DIR" \
             "" \
             "The agent works only in the worktree. The main checkout is mounted read-only" \
@@ -434,6 +507,10 @@ worktree_prepare() {
     fi
     checked_out="$(worktree_ref_checkout_path)"
 
+    if [[ "$ref_exists" -eq 1 && "${WORKTREE_START_POINT_SET:-0}" -eq 1 ]]; then
+        worktree_refuse_start_point_on_existing
+    fi
+
     if [[ "$ref_exists" -eq 1 && "$dir_exists" -eq 1 && "$checked_out" == "$WORKTREE_DIR" ]]; then
         if ! git -C "$WORKTREE_DIR" rev-parse --git-dir >/dev/null 2>&1; then
             worktree_fail "$WORKTREE_DIR is registered for $WORKTREE_REF but is not a usable worktree" \
@@ -466,14 +543,18 @@ worktree_prepare() {
 
     mkdir -p "$(dirname "$WORKTREE_DIR")"
     worktree_message_file_ensure reset
-    # git's own exclusivity check lives here: if HEAD's branch, or
-    # agent/<branch>, is already checked out elsewhere, this refuses rather
-    # than racing.
-    if ! git -C "$WORKTREE_REPO_ROOT" worktree add -b "$WORKTREE_REF" "$WORKTREE_DIR" HEAD; then
+    # git's own exclusivity check lives here: if agent/<branch> is already
+    # checked out elsewhere, this refuses rather than racing. The start
+    # point is the SHA pinned in preflight, or HEAD when none was given.
+    if ! git -C "$WORKTREE_REPO_ROOT" worktree add -b "$WORKTREE_REF" "$WORKTREE_DIR" "${WORKTREE_START_SHA:-HEAD}"; then
         worktree_fail "git worktree add refused to create $WORKTREE_DIR" \
             "nothing was created and no branch was moved."
     fi
-    echo "worktree: created $WORKTREE_DIR on $WORKTREE_REF from HEAD" >&2
+    if [[ -n "${WORKTREE_START_SHA:-}" ]]; then
+        echo "worktree: created $WORKTREE_DIR on $WORKTREE_REF from $WORKTREE_START_POINT (${WORKTREE_START_SHA:0:12})" >&2
+    else
+        echo "worktree: created $WORKTREE_DIR on $WORKTREE_REF from HEAD" >&2
+    fi
 }
 
 # worktree_message_template: the agreed commit-message shape. One copy,

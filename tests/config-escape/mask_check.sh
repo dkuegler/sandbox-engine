@@ -1,8 +1,8 @@
 #!/bin/bash
 # Host-side, apptainer-free verification of the project/global config-mask
 # surface: which agent-config paths a session sees, and which host state
-# never crosses in. Split out of tests/git-escape/worktree_check.sh, which
-# now covers --worktree mode alone; this suite is not about git write
+# never crosses in. Split out of what is now tests/worktree/worktree_check.sh,
+# which covers --worktree mode alone; this suite is not about git write
 # containment at all, and grouping it under "git-escape" mislabeled it.
 # Same standard as sanitize_check.sh/worktree_check.sh: it calls the REAL
 # functions against REAL fixtures and inspects their real output, rather

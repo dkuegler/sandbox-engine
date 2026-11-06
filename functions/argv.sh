@@ -1,10 +1,10 @@
 #!/bin/bash
 # argv parsing: usage(), --environment KEY=VALUE handling, and the main
 # option loop. Populates PROJECT_DIR, AGENT, ARGS, CLI_ENV_*, CLI_BINDS,
-# WORKTREE_BRANCH.
+# WORKTREE_BRANCH, WORKTREE_START_POINT.
 
 usage() {
-    echo "Usage: $0 [--project-dir DIR] [--worktree BRANCH] [--commit-model MODEL] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [--ignore-warnings] [-v|--verbose|-vv] [--rebuild] [--no-update-check] <claude|opencode|omp|script> [agent-args...]" >&2
+    echo "Usage: $0 [--project-dir DIR] [--worktree BRANCH [--start-point COMMIT]] [--commit-model MODEL] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [--ignore-warnings] [-v|--verbose|-vv] [--rebuild] [--no-update-check] <claude|opencode|omp|script> [agent-args...]" >&2
     exit 1
 }
 
@@ -66,6 +66,12 @@ parse_argv() {
     # caller asked for, used verbatim (functions/worktree.sh never invents
     # a branch name). Validated there, not here.
     WORKTREE_BRANCH=""
+    # git's <start-point> for a NEW agent/<branch>: empty means HEAD, as in
+    # git itself. Only meaningful with --worktree; resolved and validated
+    # in functions/worktree.sh. WORKTREE_START_POINT_SET tells an explicit
+    # empty value (refused) apart from the flag being absent.
+    WORKTREE_START_POINT=""
+    WORKTREE_START_POINT_SET=0
     # Explicit override for the model that writes a commit message when the
     # agent left its own message file empty (functions/commit-message.sh).
     # Empty means "let the agent resolve it": omp's own "commit" model
@@ -127,6 +133,18 @@ parse_argv() {
             --worktree=*)
                 # shellcheck disable=SC2034  # WORKTREE_BRANCH is read by functions/worktree.sh and sandbox.sh after parse_argv returns
                 WORKTREE_BRANCH="${1#--worktree=}"
+                shift
+                ;;
+            --start-point)
+                [[ $# -ge 2 ]] || usage
+                WORKTREE_START_POINT="$2"
+                WORKTREE_START_POINT_SET=1
+                shift 2
+                ;;
+            --start-point=*)
+                # shellcheck disable=SC2034  # WORKTREE_START_POINT is read by functions/worktree.sh after parse_argv returns
+                WORKTREE_START_POINT="${1#--start-point=}"
+                WORKTREE_START_POINT_SET=1
                 shift
                 ;;
             --commit-model)
@@ -200,4 +218,10 @@ parse_argv() {
     done
 
     [[ -n "$AGENT" ]] || usage
+    # Refused rather than ignored: a start point that silently does nothing
+    # would run the agent on code the caller did not ask for.
+    if [[ "$WORKTREE_START_POINT_SET" -eq 1 && -z "$WORKTREE_BRANCH" ]]; then
+        echo "error: --start-point is only valid together with --worktree BRANCH" >&2
+        exit 1
+    fi
 }

@@ -17,6 +17,8 @@
 #   --allow-external-gitdir    mount an outside git dir a .git file points to (ro)
 #   --ignore-warnings          start after warnings with no terminal to confirm
 #   --worktree BRANCH          run in a worktree on agent/BRANCH; commit on approval
+#   --start-point COMMIT       with --worktree: create agent/BRANCH from COMMIT
+#                              instead of HEAD (git's <start-point>)
 #   --commit-model MODEL       model for the generated worktree commit message
 #   --rebuild                  rebuild the image
 #   --no-update-check          skip the agent-version check

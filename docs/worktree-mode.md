@@ -183,6 +183,29 @@ feature runs, so a leading `-` is rejected separately, as are `.` and `..`
 path components (the worktree's on-disk path is derived from the branch
 name).
 
+## Start point
+
+A new `agent/<branch>` is created from the main checkout's `HEAD`, or from
+`--start-point COMMIT`, which takes the same values as git's `<start-point>`
+(git-branch(1), git-worktree(1)). `worktree_resolve_start_point()` resolves it
+once, during preflight, with
+`git rev-parse --verify --end-of-options "COMMIT^{commit}"`, and
+`worktree_prepare()` passes the resulting SHA, not the name, to
+`git worktree add`. The image build runs between the two, and a ref that moves
+in that window must not change what the agent starts on. The value is
+validated in layers: an empty value and a leading `-` are refused before git
+sees it, as for branch names; `--end-of-options` is a second guard against
+option parsing; `^{commit}` peels an annotated tag and refuses a tree or blob.
+Only local refs resolve; nothing is fetched, and no upstream is configured on
+the new branch.
+
+`--start-point` applies only to a branch the run creates. If `agent/<branch>`
+already exists — a resume or one of the refuse cases — the run refuses, both
+in preflight and again under the lock in `worktree_prepare()`: honouring the
+flag would move an existing branch, and ignoring it would start the agent on
+code the caller did not ask for. Without `--worktree`, `parse_argv()` refuses
+the flag outright.
+
 ## Worktree path key
 
 Worktrees live at `$HOME/.agent/worktrees/<basename>-<8-hex-digest>/<branch>`,
@@ -260,16 +283,17 @@ checkout for inspection and for a later resumed run, and only the lock goes.
 ## Reproduction
 
 ```
-./tests/git-escape/worktree_check.sh    # host-side, no apptainer needed
-./tests/git-escape/run.sh --negative    # meta-test: assertions must FAIL
-./tests/git-escape/run.sh               # full probe, needs apptainer
+./tests/git-escape/worktree_mask_check.sh   # host-side, no apptainer needed
+./tests/worktree/worktree_check.sh          # host-side, no apptainer needed
+./tests/git-escape/run.sh --negative        # meta-test: assertions must FAIL
+./tests/git-escape/run.sh                   # full probe, needs apptainer
 ```
 
-`worktree_check.sh` calls the real functions against real fixtures and
+`worktree_mask_check.sh` calls the real functions against real fixtures and
 asserts the three masks are produced, plus a negative control showing the
 worktree's `.git` is *not* masked without the worktree root — so the
-assertion cannot pass for free. It also drives the lock through all four
-of its outcomes (live owner refused, dead local owner taken over,
+assertion cannot pass for free. `worktree_check.sh` drives the lock through
+all four of its outcomes (live owner refused, dead local owner taken over,
 foreign-host owner refused, release reached through the registered hook).
 `run.sh`'s A10/A11 assert the same boundary from inside a container.
 
@@ -296,8 +320,8 @@ flock -n lock.file -c true && echo "released once the child is gone"
 
 ## Status of the container-side half
 
-`M` — the read-only binds are produced, verified host-side (49/49,
-`worktree_check.sh`). `M` — the assertions can fail: the negative control
+`M` — the read-only binds are produced, verified host-side (4/4,
+`worktree_mask_check.sh`). `M` — the assertions can fail: the negative control
 fails all seven worktree assertions with no mask. `D` — that the kernel
 refuses writes through these particular binds from inside a live container
 follows from the same bind mechanism measured for every other gitdir in

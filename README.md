@@ -111,11 +111,13 @@ Use `command omp` or `\omp` to reach an agent installed on the host.
 1. **Setup.** The run creates branch `agent/fix-parser` from the main
    checkout's current `HEAD` and a worktree for it in
    `~/.agent/worktrees/<project>-<hash>/fix-parser`. Uncommitted changes in
-   the main checkout are not carried over. To start from another branch or
-   commit, check it out in the main checkout first. If both the branch and
-   the worktree already exist, the run resumes them as they are, whatever
-   `HEAD` is now. Any other mix of an existing branch and worktree refuses
-   the run. A lock keeps a second run out of the same worktree.
+   the main checkout are not carried over. `--start-point COMMIT` starts the
+   branch from any other local branch, tag or commit instead, as git's own
+   `<start-point>` does (`--worktree fix-parser --start-point origin/main`).
+   If both the branch and the worktree already exist, the run resumes them
+   as they are; `--start-point` then refuses the run rather than move the
+   branch. Any other mix of an existing branch and worktree refuses the run.
+   A lock keeps a second run out of the same worktree.
 2. **Main checkout.** On the terminal, you choose how your main checkout is
    mounted beside the worktree:
    - `r`: read-only.
@@ -332,6 +334,7 @@ sandbox/
 tests/
   git-escape/              git write containment (host-side + live container)
   config-escape/           config surface and host-state leakage (host-side)
+  worktree/                --worktree mode behaviour (host-side)
   tool-failure/omp.py      failed-tool-call ratios from omp session logs
 docs/                      user reference and fact records (docs/README.md)
 ```
@@ -349,7 +352,8 @@ docs/                      user reference and fact records (docs/README.md)
 ## Testing
 
 ```sh
-./tests/git-escape/worktree_check.sh      # host only
+./tests/worktree/worktree_check.sh        # host only
+./tests/git-escape/worktree_mask_check.sh # host only
 ./tests/git-escape/sanitize_check.sh      # host only
 ./tests/config-escape/mask_check.sh       # host only
 ./tests/git-escape/run.sh                 # needs apptainer

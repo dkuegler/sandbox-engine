@@ -1,16 +1,12 @@
 #!/bin/bash
-# Host-side, apptainer-free verification of --worktree mode
-# (functions/worktree.sh, plus the worktree root mask_git_readonly()
-# gained in functions/git-mask.sh). Companion to sanitize_check.sh, same
-# standard: it calls the REAL functions against REAL git fixtures and
-# inspects their real output, rather than reasoning about the code.
+# Host-side, apptainer-free verification of --worktree mode's behaviour
+# (functions/worktree.sh). Same standard as the git-escape suites: it
+# calls the REAL functions against REAL git fixtures and inspects their
+# real output, rather than reasoning about the code.
 #
 # What this proves without a container:
-#   - the writable worktree does not reopen a path to rewriting the main
-#     repository's history: all three gitdir paths a worktree's history is
-#     reachable through end up in BINDS read-only, and the negative
-#     control shows that is NOT true without the worktree root, so the
-#     assertion is load-bearing rather than passing for free;
+#   - branch names and --start-point values are validated, and a new
+#     agent/<branch> starts from HEAD or the pinned start point;
 #   - the branch-collision policy resolves to resume / refuse / create as
 #     specified, and the per-worktree lock refuses a second concurrent run,
 #     takes over a crashed one, refuses one held from another host, and
@@ -29,9 +25,8 @@
 #     are security properties, not details), and the per-agent model and
 #     flag-propagation rules hold.
 #
-# What it cannot prove, and what needs apptainer (see run.sh/probe.sh):
-# that the kernel actually refuses writes through those read-only binds
-# from inside a live container.
+# That the writable worktree does not reopen a path to the main
+# repository's history is tests/git-escape/worktree_mask_check.sh.
 #
 # Exit: 0 all passed, 1 an assertion failed, 99 the suite could not run.
 #
@@ -92,8 +87,6 @@ source "$REPO_ROOT/functions/log.sh"
 source "$REPO_ROOT/functions/apptainer.sh"
 # shellcheck source=functions/agents.sh
 source "$REPO_ROOT/functions/agents.sh"
-# shellcheck source=functions/git-mask.sh
-source "$REPO_ROOT/functions/git-mask.sh"
 # shellcheck source=functions/cleanup.sh
 source "$REPO_ROOT/functions/cleanup.sh"
 # shellcheck source=functions/worktree.sh
@@ -103,10 +96,6 @@ source "$REPO_ROOT/functions/commit-message.sh"
 
 RUN_DIR="$W/run"
 mkdir -p "$RUN_DIR" || fail_setup "mkdir RUN_DIR"
-# Read by mask_git_readonly() (functions/git-mask.sh), sourced above; a use
-# reached through `source` is invisible here without -x.
-# shellcheck disable=SC2034
-ALLOW_EXTERNAL_GITDIR=0
 # shellcheck disable=SC2034  # read by log_debug (functions/log.sh)
 VERBOSE=0
 
@@ -139,6 +128,7 @@ worktree_preflight || fail_setup "worktree_preflight refused the main fixture"
 MAIN_WT_DIR="$WORKTREE_DIR"
 MAIN_WT_REF="$WORKTREE_REF"
 (
+    # shellcheck disable=SC2034  # read by worktree_preflight (functions/worktree.sh); subshell-local on purpose
     PROJECT_DIR="$W/other/main"
     worktree_preflight
     printf '%s\n' "$WORKTREE_DIR"
@@ -248,57 +238,8 @@ w6c_out="$( (worktree_message_file_ensure reset) 2>&1 )"; w6c_rc=$?
 rm -f "$WORKTREE_MSG_HOST"
 mv "$W/msg.saved" "$WORKTREE_MSG_HOST"
 
-# --- W7: the security assertion ------------------------------------------
-# Every path a worktree's history is reachable through must be masked
-# read-only: the worktree's own "gitdir:" pointer FILE (unmasked, the agent
-# could repoint it at a writable directory), the per-worktree metadata
-# directory it names, and the main repository's .git itself -- which a
-# linked worktree shares outright (one object store, one ref namespace).
-WT_GITFILE="$WORKTREE_DIR/.git"
 WT_GITDIR="$(git -C "$WORKTREE_DIR" rev-parse --absolute-git-dir 2>/dev/null)"
 MAIN_GITDIR="$W/main/.git"
-
-bind_is_ro() {
-    local want="$1" tok
-    for tok in ${BINDS[@]+"${BINDS[@]}"}; do
-        [[ "$tok" == "$want:$want:ro" ]] && return 0
-    done
-    return 1
-}
-
-# shellcheck disable=SC2034  # read by mask_git_readonly() through `source`
-EXTRA_BIND_SRCS=()
-# shellcheck disable=SC2034  # read by mask_git_readonly() through `source`
-EXTRA_BIND_RO=()
-BINDS=()
-mask_git_readonly >/dev/null 2>&1
-
-w7_fail=0
-for p in "$WT_GITFILE" "$WT_GITDIR" "$MAIN_GITDIR"; do
-    bind_is_ro "$p" || { w7_fail=1; echo "  ..NOT masked read-only: $p"; }
-done
-[[ "$w7_fail" -eq 0 ]] \
-    && ok W7 "worktree .git file, its metadata dir, and the main .git are all bound read-only" \
-    || bad W7 "the writable worktree leaves a path to the main repository's history open"
-
-[[ "$WT_GITDIR" == "$MAIN_GITDIR"/worktrees/* ]] \
-    && ok W7b "the worktree's gitdir really is inside the main repository ($WT_GITDIR)" \
-    || bad W7b "unexpected worktree gitdir layout: $WT_GITDIR"
-
-# Negative control. Without the worktree root, the worktree's own .git is
-# outside every walked tree and is NOT masked -- so W7 is testing the new
-# root, not something that was true anyway. (The main .git stays masked
-# either way: it is found by the project-dir walk.)
-saved_wt="$WORKTREE_DIR"
-WORKTREE_DIR=""
-BINDS=()
-mask_git_readonly >/dev/null 2>&1
-bind_is_ro "$WT_GITFILE" \
-    && bad W7c "negative control failed: $WT_GITFILE is masked even without the worktree root, so W7 proves nothing" \
-    || ok W7c "negative control: without the worktree root that .git is unmasked, so W7 is load-bearing"
-WORKTREE_DIR="$saved_wt"
-BINDS=()
-mask_git_readonly >/dev/null 2>&1
 
 # --- W8: rendering a diff state writes nothing into the main repository --
 # `git add -A -N` would make one `git diff HEAD` cover untracked files too,
@@ -608,18 +549,106 @@ WORKTREE_LOCK_HELD=0
 worktree_lock_release
 rm -rf "$WORKTREE_DIR"
 
-# --- W15: a non-main checkout is refused outright ------------------------
-# A linked worktree's <main>/.git lives outside the project dir, so its
-# history could not be masked from inside the container.
-(
-    # shellcheck disable=SC2030,SC2034  # both are read by worktree_preflight (functions/worktree.sh); subshell-local on purpose
-    PROJECT_DIR="$MAIN_WT_DIR"
-    # shellcheck disable=SC2034
-    WORKTREE_BRANCH="nested"
-    worktree_preflight
-) >/dev/null 2>&1 \
-    && bad W15 "--worktree accepted a project dir whose git dir is outside it" \
-    || ok W15 "refuse: --worktree only runs against a main checkout"
+# --- W16: --start-point --------------------------------------------------
+# git's <start-point>: a new agent/<branch> starts from the given commit
+# instead of HEAD; the commit is pinned in preflight; an existing branch
+# is never moved; anything that is not a commit refuses the run.
+# "side" is a commit the main checkout is NOT on (empty tree, so a HEAD
+# checkout and a side checkout are told apart by tracked.txt), made with
+# plumbing so the main checkout's HEAD and working tree stay put.
+w16_tree="$(git -C "$W/main" mktree </dev/null)"
+w16_side="$(git -C "$W/main" commit-tree "$w16_tree" -p HEAD -m side)" \
+    || fail_setup "commit-tree side"
+git -C "$W/main" update-ref refs/heads/side "$w16_side" || fail_setup "update-ref side"
+git -C "$W/main" tag -a -m annotated vside side || fail_setup "tag vside"
+w16_head="$(git -C "$W/main" rev-parse HEAD)"
+
+# shellcheck disable=SC2034  # WORKTREE_* are read by functions/worktree.sh
+WORKTREE_BRANCH="sp"
+# shellcheck disable=SC2034
+WORKTREE_START_POINT="side"
+# shellcheck disable=SC2034
+WORKTREE_START_POINT_SET=1
+worktree_preflight >/dev/null 2>&1 || bad W16 "preflight refused a valid --start-point"
+WORKTREE_LOCK_HELD=0
+worktree_prepare >/dev/null 2>&1 || bad W16 "worktree_prepare failed with a start point"
+[[ "$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null)" == "$w16_side" \
+    && ! -e "$WORKTREE_DIR/tracked.txt" \
+    && "$(git -C "$W/main" rev-parse HEAD)" == "$w16_head" ]] \
+    && ok W16 "create: agent/sp starts at the start point; the main checkout's HEAD is untouched" \
+    || bad W16 "agent/sp did not start at 'side' (or the main HEAD moved)"
+worktree_lock_release
+
+# The existing branch is never moved: the flag refuses both the early
+# preflight check and the authoritative one under the lock; without it,
+# the same worktree resumes.
+( worktree_preflight ) >/dev/null 2>&1 \
+    && bad W16b "preflight accepted --start-point for an existing branch" \
+    || ok W16b "refuse (preflight): --start-point with an existing agent/<branch>"
+WORKTREE_LOCK_HELD=0
+( worktree_prepare ) >/dev/null 2>&1 \
+    && bad W16c "worktree_prepare accepted --start-point for an existing branch" \
+    || ok W16c "refuse (under the lock): --start-point with an existing agent/<branch>"
+# The refused subshell took the lock under this shell's pid and exited
+# without the EXIT trap a real run releases it through.
+rm -rf "$WORKTREE_LOCK"
+worktree_lock_release
+[[ "$(git -C "$W/main" rev-parse refs/heads/agent/sp)" == "$w16_side" ]] \
+    && ok W16d "the refused runs left agent/sp where it was" \
+    || bad W16d "a refused --start-point run moved agent/sp"
+# shellcheck disable=SC2034
+WORKTREE_START_POINT_SET=0
+WORKTREE_START_POINT=""
+worktree_preflight >/dev/null 2>&1
+WORKTREE_LOCK_HELD=0
+w16e_out="$(worktree_prepare 2>&1)"
+[[ "$w16e_out" == *resuming* ]] \
+    && ok W16e "without --start-point the same worktree resumes" \
+    || bad W16e "resume without --start-point failed: $w16e_out"
+worktree_lock_release
+
+# Pinned: a ref that moves between preflight and creation (the image build
+# sits there) does not change where the branch starts.
+WORKTREE_BRANCH="sp2"
+WORKTREE_START_POINT="side"
+WORKTREE_START_POINT_SET=1
+worktree_preflight >/dev/null 2>&1 || bad W16f "preflight refused 'side'"
+git -C "$W/main" update-ref refs/heads/side "$w16_head"
+# shellcheck disable=SC2034  # read by worktree_lock_acquire/release (functions/worktree.sh)
+WORKTREE_LOCK_HELD=0
+worktree_prepare >/dev/null 2>&1 || bad W16f "worktree_prepare failed for sp2"
+[[ "$(git -C "$W/main" rev-parse refs/heads/agent/sp2 2>/dev/null)" == "$w16_side" ]] \
+    && ok W16f "the start point is pinned in preflight; moving the ref later changes nothing" \
+    || bad W16f "agent/sp2 followed the moved ref instead of the pinned commit"
+worktree_lock_release
+git -C "$W/main" update-ref refs/heads/side "$w16_side"
+
+# Accepted values peel to a commit; everything else refuses.
+WORKTREE_BRANCH="sp3"
+WORKTREE_START_POINT="vside"
+worktree_preflight >/dev/null 2>&1
+[[ "$WORKTREE_START_SHA" == "$w16_side" ]] \
+    && ok W16g "an annotated tag is peeled to its commit" \
+    || bad W16g "vside resolved to '$WORKTREE_START_SHA', not $w16_side"
+w16h_fail=0
+for evil in "" "-side" "--exec=x" "--help" "no-such-ref" "HEAD^{tree}" "side:tracked.txt"; do
+    ( WORKTREE_START_POINT="$evil"; worktree_preflight ) >/dev/null 2>&1 \
+        && { w16h_fail=1; echo "  ..ACCEPTED start point: '$evil'"; }
+done
+[[ "$w16h_fail" -eq 0 ]] \
+    && ok W16h "empty, '-'-leading, unknown and non-commit start points refuse the run" \
+    || bad W16h "an invalid start point was accepted (see lines above)"
+
+# argv: valid only with --worktree.
+# shellcheck source=functions/argv.sh
+source "$REPO_ROOT/functions/argv.sh"
+( parse_argv --start-point side omp ) >/dev/null 2>&1 \
+    && bad W16i "--start-point without --worktree was accepted" \
+    || ok W16i "--start-point without --worktree refuses the run"
+w16j="$( parse_argv --worktree x --start-point=side omp; echo "$WORKTREE_BRANCH|$WORKTREE_START_POINT|$WORKTREE_START_POINT_SET|${ARGS[*]-}" )"
+[[ "$w16j" == "x|side|1|" ]] \
+    && ok W16j "--worktree x --start-point=side parses into the start point, not the agent's argv" \
+    || bad W16j "unexpected parse: $w16j"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

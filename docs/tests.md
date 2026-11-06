@@ -2,24 +2,26 @@
 
 Last verified: 2026-09-24
 
-Two independent suites, one per threat: `tests/git-escape/` (git write
-containment) and `tests/config-escape/` (agent config surface and
-host-state leakage). Neither depends on the other.
+Three independent suites: `tests/git-escape/` (git write containment),
+`tests/config-escape/` (agent config surface and host-state leakage) and
+`tests/worktree/` (`--worktree` mode's behaviour). None depends on another.
 
 ## Run everything
 
 ```
-bash -n sandbox.sh functions/*.sh tests/git-escape/*.sh tests/config-escape/*.sh
+bash -n sandbox.sh functions/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh
 shellcheck sandbox.sh functions/*.sh
-shellcheck -S warning tests/git-escape/*.sh tests/config-escape/*.sh
-./tests/git-escape/worktree_check.sh
+shellcheck -S warning tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh
+./tests/worktree/worktree_check.sh
+./tests/git-escape/worktree_mask_check.sh
 ./tests/git-escape/sanitize_check.sh
 ./tests/config-escape/mask_check.sh
 ./tests/git-escape/run.sh
 ./tests/git-escape/run.sh --negative
 ```
 
-`worktree_check.sh`, `sanitize_check.sh` and `mask_check.sh` run on the
+`worktree_check.sh`, `worktree_mask_check.sh`, `sanitize_check.sh` and
+`mask_check.sh` run on the
 host alone, no container needed. `run.sh` (both invocations) needs
 `apptainer`. Each script prints `ok`/`FAIL` per assertion and exits
 non-zero on any failure; `run.sh --negative` is a meta-test and is
@@ -29,15 +31,12 @@ expected to *fail* its assertions (see below).
 
 `fixtures.sh` is shared fixture data, not itself a test.
 
-- **`worktree_check.sh`** — `--worktree` mode end to end on the host:
-  branch-name validation, per-checkout (not per-basename) worktree
-  paths, create/resume/discard, the concurrent-run lock (including
-  stale and foreign-host takeover), that the writable worktree cannot
-  reopen a path to the main repository's history, diff rendering and
-  commit-message generation (including per-agent flag/tool lockdown),
-  the agent's message file across sessions (kept on resume, emptied on
-  create, labelled when unchanged, deleted on commit and discard, a
-  symlink refused), and the host-side commit landing on `agent/<branch>`.
+- **`worktree_mask_check.sh`** — that `--worktree` mode's writable
+  worktree does not reopen a path to the main repository's history: the
+  worktree's `.git` file, its metadata directory and the main `.git` are
+  all bound read-only, with a negative control showing the worktree's
+  `.git` is unmasked without the worktree root; and a project dir that
+  is itself a linked worktree is refused.
 - **`sanitize_check.sh`** — the credential/URL sanitizer
   (`sanitize_git_config`/`redact_urls`/`sanitize_gitdir_metadata`,
   `functions/git-mask.sh`) against real fixtures: project, submodule,
@@ -56,6 +55,19 @@ expected to *fail* its assertions (see below).
 See [`git-breakout.md`](git-breakout.md) for the property being
 verified and the recorded "Standing verification" result, and
 [`worktree-mode.md`](worktree-mode.md) for `--worktree` itself.
+
+## tests/worktree/ — `--worktree` mode
+
+- **`worktree_check.sh`** — `--worktree` mode end to end on the host:
+  branch-name validation, `--start-point` resolution and refusals,
+  per-checkout (not per-basename) worktree paths, create/resume/discard,
+  the concurrent-run lock (including stale and foreign-host takeover),
+  diff rendering and commit-message generation (including per-agent
+  flag/tool lockdown), the agent's message file across sessions (kept on
+  resume, emptied on create, labelled when unchanged, deleted on commit
+  and discard, a symlink refused), and the host-side commit landing on
+  `agent/<branch>`. Its containment half is `worktree_mask_check.sh`
+  above.
 
 ## tests/config-escape/ — agent config surface and host-state leakage
 
