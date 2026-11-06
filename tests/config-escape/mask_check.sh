@@ -728,6 +728,24 @@ if grep -q 'theme: removed, was:' "$W/omp-merge.err" && grep -q 'dark: titanium'
 else
     bad O16 "a removed key's old value, or the inspection snapshot, went missing"
 fi
+# setupVersion is a plain scalar, merged the same way as hideThinkingBlock.
+o_std "$O_HOST"
+printf 'modelRoles:\n  default: vendor/a\ncycleOrder:\n  - vendor/a\nsetupVersion: 3\n' >"$OMP_HOME_DIR/agent/config.yml"
+omp_config_merge 2>"$W/omp-merge.err"
+grep -q '^setupVersion: 3$' "$OMP/agent/config.yml" && grep -q 'setupVersion' "$W/omp-merge.err" \
+    && ok O17 "a setupVersion change merges back like hideThinkingBlock" \
+    || bad O17 "setupVersion did not merge back"
+# update.auto is never merged back from the session; instead omp_home_prepare
+# forces it off up front, through the same read-only overlay as secret
+# redaction, so it applies regardless of what the session's config holds and
+# never touches the host's real config.yml.
+if [[ "$(cat "$RUN_DIR/omp-overlay.yml")" == "$(printf 'secrets:\n  enabled: true\nupdate:\n  auto: false')" ]] \
+    && ! grep -q 'update' "$OMP/agent/config.yml"; then
+    ok O18 "auto-update is forced off for the sandboxed session via the read-only overlay, not the host's config.yml"
+else
+    bad O18 "the overlay did not force update.auto off, or it leaked into the host's config.yml"
+fi
+
 OMP_HOME_DIR=""
 # The image-natives check: the stand-in apptainer runs the probe's own
 # command on the host, which plays the image, so OMP_IMAGE_NATIVES decides

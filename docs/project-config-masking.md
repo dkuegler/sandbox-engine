@@ -432,7 +432,7 @@ host's paths bound into it one by one:
 | `~/.omp/natives` | the image's own read-only copy, extracted at build time |
 | `~/.omp/logs` | per project, kept on the host in `~/.agent/omp-logs/` |
 | `~/.omp/run`, `security`, `cache` | empty, per run |
-| `~/.omp/agent/config.yml` | a plain per-run copy; at exit, `modelRoles`, `cycleOrder`, `dev.autoqaConsent` and `hideThinkingBlock` merge back, the rest is reported |
+| `~/.omp/agent/config.yml` | a plain per-run copy; at exit, `modelRoles`, `cycleOrder`, `dev.autoqaConsent`, `hideThinkingBlock` and `setupVersion` merge back, the rest is reported |
 | `~/.omp/agent/agent.db` (`-wal`, `-shm`), `blobs/`, `sessions/<this checkout>/` | the host's own, read-write — credentials and this checkout's sessions |
 | `~/.omp/agent/history.db` | a per-project database in `~/.agent/omp-history/` |
 | `~/.omp/agent/cache/tiny-models/` | the weights of omp's on-device models (session titles, memory, judgments, speech, dictation, word completion), shared by all projects and sessions in `~/.agent/omp-models/`; no host omp reads it, and the code that loads them (`cache/tiny-title-runtime/`, `tiny-mlx-runtime/`, `tts-runtime/`, `stt-runtime/`) stays per run |
@@ -440,8 +440,10 @@ host's paths bound into it one by one:
 | every other entry of the host's `~/.omp/agent` | read-only, including names a later omp version adds |
 | `.env`, `secret-placeholder.key`, `models.db`, `terminal-sessions/` | not bound: absent, or fresh per run; a host `.env` is announced as withheld |
 
-Secret redaction is forced on by a read-only settings overlay passed through
-`PI_CONFIG_FILES`; omp never writes overlay values into `config.yml`. The
+Secret redaction and auto-update are forced on/off by a read-only settings
+overlay passed through `PI_CONFIG_FILES`; omp never writes overlay values
+into `config.yml`, so neither forced setting ever touches the host's real
+file or its own config preference for unsandboxed runs. The
 settings merge-back takes a key only when the session changed it, the value is
 plain model ids in the shape omp writes, and the host file still holds its
 launch value for that key — a change made on the host during the run wins and

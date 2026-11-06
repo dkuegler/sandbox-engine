@@ -20,6 +20,7 @@
 #   install-id gpu_cache.json                copies
 #   sandbox-overlay.yml                      read-only settings overlay
 #                      (PI_CONFIG_FILES) that forces secret redaction on
+#                      and auto-update off
 #   agent/             per run:
 #     config.yml       a plain copy, so omp's rename-based save works; at
 #                      exit modelRoles and cycleOrder merge back
@@ -184,15 +185,20 @@ omp_home_prepare() {
         cp -- "$real/agent/last-changelog-version" "$agent/" || return 1
     fi
 
-    # Secret redaction forced on through an overlay: overlays outrank the
-    # global config, omp never writes them back, and this one is bound
-    # read-only so the session cannot switch it off for later processes.
-    # It matters however a credential reaches the container: omp's own
-    # bash tool does not scrub environment variables, so without it a
-    # host-supplied key the agent prints (`env`) reaches the model
-    # verbatim. The obfuscator redacts only provider-visible text; the real
-    # value still reaches the actual API call.
-    printf 'secrets:\n  enabled: true\n' >"$RUN_DIR/omp-overlay.yml" || return 1
+    # Secret redaction and auto-update forced through an overlay: overlays
+    # outrank the global config, omp never writes them back, and this one
+    # is bound read-only so the session cannot switch either off for
+    # later processes. Secret redaction matters however a credential
+    # reaches the container: omp's own bash tool does not scrub
+    # environment variables, so without it a host-supplied key the agent
+    # prints (`env`) reaches the model verbatim. The obfuscator redacts
+    # only provider-visible text; the real value still reaches the actual
+    # API call. Auto-update is forced off because a sandboxed run has no
+    # business fetching and running a new omp build mid-session, whatever
+    # the host's own config.yml says; this never touches that file, so
+    # the host's own auto-update preference for unsandboxed runs is
+    # untouched.
+    printf 'secrets:\n  enabled: true\nupdate:\n  auto: false\n' >"$RUN_DIR/omp-overlay.yml" || return 1
     chmod 600 -- "$RUN_DIR/omp-overlay.yml"
     omp_home_mountpoint sandbox-overlay.yml file || return 1
     BINDS+=(-B "$RUN_DIR/omp-overlay.yml:$real/sandbox-overlay.yml:ro")
@@ -485,13 +491,14 @@ omp_config_merge_autoqa() {
 # writes for KEY -- "modelRoles:" with "  <role>: <model>" lines, or
 # "cycleOrder:" with "  - <model>" lines, or the empty form, "  {}" or
 # "  []" alone on the line after the key -- and every value is a plain
-# model id. Anything else is not merged.
+# model id; or a single "KEY: VALUE" line for hideThinkingBlock or
+# setupVersion, any value. Anything else is not merged.
 omp_config_block_mergeable() {
     local key="$1" line first=1 items=0 empty
     local id='[A-Za-z0-9][A-Za-z0-9._/:@+-]*'
     case "$key" in
         # One single-line value, any value (the file passed omp_config_standard).
-        hideThinkingBlock) [[ "$2" == "hideThinkingBlock: "?* && "$2" != *$'\n'* ]]; return ;;
+        hideThinkingBlock | setupVersion) [[ "$2" == "$key: "?* && "$2" != *$'\n'* ]]; return ;;
         modelRoles) empty="  {}" ;;
         cycleOrder) empty="  []" ;;
         *) return 1 ;;
@@ -529,8 +536,8 @@ omp_config_others_equal() {
 }
 
 # omp_config_merge: of everything the session saved to its config copy,
-# only modelRoles, cycleOrder, hideThinkingBlock and dev.autoqaConsent
-# reach the host's real file, and only when
+# only modelRoles, cycleOrder, hideThinkingBlock, setupVersion and
+# dev.autoqaConsent reach the host's real file, and only when
 # the session changed the key, the new value passes
 # omp_config_block_mergeable, and the real file still holds what it held
 # at launch for that key -- a change made on the host meanwhile wins and
@@ -604,7 +611,7 @@ omp_config_merge() {
         if [[ "$key" == dev && "$(omp_config_dev_rest "$orig")" == "$(omp_config_dev_rest "$copy")" ]]; then
             continue # only dev.autoqaConsent changed: merged below
         fi
-        if [[ "$key" != modelRoles && "$key" != cycleOrder && "$key" != hideThinkingBlock ]]; then
+        if [[ "$key" != modelRoles && "$key" != cycleOrder && "$key" != hideThinkingBlock && "$key" != setupVersion ]]; then
             others+=("$key")
             continue
         fi
@@ -670,7 +677,8 @@ omp_config_merge() {
     if [[ ${#others[@]} -gt 0 ]]; then
         {
             printf '%s\n' "sandbox: the omp session also changed these settings; only modelRoles,"
-            printf '%s\n' "  cycleOrder, hideThinkingBlock and dev.autoqaConsent are merged back, so the rest stay in the run. Its values:"
+            printf '%s\n' "  cycleOrder, hideThinkingBlock, setupVersion and dev.autoqaConsent are merged"
+            printf '%s\n' "  back, so the rest stay in the run. Its values:"
             for key in "${others[@]}"; do
                 oldv="$(omp_config_block "$orig" "$key")"
                 ov="$(omp_config_block "$copy" "$key")"
