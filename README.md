@@ -108,10 +108,14 @@ Use `command omp` or `\omp` to reach an agent installed on the host.
 ~/sandbox-engine/sandbox.sh --worktree fix-parser omp
 ```
 
-1. **Setup.** The run creates branch `agent/fix-parser` and a worktree for
-   it in `~/.agent/worktrees/<project>-<hash>/fix-parser`. If both already
-   exist, it resumes them. Any other mix of an existing branch and worktree
-   refuses the run. A lock keeps a second run out of the same worktree.
+1. **Setup.** The run creates branch `agent/fix-parser` from the main
+   checkout's current `HEAD` and a worktree for it in
+   `~/.agent/worktrees/<project>-<hash>/fix-parser`. Uncommitted changes in
+   the main checkout are not carried over. To start from another branch or
+   commit, check it out in the main checkout first. If both the branch and
+   the worktree already exist, the run resumes them as they are, whatever
+   `HEAD` is now. Any other mix of an existing branch and worktree refuses
+   the run. A lock keeps a second run out of the same worktree.
 2. **Main checkout.** On the terminal, you choose how your main checkout is
    mounted beside the worktree:
    - `r`: read-only.
