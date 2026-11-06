@@ -27,9 +27,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=tests/git-escape/fixtures.sh
 source "$SCRIPT_DIR/fixtures.sh"
 
-PASS=0 FAIL=0
-ok()  { printf 'ok   %-6s %s\n' "$1" "$2"; PASS=$((PASS+1)); }
-bad() { printf 'FAIL %-6s %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
+# shellcheck source=tests/lib/report.sh
+source "$SCRIPT_DIR/../lib/report.sh"
 
 W="$(mktemp -d "${TMPDIR:-/tmp}/git-escape-sanitize.XXXXXX")"
 # shellcheck disable=SC2317  # invoked indirectly via `trap cleanup EXIT`, not a direct call
@@ -205,5 +204,4 @@ else
     ok A11 "worktree config.worktree is either overridden by its own sanitized bind, or the parent .git is not blanket-mounted"
 fi
 
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
-[[ "$FAIL" -eq 0 ]]
+report_summary

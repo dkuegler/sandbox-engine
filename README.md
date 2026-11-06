@@ -335,6 +335,7 @@ tests/
   git-escape/              git write containment (host-side + live container)
   config-escape/           config surface and host-state leakage (host-side)
   worktree/                --worktree mode behaviour (host-side)
+  lib/report.sh            shared ok/bad reporting and expected-vs-tested summary
   tool-failure/omp.py      failed-tool-call ratios from omp session logs
 docs/                      user reference and fact records (docs/README.md)
 ```

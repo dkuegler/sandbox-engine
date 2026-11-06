@@ -45,14 +45,18 @@ if [[ -n "$EXTRA_REPO" ]]; then
 fi
 # shellcheck source=tests/git-escape/fixtures.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures.sh"
+# shellcheck source=tests/lib/report.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/report.sh"
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
 export PATH="$SCRATCH/root/usr/lib/git-core:$PATH"
 export GIT_AUTHOR_NAME=probe GIT_AUTHOR_EMAIL=probe@invalid
 export GIT_COMMITTER_NAME=probe GIT_COMMITTER_EMAIL=probe@invalid
 
-PASS=0 FAIL=0
-ok()   { printf 'ok   %-6s %s\n' "$1" "$2"; PASS=$((PASS+1)); }
-bad()  { printf 'FAIL %-6s %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
+# EXPECT_FAIL: the assertion IDs this run must fail, space-separated, read
+# into report.sh's EXPECTED_FAIL. Set only by run.sh --negative, which runs
+# this probe on the host; inside the container --containall drops the host
+# environment, so a normal run always expects every assertion to pass.
+read -r -a EXPECTED_FAIL <<< "${EXPECT_FAIL:-}"
 chk()  { if [[ "$3" == "$4" ]]; then ok "$1" "$2"; else bad "$1" "$2 (want '$4', got '$3')"; fi; }
 
 # --- A5: the agent acquires its own git ----------------------------------
@@ -304,5 +308,4 @@ else
     echo "note: no worktree path passed as \$3 -- A10/A11 not exercised" >&2
 fi
 
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
-[[ $FAIL -eq 0 ]]
+report_summary

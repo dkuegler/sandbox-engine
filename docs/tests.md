@@ -1,6 +1,6 @@
 # tests/
 
-Last verified: 2026-09-24
+Last verified: 2026-11-06
 
 Three independent suites: `tests/git-escape/` (git write containment),
 `tests/config-escape/` (agent config surface and host-state leakage) and
@@ -9,9 +9,11 @@ Three independent suites: `tests/git-escape/` (git write containment),
 ## Run everything
 
 ```
-bash -n sandbox.sh functions/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh
-shellcheck sandbox.sh functions/*.sh
-shellcheck -S warning tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh
+bash -n sandbox.sh functions/*.sh tests/lib/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh
+if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck sandbox.sh functions/*.sh
+    shellcheck -S warning tests/lib/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh
+fi
 ./tests/worktree/worktree_check.sh
 ./tests/git-escape/worktree_mask_check.sh
 ./tests/git-escape/sanitize_check.sh
@@ -20,12 +22,24 @@ shellcheck -S warning tests/git-escape/*.sh tests/config-escape/*.sh tests/workt
 ./tests/git-escape/run.sh --negative
 ```
 
-`worktree_check.sh`, `worktree_mask_check.sh`, `sanitize_check.sh` and
-`mask_check.sh` run on the
-host alone, no container needed. `run.sh` (both invocations) needs
-`apptainer`. Each script prints `ok`/`FAIL` per assertion and exits
-non-zero on any failure; `run.sh --negative` is a meta-test and is
-expected to *fail* its assertions (see below).
+`worktree_check.sh`, `worktree_mask_check.sh`, `sanitize_check.sh`,
+`mask_check.sh` and `run.sh --negative` run on the host alone, no
+container needed; `run.sh` needs `apptainer`. It runs `sandbox.sh` with
+no controlling terminal (`setsid`), so no `/dev/tty` prompt can block it,
+from a terminal or not. Each script prints `ok`/`FAIL` per assertion,
+then a summary of the expected result against the tested one:
+
+```
+expected: 5 passed, 21 failed: A1 A2a ...
+tested:   5 passed, 21 failed: A1 A2a ...
+```
+
+Any difference is printed as a `MISMATCH:` line naming the assertions
+that failed but should have passed, passed but should have failed, or
+were expected to fail but never ran, and the script exits non-zero.
+A normal run expects every assertion to pass; `run.sh --negative` is a
+meta-test that expects a fixed list to *fail* (see below). The shared
+`ok`/`bad`/`report_summary` helpers are `tests/lib/report.sh`.
 
 ## tests/git-escape/ — git write containment
 
@@ -49,8 +63,11 @@ expected to *fail* its assertions (see below).
   tracking refs stale, path-aliasing (`--git-dir`/`-C`/`GIT_DIR`)
   cannot reach a writable `.git`, and no fixture credential is
   reachable anywhere bound into the sandbox. `--negative` reruns the
-  same probe with no mask (on the host) and requires it to fail — the
-  suite's own proof that it can fail at all.
+  same probe with no mask (on the host) and requires exactly the mask
+  assertions to fail — the list is in `run.sh` — the suite's own proof
+  that each of them can fail at all. It gives the probe a throwaway
+  `HOME` holding a `.gitconfig` and `.git-credentials`, so A9 fails
+  regardless of the caller's own home directory.
 
 See [`git-breakout.md`](git-breakout.md) for the property being
 verified and the recorded "Standing verification" result, and

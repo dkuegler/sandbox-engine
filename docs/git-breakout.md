@@ -109,11 +109,12 @@ failure, no apptainer involved).
 
 `tests/git-escape/` asserts the mask on every change. `./tests/git-escape/run.sh`
 builds a throwaway repository, runs `./sandbox.sh script tests/git-escape/probe.sh`
-against it, and checks 15 assertions from inside a real agent container: 15/15
-pass. `--negative` runs the same probe on the host with no mask and requires it
-to fail: 11 of 15 fail. The 4 that pass in both are not mask assertions — the
-agent acquiring a git binary, the fixture check, and `push` succeeding plus its
-objects landing on the remote, all of which must hold either way.
+against it, and checks 26 assertions from inside a real agent container, all of
+which must pass. `--negative` runs the same probe on the host with no mask and
+requires exactly the 21 mask assertions to fail, by name. The 5 that pass in both
+are not mask assertions — the agent acquiring a git binary, the fixture check,
+`push` succeeding plus its objects landing on the remote, and the worktree
+checkout being writable — all of which must hold either way.
 
 Verified there and no longer open: mutating commands failing at lock creation with
 no partial state (`HEAD` unmoved, no loose object); a **self-installed** git

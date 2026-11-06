@@ -22,6 +22,7 @@ NEGATIVE=0
 [[ "${1:-}" == "--negative" ]] && NEGATIVE=1
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/git-escape.XXXXXX")"
+# shellcheck disable=SC2317  # invoked by the EXIT trap below
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
@@ -106,39 +107,79 @@ git -C "$EXTRA" -c user.name=probe -c user.email=probe@invalid commit --quiet -m
 git -C "$EXTRA" remote add origin "https://$SECRET_EXTRA/extra.git"
 
 if [[ "$NEGATIVE" -eq 1 ]]; then
+    # Exactly what a host with no mask must fail: every mask assertion.
+    # The rest hold either way and are not mask assertions: A5 (the
+    # probe acquires its own git), FIX (the fixture check), A3a/A3b (push
+    # succeeds and its objects land on the remote) and A10a (the worktree
+    # checkout is writable). probe.sh compares this list with what
+    # actually failed and exits 0 only when the two are identical, so an
+    # assertion that stops being able to fail is caught by name.
+    NEGATIVE_EXPECT_FAIL="A1 A2a A2b A2c A3c A3d A4a A4b A4c A4d A6 A7 A8 A9"
+    NEGATIVE_EXPECT_FAIL+=" A10b A10c A11a A11b A11c A11d A11e"
+    # A9 fails only when a ~/.gitconfig or ~/.git-credentials is
+    # reachable. On the host that would depend on the caller's own home
+    # directory, so the probe gets a throwaway HOME that has both.
+    NEG_HOME="$WORK/home"
+    mkdir -p "$NEG_HOME"
+    : > "$NEG_HOME/.gitconfig"
+    : > "$NEG_HOME/.git-credentials"
     echo "=== negative control: probe on the host, no mask, failures expected"
     set +e
-    SCRATCH="$WORK/scratch" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA" "$WORK/wt"
+    HOME="$NEG_HOME" EXPECT_FAIL="$NEGATIVE_EXPECT_FAIL" SCRATCH="$WORK/scratch" \
+        "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA" "$WORK/wt"
     rc=$?
     set -e
-    if [[ $rc -eq 1 ]]; then
-        echo "PASS: the suite fails when the mask is absent (exit $rc)"
+    if [[ $rc -eq 0 ]]; then
+        echo "PASS: without the mask, exactly the expected assertions fail"
         exit 0
     fi
-    echo "BROKEN: expected exit 1 (assertions failed), got $rc" >&2
-    [[ $rc -eq 0 ]] && echo "  every assertion passed without a mask -- they assert nothing" >&2
+    echo "BROKEN: probe exit $rc" >&2
+    [[ $rc -eq 1 ]] && echo "  the failures differ from the expected list; see MISMATCH above" >&2
     [[ $rc -eq 99 ]] && echo "  the suite could not run; fix the preflight failure above" >&2
     exit 1
 fi
 
 echo "=== git-escape suite, project dir $FIXTURE"
 # --ignore-warnings and --allow-external-binds are both deliberate, not
-# incidental, and for the same reason: this harness drives sandbox.sh
-# through `script` mode meant to run unattended (CI, or a human invoking
-# it directly at a terminal that still has a controlling tty either way),
-# and each gate would otherwise stop to ask a question nothing here can
-# answer -- the warning gate has nobody to confirm with, and
-# bind_scope_check's "mount it read-only?" prompt for $EXTRA/$WORK/wt
-# (both deliberately outside $FIXTURE, functions/binds.sh) blocks on
-# /dev/tty whenever one happens to be attached, which it is for a human
-# running this directly, not only in CI. Neither flag is a reason to skip
-# the mask assertions -- the warning text and the external-bind notice
-# still print, and the assertions are what decide pass or fail.
-# --allow-external-binds also keeps both binds read-write as requested
-# (":rw"), not silently downgraded to read-only the way an interactive
-# "r" reply would -- part of what this suite proves is that the `.git`
-# mask holds even under a read-write extra bind (see the worktree bind's
-# own comment above), so downgrading it here would weaken that assertion.
-"$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" --bind "$WORK/wt:rw" \
+# incidental: this harness drives sandbox.sh unattended, and each gate
+# would otherwise stop to ask a question nothing here can answer.
+# --allow-external-binds clears bind_scope_check's prompt for $EXTRA and
+# $WORK/wt (both deliberately outside $FIXTURE, functions/binds.sh) and
+# keeps both binds read-write as requested (":rw"), not downgraded to
+# read-only the way an interactive "r" reply would -- part of what this
+# suite proves is that the `.git` mask holds even under a read-write
+# extra bind, so downgrading it would weaken that assertion.
+#
+# --ignore-warnings only covers a run with no terminal to confirm on
+# (confirm_warnings, functions/log.sh): with one attached, the warning
+# gate still waits for a human, by design. So sandbox.sh runs in a new
+# session (setsid) with no controlling terminal, where opening /dev/tty
+# fails and every /dev/tty prompt takes its documented unattended path --
+# the same whether this suite runs in CI or from a human's terminal. The
+# warning text and the external-bind notice still print to stderr; the
+# assertions decide pass or fail.
+#
+# A new session is also outside the terminal's foreground process group,
+# so Ctrl-C no longer reaches sandbox.sh on its own. Run in the
+# background of this non-interactive script, setsid is not a process
+# group leader and so execs in place: $! is sandbox.sh and its process
+# group id. The trap forwards Ctrl-C, TERM and a closed terminal to that
+# whole group as SIGTERM -- not SIGINT, which bash sets to ignored in a
+# background job and its children, so a forwarded INT would be dropped.
+# SIGTERM still runs sandbox.sh's EXIT trap, so it cleans up as it would
+# for an interactive Ctrl-C.
+setsid -w "$REPO_ROOT/sandbox.sh" --bind "$EXTRA:rw" --bind "$WORK/wt:rw" \
     --ignore-warnings --allow-external-binds script \
-    --project-dir "$FIXTURE" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA" "$WORK/wt"
+    --project-dir "$FIXTURE" "$SCRIPT_DIR/probe.sh" "$FIXTURE" "$EXTRA" "$WORK/wt" \
+    </dev/null &
+sandbox_pid=$!
+trap 'kill -TERM -- "-$sandbox_pid" 2>/dev/null || true' INT TERM HUP
+rc=0
+# `wait` returns early (>128) when a trapped signal arrives; keep waiting
+# until sandbox.sh itself has exited so cleanup runs after it, not under it.
+while :; do
+    wait "$sandbox_pid" && rc=0 || rc=$?
+    kill -0 "$sandbox_pid" 2>/dev/null || break
+done
+trap - INT TERM HUP
+exit "$rc"

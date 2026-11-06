@@ -138,7 +138,7 @@ refusals cannot tell a working control from a broken fixture.
 **Procedure.** On every change to `sandbox.sh` or `functions/*.sh`: `bash -n` on
 each changed script, then `shellcheck sandbox.sh functions/*.sh` in one
 invocation so `source` targets resolve, and
-`shellcheck -S warning tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh`.
+`shellcheck -S warning tests/lib/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh`.
 Then the suite:
 
 ```
@@ -149,14 +149,14 @@ Then the suite:
 ./tests/git-escape/run.sh --negative
 ```
 
-`worktree_check.sh`, `worktree_mask_check.sh` and `mask_check.sh` run on the
-host alone; `run.sh` needs `apptainer`.
+`worktree_check.sh`, `worktree_mask_check.sh`, `mask_check.sh` and
+`run.sh --negative` run on the host alone; `run.sh` needs `apptainer`.
 
-**Pass condition.** `worktree_check.sh`, `worktree_mask_check.sh` and
-`mask_check.sh` report no failure; `run.sh` and its
-negative run give the result recorded in [`git-breakout.md`](git-breakout.md),
-"Standing verification". A negative run that stops failing means the suite can
-no longer fail at all.
+**Pass condition.** Every script exits 0, its `expected:` and `tested:`
+summary lines match, and it prints no `MISMATCH:` line. For `run.sh --negative`
+that means the exact list of mask assertions in `run.sh` failed, as recorded in
+[`git-breakout.md`](git-breakout.md), "Standing verification". A negative run
+where one of them passes means that assertion can no longer fail.
 
 ## Page dates and evidence labels
 

@@ -40,9 +40,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-PASS=0 FAIL=0
-ok()  { printf 'ok   %-6s %s\n' "$1" "$2"; PASS=$((PASS+1)); }
-bad() { printf 'FAIL %-6s %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
+# shellcheck source=tests/lib/report.sh
+source "$SCRIPT_DIR/../lib/report.sh"
 fail_setup() { echo "PREFLIGHT: $*" >&2; exit 99; }
 
 command -v git >/dev/null 2>&1 || fail_setup "no git binary"
@@ -650,5 +649,4 @@ w16j="$( parse_argv --worktree x --start-point=side omp; echo "$WORKTREE_BRANCH|
     && ok W16j "--worktree x --start-point=side parses into the start point, not the agent's argv" \
     || bad W16j "unexpected parse: $w16j"
 
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
-[[ "$FAIL" -eq 0 ]]
+report_summary
