@@ -17,7 +17,8 @@
 #
 # Interface:
 #   SANDBOX_BACKEND                           name, for messages
-#   backend_available                         can the runtime be invoked?
+#   backend_available                         can the runtime be invoked, built against? On
+#                                             "no": BACKEND_UNAVAILABLE_REASON
 #   backend_image_ref AGENT TAG               sets SANDBOX_IMAGE, SANDBOX_IMAGE_INFO
 #   backend_image_present                     does SANDBOX_IMAGE exist?
 #   backend_image_remove                      deletes SANDBOX_IMAGE
@@ -57,10 +58,34 @@ if [[ -e /etc/resolv.conf ]]; then
     APPTAINER_NET_BINDS=(-B "/etc/resolv.conf:/etc/resolv.conf:ro")
 fi
 
-# backend_available: can the runtime be invoked at all? The best-effort
-# paths (version check, commit-message generator) degrade on "no".
+# backend_available: can the runtime be invoked at all, and built against?
+# True only when "apptainer" resolves on PATH and its version is at least
+# APPTAINER_MIN_VERSION, which backend_build_image's "dockerfile:" build
+# source needs: 1.5.0 added OCI/BuildKit-based building (apptainer's
+# "Announcing Apptainer release 1.5.0"), and an older apptainer rejects
+# that build spec outright. On "no", BACKEND_UNAVAILABLE_REASON names why,
+# for the one caller that treats it as fatal (sandbox.sh, at startup);
+# every other caller (the agent-update check, the commit-message
+# generator) is best-effort and just degrades silently.
+APPTAINER_MIN_VERSION="1.5.0"
+
 backend_available() {
-    command -v apptainer >/dev/null 2>&1
+    BACKEND_UNAVAILABLE_REASON=""
+    if ! command -v apptainer >/dev/null 2>&1; then
+        BACKEND_UNAVAILABLE_REASON="apptainer not found on PATH; sandbox-engine requires apptainer $APPTAINER_MIN_VERSION or later (https://apptainer.org/docs/admin/latest/installation.html)"
+        return 1
+    fi
+    local raw found
+    raw="$(apptainer version 2>/dev/null)" || raw=""
+    found="$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' <<<"$raw" | head -1)"
+    if [[ -z "$found" ]]; then
+        log_warn "apptainer version: could not parse '$raw'" "proceeding without the minimum-version check (sandbox-engine requires $APPTAINER_MIN_VERSION or later)"
+        return 0
+    fi
+    if [[ "$(printf '%s\n%s\n' "$APPTAINER_MIN_VERSION" "$found" | sort -V | head -1)" != "$APPTAINER_MIN_VERSION" ]]; then
+        BACKEND_UNAVAILABLE_REASON="apptainer $found found, sandbox-engine requires $APPTAINER_MIN_VERSION or later: the image build needs 1.5's OCI/BuildKit-based building (https://apptainer.org/docs/admin/latest/installation.html)"
+        return 1
+    fi
 }
 
 # backend_image_ref AGENT TAG: the image is a SIF file under

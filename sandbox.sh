@@ -82,6 +82,11 @@ reap_orphaned_run_dirs
 
 parse_argv "$@"
 
+# Hard gate: apptainer missing or too old fails fast, with one clear
+# message, instead of surfacing deep inside a failed build. After
+# parse_argv so -h/--help still works without apptainer installed.
+backend_available || { echo "sandbox: $BACKEND_UNAVAILABLE_REASON" >&2; exit 1; }
+
 [[ -d "$PROJECT_DIR" ]] || { echo "Project dir not found: $PROJECT_DIR" >&2; exit 1; }
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 log_info "project dir: $PROJECT_DIR"

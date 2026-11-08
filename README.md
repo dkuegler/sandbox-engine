@@ -57,9 +57,13 @@ Five principles follow from it:
 
 **Host requirements**
 
-- Linux (on Windows: WSL 2) with `apptainer`, able to run
-  `apptainer build --fakeroot`. On Windows, install apptainer inside the
-  WSL distribution and run everything from there; WSL works well.
+- Linux (on Windows: WSL 2) with apptainer **1.5 or later**, able to run
+  `apptainer build --fakeroot`. 1.5.0 added OCI/BuildKit-based building
+  (the `dockerfile:` build source this project's image build uses); an
+  older apptainer rejects that spec outright, so the build fails before any
+  container runs.
+  On Windows, install apptainer inside the WSL distribution and run
+  everything from there; WSL works well.
 - A `buildctl` or `docker` client on the host. Images are built from
   Dockerfiles through apptainer's `dockerfile:` bootstrap, which needs
   one of them. The BuildKit or Docker daemon that client talks to can run

@@ -1,6 +1,6 @@
 # Apptainer: behaviour the launch line and the image build rely on
 
-Last verified: 2026-09-24.
+Last verified: 2026-11-08.
 
 The launch line is `APPTAINER_EXEC` in `functions/apptainer.sh`:
 `apptainer exec --containall --no-mount home,cwd,tmp,hostfs,bind-paths`, plus
@@ -10,6 +10,38 @@ reference: [`apptainer exec`](https://apptainer.org/docs/user/latest/cli/apptain
 [`apptainer.conf`](https://apptainer.org/docs/admin/latest/configfiles.html).
 The image build is `backend_build_image` in the same file:
 `apptainer build --fakeroot … dockerfile:sandbox/agent`.
+
+## Minimum version: 1.5.0, for OCI/BuildKit-based building
+
+`D` — [Apptainer 1.5.0 release notes](https://apptainer.org/news/apptainer-1-5-0-20260506/):
+1.5.0 added OCI/BuildKit-based building, which `backend_build_image`'s
+`dockerfile:$context` build source depends on. An apptainer older than
+1.5.0 does not have that build source at all, so `apptainer build
+--fakeroot … dockerfile:sandbox/agent` fails deep into the run, inside
+apptainer's own error, rather than up front.
+
+`M` — `backend_available` (`functions/apptainer.sh`) folds this into the
+same check it already did for "is apptainer installed at all": it reads
+`apptainer version`'s first `X.Y.Z` token and returns false, with the
+version found and the reason in `BACKEND_UNAVAILABLE_REASON`, if it sorts
+below `1.5.0`; a missing `apptainer` binary fails the same way. Every
+caller before this used "false" to mean "degrade silently" (the
+agent-update check, the commit-message generator); `sandbox.sh`, right
+after argv parsing so `-h`/`--help` still works with no apptainer
+installed, is the one caller that treats it as fatal and prints the
+reason:
+
+```
+$ PATH=/tmp/old-apptainer:$PATH ./sandbox.sh claude
+sandbox: apptainer 1.3.0 found, sandbox-engine requires 1.5.0 or later: the
+image build needs 1.5's OCI/BuildKit-based building
+(https://apptainer.org/docs/admin/latest/installation.html)
+```
+
+An unparsable `apptainer version` output (a vendor string with no `X.Y.Z`
+substring) only warns and proceeds: the check is a best-effort fast-fail,
+not a defence against a container escape, so a false negative there is a
+worse outcome than letting an untested version through.
 
 ## `$HOME` exists only where a bind creates it
 
