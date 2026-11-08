@@ -164,9 +164,6 @@ creates the local socket owner-only (its `StreamLocalBindMask` default).
 The build host's sshd must allow socket forwarding
 (`AllowStreamLocalForwarding`, on by default). Do not use the following:
 
-- **`ssh://` in `BUILDKIT_HOST` or `DOCKER_HOST`.** The build runs under
-  `--fakeroot` as uid 0 of a user namespace, so `ssh` looks for its config,
-  keys and `known_hosts` in `/root/.ssh`, not yours.
 - **`docker context use`.** apptainer runs `docker build` with a temporary
   `DOCKER_CONFIG` that holds no contexts, but it runs `docker save` with
   yours. The two commands can reach different daemons. Use `DOCKER_HOST`.

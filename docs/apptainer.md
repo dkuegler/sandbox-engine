@@ -9,16 +9,16 @@ reference: [`apptainer exec`](https://apptainer.org/docs/user/latest/cli/apptain
 [bind paths and mounts](https://apptainer.org/docs/user/latest/bind_paths_and_mounts.html),
 [`apptainer.conf`](https://apptainer.org/docs/admin/latest/configfiles.html).
 The image build is `backend_build_image` in the same file:
-`apptainer build --fakeroot … dockerfile:sandbox/agent`.
+`apptainer build … dockerfile:sandbox/agent`, without `--fakeroot`.
 
 ## Minimum version: 1.5.0, for OCI/BuildKit-based building
 
 `D` — [Apptainer 1.5.0 release notes](https://apptainer.org/news/apptainer-1-5-0-20260506/):
 1.5.0 added OCI/BuildKit-based building, which `backend_build_image`'s
 `dockerfile:$context` build source depends on. An apptainer older than
-1.5.0 does not have that build source at all, so `apptainer build
---fakeroot … dockerfile:sandbox/agent` fails deep into the run, inside
-apptainer's own error, rather than up front.
+1.5.0 does not have that build source at all, so `apptainer build …
+dockerfile:sandbox/agent` fails deep into the run, inside apptainer's own
+error, rather than up front.
 
 `M` — `backend_available` (`functions/apptainer.sh`) folds this into the
 same check it already did for "is apptainer installed at all": it reads
@@ -42,6 +42,109 @@ An unparsable `apptainer version` output (a vendor string with no `X.Y.Z`
 substring) only warns and proceeds: the check is a best-effort fast-fail,
 not a defence against a container escape, so a false negative there is a
 worse outcome than letting an untested version through.
+
+## The image build runs without `--fakeroot`
+
+`D` — apptainer 1.5.4 source. `--fakeroot` contributes nothing to a
+`dockerfile:` build:
+
+- A `dockerfile:` spec is not a definition file. `apptainer build` implies
+  `--fakeroot` only for a definition file or unprivileged encryption
+  (`preRun`, `cmd/internal/cli/build.go`).
+- The Dockerfile's `RUN` steps execute in the BuildKit or Docker daemon, not
+  in apptainer.
+- The local part, unpacking the returned image and running `mksquashfs`,
+  takes the same path with or without it. `namespaces.IsUnprivileged()`
+  looks up the host uid behind the current one, and inside the fakeroot
+  namespace uid 0 maps to the calling user. So both builds unpack in umoci's
+  rootless mode (`internal/pkg/build/sources/oci_unpack.go`). Both pack
+  through PRoot, or with `-all-root` where PRoot cannot run
+  (`internal/pkg/image/packer/squashfs.go`). The apptainer maintainers
+  observed the same for `docker://` sources: builds under `unshare -r`,
+  nested in `apptainer exec -f`, or under the `fakeroot` command produce the
+  same ownership as an unprivileged one (apptainer issue #2830).
+
+What `--fakeroot` did add were host requirements and their failure modes:
+a user namespace, plus an `/etc/subuid` entry or the `fakeroot` command.
+`backend_build_image` therefore does not pass it.
+
+**WSL 2.8.9 and later, booted with systemd.** `D` — WSL's init bind-mounts
+`/run/wsl/binfmt-status-lock` over `/proc/sys/fs/binfmt_misc/status` when
+the distribution boots systemd (`[boot] systemd=true` in `/etc/wsl.conf`,
+Ubuntu's default) and `protectBinfmt` is left at its default `true`
+(`ProtectBinfmtStatus`, `src/linux/init/init.cpp`, microsoft/WSL, first in
+release 2.8.9). apptainer's fakeroot build engine before 1.6 mounts a fresh
+`/proc` and bind-mounts the host's `/proc/sys/fs/binfmt_misc` into it
+without `MS_REC` (`StartProcess`,
+`internal/pkg/runtime/engine/fakeroot/engine_linux.go`). In the engine's new
+user namespace the status bind is a locked mount, and mount(2) rejects a
+non-recursive bind that would uncover a locked submount with `EINVAL`. The
+build stops before anything is built:
+
+```
+FATAL:   failed to mount binfmt_misc filesystem: invalid argument
+```
+
+Without `--fakeroot` the fakeroot engine never runs. The host-side
+alternative, `protectBinfmt=false` under `[boot]` in `/etc/wsl.conf`,
+removes the bind but brings back the cross-distribution wipe of
+`WSLInterop` that WSL added it against.
+apptainer 1.6.0-rc.1 skips the PID namespace, and with it the `/proc`
+remount, when it finds a bind mount under `/proc` (`HasBindMountsUnderProc`,
+`pkg/util/fs/proc/proc.go`). Apptainer issue #3885 reports this error on
+WSL 2 with 1.5.5 and confirms that main fixes it. Whether a host has the
+bind:
+
+```
+$ grep ' /proc/sys/fs/binfmt_misc/' /proc/self/mountinfo
+```
+
+`M` (2026-11-08, kernel 6.18 on WSL 2, unprivileged namespaces standing in
+for both sides): the outer namespace plays the distribution, the inner one
+the fakeroot engine. mount(8) prints `EINVAL` as "wrong fs type, bad
+option, …":
+
+```
+$ unshare -Urm --pid --fork --mount-proc bash -c '
+    mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+    for case in plain wsl; do
+      if [[ $case == wsl ]]; then lock=$(mktemp); echo enabled >"$lock"
+        mount --bind "$lock" /proc/sys/fs/binfmt_misc/status; fi
+      unshare -Urm --pid --fork bash -c "
+        p=\$(mktemp -d); mount -t proc -o nosuid,nodev,noexec proc \$p
+        for f in --bind --rbind; do
+          printf \"%-6s %-7s \" $case \$f
+          mount \$f /proc/sys/fs/binfmt_misc \$p/sys/fs/binfmt_misc 2>&1 && echo ok
+          umount \$p/sys/fs/binfmt_misc 2>/dev/null || true
+        done"
+    done'
+plain  --bind  ok
+plain  --rbind ok
+wsl    --bind  mount: /tmp/tmp.Ud8unpqwho/sys/fs/binfmt_misc: wrong fs type, bad option, bad superblock on /proc/sys/fs/binfmt_misc, missing codepage or helper program, or other error.
+wsl    --rbind ok
+```
+
+**What an unprivileged build cannot pack.** `--fakeroot`'s namespace root
+could read a file whose owner bits deny reading, since every unpacked file
+belongs to the calling user. Unprivileged, `mksquashfs` cannot open such a
+file and stores it empty. It prints "Failed to read file …, creating empty
+file" (squashfs-tools 4.6.1, `write_file`) and does not fail the build.
+Directories without owner read and execute permission cannot be read
+either. apptainer's `--fix-perms` would avoid this by adding owner `rwX`
+to every file, which changes the image's permissions; the build does not
+pass it.
+
+`M` (2026-11-08) — the base images behind the presets have no such entry;
+a RHEL-family base does. The template installs its packages with
+`apt-get`, so its base has to be Debian-family regardless:
+
+| image (linux/amd64) | layer entries | file without owner read, directory without owner read+execute, device |
+| --- | --- | --- |
+| `debian:bookworm-slim` | 4226 | 0 |
+| `python:3.13-slim-bookworm` | 6648 | 0 |
+| `ghcr.io/astral-sh/uv:python3.13-bookworm-slim` | 6630 | 0 |
+| `ubuntu:24.04` | 3443 | 0 |
+| `rockylinux:9` | 8116 | 4: `/etc/shadow`, `/etc/shadow-`, `/etc/gshadow`, `/etc/gshadow-`, mode 0000 |
 
 ## `$HOME` exists only where a bind creates it
 
@@ -274,13 +377,12 @@ non-empty value (including `0`), it runs `docker build` and then
 `docker save`. If neither binary is on `PATH`, the build fails with
 `neither "buildctl" nor "docker" could be found in the PATH`.
 
-**The host environment reaches the client.** `--fakeroot` re-executes the
-build in a user namespace, with `Envs: os.Environ()`
-(`fakerootExec`, `cmd/internal/cli/build_linux.go`). Both clients inherit
-the calling shell's environment. `backend_build_image`
-(`functions/apptainer.sh`) neither sets nor clears any builder variable, so
-`BUILDKIT_HOST` and `DOCKER_HOST` exported before `sandbox.sh` reach the
-client unchanged.
+**The host environment reaches the client.** `buildImage` starts both
+clients with `os.Environ()` plus its own `DOCKER_CONFIG`
+(`conveyorPacker_buildkit.go`), so they inherit the calling shell's
+environment. `backend_build_image` (`functions/apptainer.sh`) neither sets
+nor clears any builder variable, so `BUILDKIT_HOST` and `DOCKER_HOST`
+exported before `sandbox.sh` reach the client unchanged.
 
 **`buildctl` path.** The daemon address comes from `--buildkit-host`
 (`cmd/internal/cli/apptainer.go`, env key `BUILDKIT_HOST`). When that is
@@ -307,15 +409,10 @@ certificates unless `DOCKER_CERT_PATH` is set. `docker save` requires the
 built image to be in the daemon's image store. A buildx builder with a
 non-`docker` driver does not put it there unless it loads the image.
 
-**`ssh://` addresses run inside the fakeroot namespace.** Both clients
-implement `ssh://` by executing the `ssh` binary, which inside the build runs
-as uid 0 of the user namespace. OpenSSH locates `~/.ssh` (config,
-`known_hosts`, keys) through the passwd entry of the current uid, not
-`$HOME`. The namespace's uid 0 resolves to `/root`, so the user's own SSH
-configuration and host keys are not found. An `ssh -L` forward to a local
-Unix socket, started by the user before the build, avoids this: the client
-then connects through `unix://`, and the namespace's uid 0 maps to the
-socket owner's uid.
+**`ssh://` addresses run the calling user's `ssh`.** Both clients implement
+`ssh://` by executing the `ssh` binary, as the user who runs `sandbox.sh`.
+OpenSSH locates `~/.ssh` (config, `known_hosts`, keys) through the passwd
+entry of the current uid, so that user's own SSH configuration applies.
 
 **What the builder receives and returns.** The build context is
 `sandbox/agent/`, which holds the generated `Dockerfile`. In `dockerfile`

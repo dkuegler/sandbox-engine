@@ -120,6 +120,17 @@ backend_image_remove() {
 # file overrides it (conveyorPacker_buildkit.go: bk.context =
 # Header["from"], bk.filename defaults to "Dockerfile"). So the spec must
 # name a directory holding a file literally called Dockerfile.
+#
+# No --fakeroot (docs/apptainer.md). The Dockerfile's RUN steps execute in
+# the BuildKit or Docker daemon, and a "dockerfile:" spec is not a
+# definition file, so apptainer does not imply fakeroot for it. The local
+# part -- unpacking the returned image and mksquashfs -- runs umoci's
+# rootless mode and PRoot (or -all-root) either way, because inside the
+# fakeroot namespace namespaces.IsUnprivileged() still sees the caller's
+# host uid. --fakeroot only added host requirements (a user namespace,
+# /etc/subuid or the fakeroot command) and their failures: apptainer
+# before 1.6 on WSL 2.8.9+ with systemd stops with "failed to mount
+# binfmt_misc filesystem: invalid argument".
 backend_build_image() {
     local context="$1" kv
     shift
@@ -127,7 +138,7 @@ backend_build_image() {
     for kv in "$@"; do
         args+=(--build-arg "$kv")
     done
-    apptainer build --fakeroot ${args[@]+"${args[@]}"} "$SANDBOX_IMAGE" "dockerfile:$context"
+    apptainer build ${args[@]+"${args[@]}"} "$SANDBOX_IMAGE" "dockerfile:$context"
 }
 
 # backend_forward_env VAR VALUE: VAR=VALUE inside the next container. Via
