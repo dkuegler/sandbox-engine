@@ -138,7 +138,7 @@ refusals cannot tell a working control from a broken fixture.
 **Procedure.** On every change to `sandbox.sh` or `functions/*.sh`: `bash -n` on
 each changed script, then `shellcheck sandbox.sh functions/*.sh` in one
 invocation so `source` targets resolve, and
-`shellcheck -S warning tests/lib/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh`.
+`shellcheck -S warning tests/lib/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh tests/sandbox/*.sh`.
 Then the suite:
 
 ```

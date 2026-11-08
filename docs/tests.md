@@ -2,17 +2,18 @@
 
 Last verified: 2026-11-06
 
-Three independent suites: `tests/git-escape/` (git write containment),
-`tests/config-escape/` (agent config surface and host-state leakage) and
-`tests/worktree/` (`--worktree` mode's behaviour). None depends on another.
+Four independent suites: `tests/git-escape/` (git write containment),
+`tests/config-escape/` (agent config surface and host-state leakage),
+`tests/worktree/` (`--worktree` mode's behaviour) and `tests/sandbox/`
+(preset images). None depends on another.
 
 ## Run everything
 
 ```
-bash -n sandbox.sh functions/*.sh tests/lib/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh
+bash -n sandbox.sh functions/*.sh tests/lib/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh tests/sandbox/*.sh
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck sandbox.sh functions/*.sh
-    shellcheck -S warning tests/lib/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh
+    shellcheck -S warning tests/lib/*.sh tests/git-escape/*.sh tests/config-escape/*.sh tests/worktree/*.sh tests/sandbox/*.sh
 fi
 ./tests/worktree/worktree_check.sh
 ./tests/git-escape/worktree_mask_check.sh
@@ -20,14 +21,16 @@ fi
 ./tests/config-escape/mask_check.sh
 ./tests/git-escape/run.sh
 ./tests/git-escape/run.sh --negative
+./tests/sandbox/sdaps.sh
 ```
 
 `worktree_check.sh`, `worktree_mask_check.sh`, `sanitize_check.sh`,
 `mask_check.sh` and `run.sh --negative` run on the host alone, no
-container needed; `run.sh` needs `apptainer`. It runs `sandbox.sh` with
-no controlling terminal (`setsid`), so no `/dev/tty` prompt can block it,
-from a terminal or not. Each script prints `ok`/`FAIL` per assertion,
-then a summary of the expected result against the tested one:
+container needed; `run.sh` and `sdaps.sh` need `apptainer`. They run
+`sandbox.sh` with no controlling terminal (`setsid`), so no `/dev/tty`
+prompt can block it, from a terminal or not. Each script prints
+`ok`/`FAIL` per assertion, then a summary of the expected result against
+the tested one:
 
 ```
 expected: 5 passed, 21 failed: A1 A2a ...
@@ -166,3 +169,24 @@ verified and the recorded "Standing verification" result, and
 
 See [`project-config-masking.md`](project-config-masking.md) for the
 convention this suite enforces.
+
+## tests/sandbox/ — preset images
+
+- **`sdaps.sh`** — the `sdaps` preset image (`sandbox/sdaps/Dockerfile`)
+  in a live container, as the session's own unprivileged user on the
+  read-only image, which the build's own run of SDAPS's test (as root,
+  on a writable filesystem) cannot show. `/opt/sdaps/bin/python` imports
+  `sdaps` (V1), and every `sdaps` module has precompiled bytecode (V2),
+  since a read-only image cannot cache it. uv's managed-Python directory
+  is still a writable one (U1). One questionnaire with code128
+  questionnaire IDs then runs through the whole workflow, each optional
+  dependency on the path: `setup tex`, `stamp`, `add --convert`,
+  `recognize` (E1-E4), then CSV export, whose recognized IDs must be
+  the stamped ones, feather export read back with pandas, both reports
+  and `annotate` (E5-E9). Once one of E1-E4 fails, the steps after it
+  report as not run. The first launch only builds the image, if missing,
+  with its output shown; the checked launch must print no warning
+  (`WARN`).
+  A preset's image tag is its name, so an existing image is reused
+  after `sandbox/sdaps/Dockerfile` changes: pass `--rebuild` to check
+  the edited file.

@@ -6,7 +6,7 @@
 # --environment KEY=VALUE overrides a key for one run.
 #   image: <ref>          this image, verbatim
 #   dockerfile: <path>    relative to the project; its last stage is the base
-#   preset: <name>        uv | python | shell | latex
+#   preset: <name>        uv | python | shell | latex | sdaps
 #   python_version: "X"   python preset only (uv ships python3.10-3.14)
 environment:
   preset: uv

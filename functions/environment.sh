@@ -80,8 +80,15 @@ resolve_environment() {
                 ENV_MODE="dockerfile"
                 CUSTOM_DOCKERFILE="$SANDBOX_DIR/latex/Dockerfile"
                 ;;
+            sdaps)
+                # Same bundled/trusted dockerfile-splice pattern: the latex
+                # preset's TeX Live and uv plus SDAPS, built from its
+                # checksum-pinned release tarball (see sandbox/sdaps/Dockerfile).
+                ENV_MODE="dockerfile"
+                CUSTOM_DOCKERFILE="$SANDBOX_DIR/sdaps/Dockerfile"
+                ;;
             *)
-                echo "environment.preset '$ENV_PRESET' (from sandbox.yml/--environment): unknown, expected uv|python|shell|latex" >&2
+                echo "environment.preset '$ENV_PRESET' (from sandbox.yml/--environment): unknown, expected uv|python|shell|latex|sdaps" >&2
                 exit 1
                 ;;
         esac

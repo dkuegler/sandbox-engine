@@ -175,7 +175,7 @@ git add sandbox.yml && git commit -m "Add sandbox.yml"
 ```
 
 `sandbox.yml` chooses the base image (presets `uv` (the default),
-`python`, `shell`, `latex`, or your own `image:`/`dockerfile:`), adds
+`python`, `shell`, `latex`, `sdaps`, or your own `image:`/`dockerfile:`), adds
 extra mounts (`binds:`), and sets the patch directory (`patches:`). The
 file is honoured only once it is committed and unmodified. Run
 `./sandbox.sh -h` for every option, and see `docs/usage.md` for the full
@@ -335,11 +335,12 @@ functions/
   log.sh                   logging
 sandbox/
   agent/Dockerfile.template  agent image layered on the chosen base
-  uv/ shell/ latex/          preset base images
+  uv/ shell/ latex/ sdaps/   preset base images
 tests/
   git-escape/              git write containment (host-side + live container)
   config-escape/           config surface and host-state leakage (host-side)
   worktree/                --worktree mode behaviour (host-side)
+  sandbox/sdaps.sh         sdaps preset image end to end (live container)
   lib/report.sh            shared ok/bad reporting and expected-vs-tested summary
   tool-failure/omp.py      failed-tool-call ratios from omp session logs
 docs/                      user reference and fact records (docs/README.md)

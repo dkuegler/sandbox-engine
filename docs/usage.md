@@ -65,13 +65,29 @@ The first key set wins, in this order:
 | `python` | `python:<version>-slim-bookworm` |
 | `shell` | the `uv` base (Python 3.13) plus shellcheck, dash and ksh (`sandbox/shell/Dockerfile`) |
 | `latex` | full TeX Live plus uv (`sandbox/latex/Dockerfile`) |
+| `sdaps` | the `latex` base plus SDAPS 1.9.13 (`sandbox/sdaps/Dockerfile`) |
 
 The `shell` preset ships the interpreters for shellcheck's dialects (sh/dash,
 bash, ksh; shellcheck also models bats). `zsh`, `fish`, `tcsh` and `csh` are
 stubs that print why they are not installed and exit 127, so a script is never
 run by an interpreter shellcheck did not check it against.
 
-Only the `uv`, `shell` and `latex` bases include uv. A custom image or
+The `sdaps` preset puts [SDAPS](https://sdaps.org) on `PATH` as `sdaps`. It
+is built from the 1.9.13 release tarball, pinned by checksum, into
+`/opt/sdaps`: a venv on a uv-managed CPython 3.13 carrying every optional
+dependency (reportlab, Pillow, OpenCV, pandas, pyarrow, and PyGObject with
+the Poppler and Pango introspection data), next to `zbarimg` for code128 and
+QR IDs. A script that imports `sdaps` runs under `/opt/sdaps/bin/python`;
+uv in the session does not see that interpreter or venv, so a project's own
+environment works as in the `latex` preset. Questionnaires use TeX Live's
+`sdaps` class, the one this release bundles. `sdaps gui` is not available:
+no display reaches the sandbox, and GTK is not installed. The image build
+ends with SDAPS's own end-to-end test (`test/run-test.sh`: `setup tex`,
+`stamp`, `add --convert`, `recognize`, both reports) against the installed
+command, so a dependency release that breaks SDAPS fails the build instead
+of producing an image.
+
+Only the `uv`, `shell`, `latex` and `sdaps` bases include uv. A custom image or
 Dockerfile has to install it itself, for example with
 `COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/`.
 Whenever the agent can run uv in the image, its instruction file
@@ -83,8 +99,8 @@ nor the Dockerfile's text decides, so a custom image or Dockerfile that
 installs uv gets the line too, however it installs it, and a uv that is off
 that `PATH` or in a directory the session's user cannot enter does not.
 
-The `uv` preset (and only it: not `shell`, `latex` or a custom base) also
-carries uv-managed CPython 3.10 through 3.14 in `/opt/uv-python`
+The `uv` preset (and only it: not `shell`, `latex`, `sdaps` or a custom
+base) also carries uv-managed CPython 3.10 through 3.14 in `/opt/uv-python`
 (`sandbox/uv/Dockerfile`), with `python3.10` ... `python3.14` on
 `PATH` after the base interpreter. `requires-python`, `.python-version` and
 `uv run --python X` resolve offline for any of them.
