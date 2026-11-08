@@ -84,8 +84,14 @@ environment works as in the `latex` preset. Questionnaires use TeX Live's
 no display reaches the sandbox, and GTK is not installed. The image build
 ends with SDAPS's own end-to-end test (`test/run-test.sh`: `setup tex`,
 `stamp`, `add --convert`, `recognize`, both reports) against the installed
-command, so a dependency release that breaks SDAPS fails the build instead
-of producing an image.
+command, so a dependency release that breaks one of those steps fails the
+build instead of producing an image. The test does not cover
+`export feather`, which is how NumPy 2 broke this release unnoticed: 1.9.13
+uses `np.float_` and `np.unicode_`, both removed in NumPy 2.0. The
+Dockerfile therefore patches `sdaps/pandas/buddies.py` to the `np.float64`
+and `np.str_` those names stood for. The diff is a Dockerfile heredoc, which
+needs a BuildKit builder: `docker build` with `DOCKER_BUILDKIT=0`, the legacy
+builder, cannot parse it.
 
 Only the `uv`, `shell`, `latex` and `sdaps` bases include uv. A custom image or
 Dockerfile has to install it itself, for example with
