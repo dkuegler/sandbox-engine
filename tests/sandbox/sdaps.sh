@@ -121,6 +121,8 @@ e_csv() {
     echo "questionnaire_id column: want '12345 Hello ', got '$got'"
     return 1
 }
+# The scans are of unfilled sheets, so every question is unanswered: the
+# export has to hold missing values (see sandbox/sdaps/Dockerfile).
 # shellcheck disable=SC2317
 e_feather() {
     local rows

@@ -7,7 +7,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Built from source below, having no Linux wheels: SDAPS's C extension,
 # pycairo and PyGObject (compiler, headers, gettext for SDAPS's translations,
-# patch for the NumPy 2 fix).
+# patch for the fixes below).
 # At run time SDAPS calls zbarimg (code128/qr IDs) and file (`add`), and loads
 # Poppler, Pango and GLib through GObject introspection (PDF import with
 # `add --convert`, `annotate`, `boxgallery`). GTK is left out: `sdaps gui`
@@ -64,8 +64,45 @@ index 53c95e2..171ba34 100644
          self._states.append(self.obj.data.state)
 EOF
 
+# Whatever the NumPy version, `sdaps export feather` also fails as soon as one
+# sheet leaves a single-choice question (\singlemark, a singlechoice
+# choicequestion) unanswered or marks more than one of its boxes: the answer
+# is then the string "NA" or "error-multi-select", which the question's
+# integer column cannot hold (ValueError; upstream master is unchanged). The
+# diff makes that column a nullable integer (pandas Int64, int64 with nulls in
+# the feather file) holding a missing value in both cases; the question's box
+# columns still record which boxes were checked. Applied like the one above.
+COPY <<'EOF' /tmp/sdaps-build/missing-answers.diff
+diff --git a/sdaps/pandas/buddies.py b/sdaps/pandas/buddies.py
+index 53c95e2..eb7eb1c 100644
+--- a/sdaps/pandas/buddies.py
++++ b/sdaps/pandas/buddies.py
+@@ -104,13 +104,19 @@ class Option(QObject, metaclass=model.buddy.Register):
+ 
+     def init(self):
+         self._data = []
+-        columns = [(self.obj.id_csv(), np.int_, self._data)]
++        columns = [(self.obj.id_csv(), pandas.Int64Dtype(), self._data)]
+         columns.extend(QObject.init(self))
+ 
+         return columns
+ 
+     def append_row(self):
+-        self._data.append(self.obj.get_answer())
++        # With no box checked, or more than one, get_answer() returns a
++        # string (value_none, value_invalid) instead of a box value. Both
++        # are missing here; the box columns still tell them apart.
++        answer = self.obj.get_answer()
++        if answer in (self.obj.value_none, self.obj.value_invalid):
++            answer = None
++        self._data.append(answer)
+ 
+         QObject.append_row(self)
+ 
+EOF
+
 # SDAPS itself: the release tarball, pinned by checksum and patched as above
-# (the COPY made $src), built with meson from a throwaway venv. Its
+# (the COPYs made $src), built with meson from a throwaway venv. Its
 # meson.build finds pycairo through pkg-config, and a pycairo installed from
 # PyPI ships no py3cairo.pc, so one is written for the build. The LaTeX class
 # comes from TeX Live: its sdaps package (1.9.10) is the class this release
@@ -79,7 +116,9 @@ RUN set -eu; \
     curl -fsSLo sdaps.tar.xz https://github.com/sdaps/sdaps/releases/download/v1.9.13/sdaps-1.9.13.tar.xz; \
     echo 'bbdb37d92a75e87e845d0e99ea7bdcb46d629168f8595324d2750e76fb59b4c6  sdaps.tar.xz' | sha256sum -c -; \
     tar -xJf sdaps.tar.xz; \
-    patch -d sdaps-1.9.13 -p1 --forward --fuzz=0 --no-backup-if-mismatch <numpy2-compat.diff; \
+    for diff in numpy2-compat.diff missing-answers.diff; do \
+        patch -d sdaps-1.9.13 -p1 --forward --fuzz=0 --no-backup-if-mismatch <"$diff"; \
+    done; \
     UV_NO_CACHE=1 uv venv --python /opt/sdaps/bin/python tools; \
     UV_NO_CACHE=1 uv pip install --python tools/bin/python meson ninja; \
     mkdir pc; \

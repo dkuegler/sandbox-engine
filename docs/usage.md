@@ -89,9 +89,16 @@ build instead of producing an image. The test does not cover
 `export feather`, which is how NumPy 2 broke this release unnoticed: 1.9.13
 uses `np.float_` and `np.unicode_`, both removed in NumPy 2.0. The
 Dockerfile therefore patches `sdaps/pandas/buddies.py` to the `np.float64`
-and `np.str_` those names stood for. The diff is a Dockerfile heredoc, which
-needs a BuildKit builder: `docker build` with `DOCKER_BUILDKIT=0`, the legacy
-builder, cannot parse it.
+and `np.str_` those names stood for. A second patch to that file fixes an
+older bug: on any NumPy, `export feather` fails as soon as one sheet leaves a
+single-choice question (`\singlemark`, a `singlechoice` `choicequestion`)
+unanswered or has more than one of its boxes checked. In the patched export,
+such a question's column is a nullable integer (pandas `Int64`, `NA` in R)
+and both cases are a missing value, where `export csv` writes `NA` and
+`error-multi-select`; the question's per-box columns still show which boxes
+were checked. The diffs are Dockerfile heredocs, which need a BuildKit
+builder: `docker build` with `DOCKER_BUILDKIT=0`, the legacy builder, cannot
+parse them.
 
 Only the `uv`, `shell`, `latex` and `sdaps` bases include uv. A custom image or
 Dockerfile has to install it itself, for example with
