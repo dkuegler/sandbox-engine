@@ -96,11 +96,11 @@ resolve_environment() {
 }
 
 # generate_dockerfile: substitutes sandbox/agent/Dockerfile.template's
-# "$BASE_IMAGE"/"$AGENT"/"$SANDBOX_BUILD_ID" placeholders textually into
-# sandbox/agent/Dockerfile, since apptainer's Dockerfile bootstrap neither
-# evaluates ARG in FROM lines nor passes --build-arg on (docs/apptainer.md).
-# In dockerfile mode, splices the custom Dockerfile in as the "base" stage.
-# Sets SANDBOX_BUILD_ID.
+# "$BASE_IMAGE"/"$AGENT"/"$SANDBOX_BUILD_ID"/"$AGENT_VERSION" placeholders
+# textually into sandbox/agent/Dockerfile, since apptainer's Dockerfile
+# bootstrap neither evaluates ARG in FROM lines nor passes --build-arg on
+# (docs/apptainer.md). In dockerfile mode, splices the custom Dockerfile in
+# as the "base" stage. Sets SANDBOX_BUILD_ID.
 generate_dockerfile() {
     local template="$SANDBOX_DIR/agent/Dockerfile.template"
     local out="$SANDBOX_DIR/agent/Dockerfile"
@@ -159,6 +159,11 @@ generate_dockerfile() {
         exit 1
     fi
     tail_part="${tail_part//\$SANDBOX_BUILD_ID/$SANDBOX_BUILD_ID}"
+
+    # The pinned agent version (AGENT@VERSION), textually for the same
+    # reason; empty installs the latest release. parse_argv admits only
+    # MAJOR.MINOR.PATCH digits (functions/argv.sh).
+    tail_part="${tail_part//\$AGENT_VERSION/${AGENT_VERSION:-}}"
 
     rm -f "$out"
     {
@@ -250,19 +255,49 @@ agent_update_cache_write() {
         "$IMAGE_AGENT" "$(date +%s)" "$1" "$2" 2>/dev/null >"$SANDBOX_IMAGE_INFO" || true
 }
 
+# check_pinned_agent_version: with AGENT@VERSION, an existing image is
+# rebuilt unless its agent reports exactly the pinned version. The pin
+# never names an image of its own: one image per agent and environment, as
+# without a pin, so pinned images cannot pile up in the image directory
+# unnoticed. Changing the pin, or pinning after an unpinned run, therefore
+# rebuilds, and so does an image that cannot tell its version. Not
+# skippable by --no-update-check: the pin is what the run asked for, not a
+# drift check. The note is unconditional because the rebuild takes minutes.
+check_pinned_agent_version() {
+    local installed=""
+    [[ -n "${AGENT_VERSION:-}" ]] || return 0
+    [[ "${REBUILD:-0}" -eq 0 ]] || return 0
+    backend_image_present || return 0
+    installed="$(image_agent_version)" || installed=""
+    if [[ "$installed" == "$AGENT_VERSION" ]]; then
+        log_info "agent image: $SANDBOX_IMAGE holds the pinned $IMAGE_AGENT $AGENT_VERSION"
+        return 0
+    fi
+    printf 'note: %s holds %s %s, not the pinned %s; rebuilding it.\n' "$SANDBOX_IMAGE" \
+        "$IMAGE_AGENT" "${installed:-of unknown version}" "$AGENT_VERSION" >&2
+    # shellcheck disable=SC2034  # REBUILD is read by build_images
+    REBUILD=1
+}
+
 # check_agent_update: best-effort, rate-limited check for whether a newer
 # <agent> CLI release exists than the one already baked into the image,
 # and if so, offers to rebuild. This is about the *agent CLI's* version
 # drift, not sandbox-engine's own version, and not image *build-input*
 # staleness either -- that is already automatic: ENV_TAG changes with
 # sandbox.yml/--environment/base image, so a changed tag builds a fresh
-# image on its own, and --rebuild forces one regardless. None of the three
-# agents pin a version in sandbox/agent/Dockerfile.template (`claude` is
+# image on its own, and --rebuild forces one regardless. Unless
+# AGENT@VERSION pins one, none of the three agents' installs in
+# sandbox/agent/Dockerfile.template names a version (`claude` is
 # `npm install -g @anthropic-ai/claude-code`; `opencode`/`omp` are
 # curl-piped install scripts), and generate_dockerfile's per-build id keeps
 # the builder from serving the install from its cache, so every build
 # installs whatever is current at build time and the baked-in version
 # drifts from upstream between builds with nothing else to surface that.
+# A pinned run holds exactly the version it asked for
+# (check_pinned_agent_version), so it is not checked at all: no upstream
+# query, no prompt. A pinned build deletes the cache
+# (check_built_agent_version), so the next unpinned run checks at once and
+# offers the latest release instead of reusing the pinned one unasked.
 #
 # Every step here is best-effort: no runtime or curl, no network, a
 # malformed response, or no /dev/tty to prompt on all degrade to
@@ -278,6 +313,10 @@ agent_update_cache_write() {
 check_agent_update() {
     if [[ "${NO_UPDATE_CHECK:-0}" -eq 1 ]]; then
         log_debug "update check: off (--no-update-check)"
+        return 0
+    fi
+    if [[ -n "${AGENT_VERSION:-}" ]]; then
+        log_debug "update check: off ($IMAGE_AGENT pinned to $AGENT_VERSION)"
         return 0
     fi
     if ! backend_image_present; then
@@ -337,11 +376,25 @@ check_agent_update() {
 # current release (an installer resolving "latest" elsewhere, a release
 # published mid-build), so a difference warns, which holds the start
 # (functions/log.sh). The result also restarts the update-check cache's
-# hour. --no-update-check skips the network query.
+# hour. --no-update-check skips the network query. A pinned agent
+# (AGENT@VERSION) is compared with the pin instead of upstream, no query,
+# since an installer can still install something else; a difference
+# warns, as each later pinned run would otherwise rebuild unexplained. Its
+# build also deletes the cache, even under --no-update-check: the cache no
+# longer describes the image, and without it the next unpinned run checks
+# at once.
 check_built_agent_version() {
     local installed="" latest=""
     installed="$(image_agent_version)" || installed=""
     log_info "agent image: $SANDBOX_IMAGE (built, $IMAGE_AGENT ${installed:-version unknown})"
+    if [[ -n "${AGENT_VERSION:-}" ]]; then
+        rm -f "$SANDBOX_IMAGE_INFO"
+        if [[ "$installed" != "$AGENT_VERSION" ]]; then
+            log_warn "the $IMAGE_AGENT just built into $SANDBOX_IMAGE is ${installed:-of unknown version}, not the pinned $AGENT_VERSION;" \
+                "the next pinned run rebuilds it again. Build id $SANDBOX_BUILD_ID (/etc/sandbox-engine-build-id in the image); -vv shows the version query."
+        fi
+        return 0
+    fi
     if [[ "${NO_UPDATE_CHECK:-0}" -eq 1 ]]; then
         return 0
     fi

@@ -12,7 +12,7 @@ it has to write. Nothing else from the host is mounted unless you ask for it.
 ## Invocation
 
 ```
-./sandbox.sh [options] <claude|opencode|omp> [agent-args...]
+./sandbox.sh [options] <claude|opencode|omp>[@VERSION] [agent-args...]
 ```
 
 The project directory defaults to the current directory. sandbox-engine's
@@ -38,6 +38,32 @@ before the agent name they belong to `sandbox.sh`, after it to the agent.
 
 `SANDBOX_ENGINE_IMAGE_DIR` sets where images are stored (default
 `~/.apptainer/images`). The run's exit status is the agent's.
+
+### Pinning the agent version
+
+`AGENT@VERSION` in place of the agent name installs that release instead of
+the latest one:
+
+```
+./sandbox.sh omp@19.0.1
+```
+
+`VERSION` is `MAJOR.MINOR.PATCH` in digits; anything else refuses the run.
+After the agent name, `omp@1.2.3` is an ordinary argument for the agent.
+
+The image stays `<agent>.<env-tag>.sif`: a pin never adds an image file.
+Before each pinned run, the agent in the image is asked for its version; if it
+is not the pin, or cannot tell, the image is rebuilt, with a note saying so.
+Changing the pin, or pinning after an unpinned run, therefore rebuilds if the
+pinned version is different from latest. A pinned run skips the agent-update
+check. Dropping the pin does not rebuild: the next unpinned run checks for
+updates at once (see "Agent updates" below) and offers the latest release,
+unless `--no-update-check` is given.
+
+After a pinned build, the new image's version is compared with the pin; a
+difference (an installer that installed another release) warns, which holds
+the start like every warning. `--rebuild` with a pin always rebuilds, without
+asking the image first.
 
 ## `sandbox.yml`
 
@@ -123,7 +149,8 @@ never" error. Edit `sandbox/uv/Dockerfile` to change the set.
 
 The image is `<agent>.<env-tag>.sif`, built on first use. The tag changes
 whenever the environment changes, and that change triggers a fresh build.
-Every build installs the agent's current release: from the template's first
+Every build installs the agent's current release, or the pinned one (see
+"Pinning the agent version" above): from the template's first
 `RUN` on, no layer is taken from the builder's cache; the base stage (a
 preset's or your Dockerfile) can be. The image records its build id in
 `/etc/sandbox-engine-build-id`. See `apptainer.md`.
@@ -265,7 +292,9 @@ once an hour (cached in `<image>.info`). If upstream is newer, it asks whether
 to rebuild; without a terminal it prints a note. After every build it compares
 again and warns if the new image does not hold the latest release. `-v` prints
 the versions compared; `-vv` also each upstream query with its HTTP status,
-and why a check was skipped. Failures are otherwise silent.
+and why a check was skipped. Failures are otherwise silent. A pinned agent
+(`AGENT@VERSION`, above) is never compared with upstream, only with the pin;
+a pinned build clears `<image>.info`, so the next unpinned run checks at once.
 
 ## Worktree mode (`--worktree BRANCH`)
 

@@ -5,10 +5,13 @@
 # read-write, every .git in it read-only, the agent's own config from $HOME.
 #
 # Usage:
-#   ./sandbox.sh [options] <claude|opencode|omp> [agent-args...]
+#   ./sandbox.sh [options] <claude|opencode|omp>[@VERSION] [agent-args...]
 #
 # Options are recognised anywhere in argv; everything else goes to the agent.
 # -h/--help and -v/-vv belong to sandbox.sh only before the agent name.
+# AGENT@VERSION (e.g. omp@19.0.1) installs that release, MAJOR.MINOR.PATCH,
+# rebuilding the agent's image when it holds another, and skips the
+# agent-version check.
 #
 #   --project-dir DIR          project to sandbox (default: current directory)
 #   --environment KEY=VALUE    override one sandbox.yml environment: key
@@ -122,7 +125,10 @@ log_info "environment: mode=$ENV_MODE base_image=$BASE_IMAGE env_tag=$ENV_TAG"
 # Image name and location belong to the backend (functions/apptainer.sh).
 backend_image_ref "$IMAGE_AGENT" "$ENV_TAG"
 
-# Best-effort; may set REBUILD=1 when the human accepts the prompt.
+# AGENT@VERSION: sets REBUILD=1 when the image holds another release.
+check_pinned_agent_version
+# Best-effort; may set REBUILD=1 when the human accepts the prompt. Off
+# for a pinned agent.
 check_agent_update || true
 
 build_images

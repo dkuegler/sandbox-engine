@@ -1,10 +1,10 @@
 #!/bin/bash
 # argv parsing: usage(), --environment KEY=VALUE handling, and the main
-# option loop. Populates PROJECT_DIR, AGENT, ARGS, CLI_ENV_*, CLI_BINDS,
-# WORKTREE_BRANCH, WORKTREE_START_POINT.
+# option loop. Populates PROJECT_DIR, AGENT, AGENT_VERSION, ARGS, CLI_ENV_*,
+# CLI_BINDS, WORKTREE_BRANCH, WORKTREE_START_POINT.
 
 usage() {
-    echo "Usage: $0 [--project-dir DIR] [--worktree BRANCH [--start-point COMMIT]] [--commit-model MODEL] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [--ignore-warnings] [-v|--verbose|-vv] [--rebuild] [--no-update-check] <claude|opencode|omp|script> [agent-args...]" >&2
+    echo "Usage: $0 [--project-dir DIR] [--worktree BRANCH [--start-point COMMIT]] [--commit-model MODEL] [--environment KEY=VALUE ...] [--bind SRC[:DST[:OPTS]]] [--allow-external-binds] [--allow-external-gitdir] [--ignore-warnings] [-v|--verbose|-vv] [--rebuild] [--no-update-check] <claude|opencode|omp>[@VERSION]|script [agent-args...]" >&2
     exit 1
 }
 
@@ -43,6 +43,8 @@ set_cli_env() {
 parse_argv() {
     PROJECT_DIR="$(pwd)"
     AGENT=""
+    # Empty means "the agent's latest release"; AGENT@VERSION pins it.
+    AGENT_VERSION=""
     ARGS=()
     # shellcheck disable=SC2034  # CLI_ENV_IMAGE is read by resolve_environment (functions/environment.sh) via ${CLI_ENV_IMAGE:-$ENV_IMAGE}
     CLI_ENV_IMAGE=""
@@ -205,6 +207,26 @@ parse_argv() {
             claude|opencode|omp|script)
                 if [[ -z "$AGENT" ]]; then
                     AGENT="$1"
+                else
+                    ARGS+=("$1")
+                fi
+                shift
+                ;;
+            claude@*|opencode@*|omp@*)
+                # AGENT@VERSION pins the release the image installs
+                # (docs/usage.md, "Pinning the agent version"). Position-
+                # scoped like the bare name: after the agent name it is the
+                # agent's own argument. The version becomes Dockerfile text
+                # (generate_dockerfile), so only MAJOR.MINOR.PATCH digits
+                # pass: nothing in it can end a quoted string or a command.
+                if [[ -z "$AGENT" ]]; then
+                    AGENT="${1%%@*}"
+                    # shellcheck disable=SC2034  # AGENT_VERSION is read by sandbox.sh and functions/environment.sh after parse_argv returns
+                    AGENT_VERSION="${1#*@}"
+                    if [[ ! "$AGENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                        echo "$1: expected $AGENT@MAJOR.MINOR.PATCH, e.g. $AGENT@1.2.3: a release version, digits only, no leading v" >&2
+                        exit 1
+                    fi
                 else
                     ARGS+=("$1")
                 fi
