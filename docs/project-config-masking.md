@@ -431,7 +431,7 @@ host's paths bound into it one by one:
 | --- | --- |
 | `~/.omp/natives` | the image's own read-only copy, extracted at build time |
 | `~/.omp/logs` | per project, kept on the host in `~/.agent/omp-logs/` |
-| `~/.omp/run`, `security`, `cache` | empty, per run |
+| `~/.omp/run`, `security`, `cache` | empty, per run; omp's daemon runs from `~/.omp/run/daemon-<run>` (`OMP_DAEMON_DIR`), never the host daemon's path, whose lock the shared network namespace would hand to whichever daemon started first (`apptainer.md`) |
 | `~/.omp/agent/config.yml` | a plain per-run copy; at exit, `modelRoles`, `cycleOrder`, `dev.autoqaConsent`, `hideThinkingBlock` and `setupVersion` merge back, the rest is reported |
 | `~/.omp/agent/agent.db` (`-wal`, `-shm`), `blobs/`, `sessions/<this checkout>/` | the host's own, read-write — credentials and this checkout's sessions |
 | `~/.omp/agent/history.db` | a per-project database in `~/.agent/omp-history/` |

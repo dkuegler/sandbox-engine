@@ -16,7 +16,9 @@
 #   natives            symlink to the image's read-only copy, extracted at
 #                      build time (sandbox/agent/Dockerfile.template)
 #   logs/              per project, kept on the host in ~/.agent/omp-logs/
-#   run/ security/ cache/                    empty, per run
+#   run/ security/ cache/                    empty, per run; omp's daemon
+#                      runs from run/daemon-<run id>/ (OMP_DAEMON_DIR), never
+#                      the host's path run/daemon/
 #   install-id gpu_cache.json                copies
 #   sandbox-overlay.yml                      read-only settings overlay
 #                      (PI_CONFIG_FILES) that forces secret redaction on
@@ -210,6 +212,26 @@ omp_home_prepare() {
             "its own read-only overlay, and your overlay files are not mounted."
     fi
     backend_forward_env PI_CONFIG_FILES "$real/sandbox-overlay.yml"
+
+    # omp's daemon (on-device models: session titles, word completion,
+    # speech) locks its directory's daemon.lock, and omp's file lock also
+    # answers through the network namespace, keyed by the lock's path --
+    # a namespace the container shares with the host. At omp's default
+    # path, $HOME/.omp/run/daemon, that key is the host omp daemon's (or
+    # another run's), whichever started first: this run's daemon then
+    # exits at once ("Another omp daemon holds the lock") and every client
+    # times out on a socket nobody creates; started first, it would block
+    # the host's daemon instead. The directory is already inside RUN_DIR:
+    # run/ is $RUN_DIR/omp/run on the host, and goes with the run. Its
+    # name still needs the random suffix mktemp gave RUN_DIR, because the
+    # lock's key is the path omp sees inside the container, and every run
+    # sees the same $HOME/.omp/run (or the same /tmp, were it placed
+    # there): only the suffix makes that path differ between runs.
+    if forwarded="$(backend_forwarded_env OMP_DAEMON_DIR)" && [[ -n "$forwarded" ]]; then
+        log_warn "OMP_DAEMON_DIR ($forwarded) is not passed through to omp: the sandbox" \
+            "runs omp's daemon from a directory of its own for each run."
+    fi
+    backend_forward_env OMP_DAEMON_DIR "$real/run/daemon-${RUN_DIR##*.}" || return 1
 
     omp_home_bind_shared "$real/agent/agent.db" file || return 1
     omp_home_bind_shared "$real/agent/agent.db-wal" file || return 1

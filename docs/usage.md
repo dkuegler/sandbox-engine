@@ -252,7 +252,8 @@ as part of the sandbox. It receives the generated Dockerfile, which in
   hidden. A file the agent creates at such a path is reported at exit. See
   `project-config-masking.md`.
 - **The agent's global config**, read-only. Writable state is bound path by
-  path. omp gets a per-run `~/.omp`; claude a per-run `$HOME`, where its
+  path. omp gets a per-run `~/.omp`, and its daemon (local models) runs per
+  run, apart from the host's; claude a per-run `$HOME`, where its
   login is your own `~/.claude/.credentials.json` and of its `~/.claude.json`
   only theme and onboarding state merge back at exit. If you set
   `CLAUDE_CONFIG_DIR` on the host, those files are taken from that directory

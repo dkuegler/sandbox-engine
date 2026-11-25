@@ -568,7 +568,7 @@ printf 'rule\n' >"$OMP/agent/RULES.md"
 for f in .env secret-placeholder.key history.db models.db agent.db; do : >"$OMP/agent/$f"; done
 BINDS=() RO_MASKED=()
 omp_home_prepare || fail_setup "omp_home_prepare"
-unset APPTAINERENV_PI_CONFIG_FILES
+unset APPTAINERENV_PI_CONFIG_FILES APPTAINERENV_OMP_DAEMON_DIR
 omp_bound() { local b; for b in "${BINDS[@]}"; do [[ "$b" == "$1" ]] && return 0; done; return 1; }
 # A host path bound from: PATH (or anything below it) is some bind's source.
 omp_bound_src_under() { local b; for b in "${BINDS[@]}"; do [[ "$b" == "$1"* ]] && return 0; done; return 1; }

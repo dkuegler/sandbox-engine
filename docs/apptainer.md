@@ -1,6 +1,6 @@
 # Apptainer: behaviour the launch line and the image build rely on
 
-Last verified: 2026-11-08.
+Last verified: 2026-11-08 (the network namespace: 2026-11-23).
 
 The launch line is `APPTAINER_EXEC` in `functions/apptainer.sh`:
 `apptainer exec --containall --no-mount home,cwd,tmp,hostfs,bind-paths`, plus
@@ -286,6 +286,105 @@ created inside that host directory ("force the creation of the destination
 directory in the right parent directory (nested binds)"). A per-run `$HOME`
 therefore gets the checkout's and every other nested bind's mount points in
 `$RUN_DIR`, never in the host's `$HOME`.
+
+## The network namespace is the host's, abstract sockets included
+
+`D` — `--containall` adds PID and IPC namespaces, not a network namespace, and
+`--net` needs root (`git-breakout.md`). A unix socket in the abstract namespace
+is a name, not a file (`@name` in `/proc/net/unix`), and belongs to the network
+namespace: no bind or mask hides it. A process in the container can connect to
+any abstract socket a host process listens on, and bind any name no host
+process holds yet.
+
+`M` (omp 19.0.1 session, 2026-11-23): the container's `/proc/net/unix` lists
+the host's sockets. Among them are the host omp daemon's listening socket, at a
+path that does not exist in the container (its `~/.omp/run` is per run), X11's
+abstract socket, and abstract datagram sockets named `omp-file-lock-…`:
+
+```
+$ grep -e "$HOME/.omp/run/daemon/daemon.sock" -e '@/tmp/.X11-unix/X0' -e '@omp-file-lock' /proc/net/unix | grep -e ' 00010000 ' -e '@omp'
+0000000000000000: 00000002 00000000 00010000 0001 01 17689877 /home/kueglerd/.omp/run/daemon/daemon.sock
+0000000000000000: 00000002 00000000 00010000 0001 01 301897 @/tmp/.X11-unix/X0
+0000000000000000: 00000002 00000000 00000000 0002 01 18846982 @omp-file-lock-d42d20479ae75039e2b2711150419c27
+0000000000000000: 00000002 00000000 00000000 0002 03 17677299 @omp-file-lock-cfd4878af5f8d1e433fb201a879d2683
+$ stat ~/.omp/run/daemon/daemon.sock
+stat: cannot stat '/home/kueglerd/.omp/run/daemon/daemon.sock': No such file or directory (os error 2)
+```
+
+**X11.** `M`, same session: the X server's abstract socket accepts a connection
+from the container. It then refuses the session, because no cookie is sent and
+none is mounted:
+
+```
+$ python3 - <<'EOF'
+import socket, struct
+s = socket.socket(socket.AF_UNIX); s.connect("\0/tmp/.X11-unix/X0")
+s.sendall(struct.pack("<cxHHHHxx", b"l", 11, 0, 0, 0))
+r = s.recv(256); print(r[0], r[8:8 + r[1]])
+EOF
+0 b'Authorization required, but no authorization protocol specified\n'
+```
+
+`D` — an X server that authorizes by local user (`xhost +si:localuser:<user>`)
+would accept the same connection. The peer credentials of a process in the
+container carry the user's own host uid.
+
+**omp's daemon.** `M`, same session: omp's file lock (`FileLock`, in its native
+addon) is also held in this namespace, keyed by the lock file's path. The file
+`~/.omp/run/daemon/daemon.lock` in the container's per-run `~/.omp` has no lock
+on its inode in `/proc/locks`. It cannot be locked there while a host omp daemon
+runs from the same path. A sibling file can be locked, and so can the same file
+from a fresh network namespace:
+
+```
+$ cat >/tmp/lock.js <<'EOF'
+const m = require(process.argv[2]);
+console.log(process.argv[3], m.FileLock.tryAcquire(process.argv[3]).acquired);
+EOF
+$ N=/usr/local/omp/natives/19.0.1/pi_natives.linux-x64-modern.node
+$ BUN_BE_BUN=1 omp /tmp/lock.js $N ~/.omp/run/daemon/daemon.lock
+/home/kueglerd/.omp/run/daemon/daemon.lock false
+$ BUN_BE_BUN=1 omp /tmp/lock.js $N ~/.omp/run/daemon/other.lock
+/home/kueglerd/.omp/run/daemon/other.lock true
+$ unshare -rn env BUN_BE_BUN=1 omp /tmp/lock.js $N ~/.omp/run/daemon/daemon.lock
+/home/kueglerd/.omp/run/daemon/daemon.lock true
+$ grep -c ":$(stat -c %i ~/.omp/run/daemon/daemon.lock) " /proc/locks
+0
+```
+
+Guard: the first `false` shows the collision only while the listing above
+includes a host daemon socket at `~/.omp/run/daemon/daemon.sock`, and the second
+line must read `true`.
+
+At omp's default daemon directory, a sandboxed omp's daemon therefore exits as
+soon as it starts while the host's omp daemon runs from that path. The `M` log
+line from the container is `"message":"Another omp daemon holds the lock"`.
+Every client then fails with `The omp daemon did not answer at
+/home/<user>/.omp/run/daemon/daemon.sock within 10s: connect …: No such file or
+directory (os error 2)`, so the on-device models (session titles, word
+completion) are unavailable. `D` — the same holds against another run's daemon
+at the default path, and a sandboxed daemon that starts first holds the host's
+daemon off the same way.
+
+`omp_home_prepare` (`functions/omp-home.sh`) sets `OMP_DAEMON_DIR`, omp's
+override for that directory, to `~/.omp/run/daemon-<suffix>`, where `<suffix>`
+is mktemp's random suffix of the run's `RUN_DIR`. `M`, same session, with a
+directory no other daemon uses (the daemon exits on its own once idle):
+
+```
+$ D=~/.omp/run/daemon-probe
+$ OMP_DAEMON_DIR=$D omp __omp_worker_daemon & sleep 1; OMP_DAEMON_DIR=$D omp ps
+daemon pid 2710 · 19.0.1+1795176394000992
+
+No units.
+
+Use --all to include other projects and sessions.
+```
+
+The separate path prevents accidental collisions only. A process in the
+container can still bind the abstract names omp uses for host paths, or connect
+to host abstract sockets. Only a network namespace closes that, and creating
+one needs root.
 
 ## No gVisor through apptainer
 

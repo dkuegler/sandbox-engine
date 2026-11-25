@@ -1,6 +1,6 @@
 # Parallelization: how claude-code, omp, and opencode handle concurrent sessions
 
-Fact record. Last verified 2026-09-17.
+Fact record. Last verified 2026-09-17 (omp's daemon: 2026-11-23).
 
 opencode wants a server process to attach to, because sessions and auth
 supposedly live in a shared database that concurrent processes corrupt or
@@ -29,7 +29,7 @@ model is sourced from its own docs and a public GitHub issue (cited); the
 | | storage | daemon/server | concurrency unit |
 |---|---|---|---|
 | **claude-code** | one JSONL file per session, under `~/.claude/projects/<project-hash>/<session-id>.jsonl`; no shared database | none — every `claude` invocation is a fully independent process | one file per session; safe by construction *between* projects, but Anthropic's own tracker has an open bug (anthropics/claude-code#26964) where two concurrent sessions in the **same** project directory cross-contaminate each other's JSONL — entries from one session land in the other's file |
-| **omp** | `~/.omp/agent/{agent,history,models}.db` (+ `-wal`/`-shm`), SQLite in WAL mode, shared across every project | none — no `serve`/`daemon`/`service` subcommand exists (`omp --help` lists none); every `omp` invocation opens the databases directly | per-process, coordinated by SQLite's own WAL locking, not by omp |
+| **omp** | `~/.omp/agent/{agent,history,models}.db` (+ `-wal`/`-shm`), SQLite in WAL mode, shared across every project | 2026-09-17: none — no `serve`/`daemon`/`service` subcommand existed (`omp --help` listed none). `M` omp 19.0.1 (2026-11-23): one background daemon per daemon directory (default `~/.omp/run/daemon`), started on demand, serving the on-device models (session titles, word completion); `omp ps` shows it. A sandboxed omp runs its own from a per-run `OMP_DAEMON_DIR` (`apptainer.md`) | per-process, coordinated by SQLite's own WAL locking, not by omp |
 | **opencode** | `~/.local/share/opencode/opencode.db` (+`-wal`/`-shm`), SQLite, shared across every project; scoped internally by `project`/`workspace`/`session_v2` tables | yes — `opencode serve --service`, auto-spawned by the first CLI invocation that doesn't find one already running, registered in `~/.local/state/opencode/service.json` **and** `~/.config/opencode/service.json` (a password-bearing pointer: pid, `http://127.0.0.1:<port>`, password) | one shared background process per machine (default); `--standalone` forces a private per-invocation server; `--server <url>` attaches to an explicit one |
 
 The premise that motivated this investigation ("a shared database that
@@ -200,8 +200,9 @@ still the right one to reuse here.) Concretely:
   correct for it. Its own concurrency bug (cross-session JSONL
   contamination, anthropics/claude-code#26964) is upstream and orthogonal
   to sandboxing; nothing in this bind layout causes or fixes it.
-- omp needs none of this either — no daemon exists to place anywhere, and
-  its SQLite WAL databases already tolerate real concurrent processes.
+- omp needs none of this either — its SQLite WAL databases already tolerate
+  real concurrent processes, and its daemon (19.0.1) runs per run inside the
+  container, from its own `OMP_DAEMON_DIR` (`apptainer.md`).
 
 These acceptance criteria are concrete enough to implement directly: a
 per-project persistent `opencode serve` instance, wired the same way the
