@@ -411,8 +411,14 @@ check_built_agent_version() {
 # when REBUILD=1 (set by --rebuild, see functions/argv.sh, or by accepting
 # check_agent_update's prompt). Requires backend_image_ref
 # (functions/apptainer.sh) to have set the image.
+#
+# A failed build ends the run, rebuild or not. backend_build_image replaces
+# the image only on success, so a failed rebuild leaves the previous image
+# in place, but this run does not fall back to it: it was asked for a
+# different image (a newer or pinned release, a rebuild). Later runs reuse
+# the previous image unless a pin or --rebuild asks for a build again.
 build_images() {
-    local reason
+    local reason had_image=0
     if [[ "$REBUILD" -eq 1 ]]; then
         reason="rebuild requested"
     elif ! backend_image_present; then
@@ -421,14 +427,21 @@ build_images() {
         log_info "agent image: $SANDBOX_IMAGE (reused)"
         return 0
     fi
-    backend_image_remove
+    backend_image_present && had_image=1
     generate_dockerfile
     log_info "agent image: building $SANDBOX_IMAGE ($reason), build id $SANDBOX_BUILD_ID"
-    backend_build_image "$SANDBOX_DIR/agent" \
+    if ! backend_build_image "$SANDBOX_DIR/agent" \
         "USERNAME=${USER:-$(id -un)}" \
         "UID=$(id -u)" \
         "GID=$(id -g)" \
-        "AGENT=${IMAGE_AGENT:-$AGENT}"
+        "AGENT=${IMAGE_AGENT:-$AGENT}"; then
+        if [[ "$had_image" -eq 1 ]]; then
+            echo "sandbox: building $SANDBOX_IMAGE failed; the previous image is unchanged and later runs reuse it." >&2
+        else
+            echo "sandbox: building $SANDBOX_IMAGE failed." >&2
+        fi
+        exit 1
+    fi
     check_built_agent_version
 }
 

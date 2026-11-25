@@ -21,8 +21,8 @@
 #                                             "no": BACKEND_UNAVAILABLE_REASON
 #   backend_image_ref AGENT TAG               sets SANDBOX_IMAGE, SANDBOX_IMAGE_INFO
 #   backend_image_present                     does SANDBOX_IMAGE exist?
-#   backend_image_remove                      deletes SANDBOX_IMAGE
-#   backend_build_image CONTEXT KEY=VALUE...  builds SANDBOX_IMAGE from CONTEXT/Dockerfile
+#   backend_build_image CONTEXT KEY=VALUE...  builds SANDBOX_IMAGE from CONTEXT/Dockerfile,
+#                                             replacing an existing one only on success
 #   backend_forward_env VAR VALUE             VAR=VALUE inside the next container,
 #                                             never on a command line
 #   backend_forwarded_env VAR                 is VAR set inside the next container?
@@ -104,15 +104,30 @@ backend_image_present() {
     [[ -n "${SANDBOX_IMAGE:-}" && -f "$SANDBOX_IMAGE" ]]
 }
 
-# backend_image_remove: apptainer refuses to overwrite an existing SIF
-# without --force, so a rebuild removes the old file first; that also
-# leaves no half-written image behind if the build itself fails.
-backend_image_remove() {
-    rm -f "$SANDBOX_IMAGE"
+# The SIF a backend_build_image in progress writes to, in a directory of its
+# own; empty when no build is running. Removed by the EXIT hook below if the
+# run ends mid-build.
+APPTAINER_BUILD_STAGING=""
+
+apptainer_build_staging_remove() {
+    [[ -n "$APPTAINER_BUILD_STAGING" ]] || return 0
+    rm -rf "$APPTAINER_BUILD_STAGING"
+    APPTAINER_BUILD_STAGING=""
 }
 
 # backend_build_image CONTEXT KEY=VALUE...: builds SANDBOX_IMAGE from the
-# Dockerfile in CONTEXT, passing each KEY=VALUE as a build arg.
+# Dockerfile in CONTEXT, passing each KEY=VALUE as a build arg. An existing
+# SANDBOX_IMAGE is replaced only by a build that succeeded.
+#
+# apptainer writes the new SIF into a private directory (mktemp -d) beside
+# SANDBOX_IMAGE, and only an exit status of 0 moves it over SANDBOX_IMAGE.
+# A failed or interrupted build leaves the previous image untouched; the
+# staging directory goes with the build or, on an interrupt, with the EXIT
+# hook. The move is a rename within one directory, so it is atomic: no run
+# ever sees a partial image, and a session already running keeps the file
+# it opened. `apptainer build --force` onto SANDBOX_IMAGE would not give
+# this guarantee: whether the old file survives a build that fails while
+# the SIF is being written depends on apptainer's internals.
 #
 # apptainer's "dockerfile:" bootstrap (an alias for "buildkit:", see
 # internal/pkg/build/conveyorPacker.go) takes a build CONTEXT DIRECTORY,
@@ -132,13 +147,25 @@ backend_image_remove() {
 # before 1.6 on WSL 2.8.9+ with systemd stops with "failed to mount
 # binfmt_misc filesystem: invalid argument".
 backend_build_image() {
-    local context="$1" kv
+    local context="$1" kv rc=0
     shift
     local -a args=()
     for kv in "$@"; do
         args+=(--build-arg "$kv")
     done
-    apptainer build ${args[@]+"${args[@]}"} "$SANDBOX_IMAGE" "dockerfile:$context"
+    # Explicit status checks throughout: callers test this function in an
+    # `if`, where set -e does not apply inside it.
+    register_cleanup_hook apptainer_build_staging_remove
+    APPTAINER_BUILD_STAGING="$(mktemp -d "$SANDBOX_IMAGE.build.XXXXXX")" || {
+        APPTAINER_BUILD_STAGING=""
+        return 1
+    }
+    apptainer build ${args[@]+"${args[@]}"} "$APPTAINER_BUILD_STAGING/image.sif" "dockerfile:$context" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        mv -f "$APPTAINER_BUILD_STAGING/image.sif" "$SANDBOX_IMAGE" || rc=$?
+    fi
+    apptainer_build_staging_remove
+    return "$rc"
 }
 
 # backend_forward_env VAR VALUE: VAR=VALUE inside the next container. Via

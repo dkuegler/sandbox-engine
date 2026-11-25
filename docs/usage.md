@@ -155,6 +155,14 @@ Every build installs the agent's current release, or the pinned one (see
 preset's or your Dockerfile) can be. The image records its build id in
 `/etc/sandbox-engine-build-id`. See `apptainer.md`.
 
+A rebuild (`--rebuild`, an accepted update prompt, a changed pin) replaces
+the image only once the build succeeds: the new image is built in a
+temporary directory `<image>.build.XXXXXX` beside it, then renamed over it.
+If the build fails, the run stops with an error and the previous image
+stays; later runs reuse it unless a pin or `--rebuild` asks for a build
+again (`build_images()`, `functions/environment.sh`; `backend_build_image()`,
+`functions/apptainer.sh`).
+
 ### `binds:` (extra mounts)
 
 ```yaml
